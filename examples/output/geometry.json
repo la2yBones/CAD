@@ -1,0 +1,157 @@
+{
+  "version": "AC1032",
+  "units": "Millimeters",
+  "entities": [
+    {
+      "type": "LWPOLYLINE",
+      "layer": "OUTLINE",
+      "color": 256,
+      "vertices": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          100.0,
+          0.0
+        ],
+        [
+          100.0,
+          80.0
+        ],
+        [
+          0.0,
+          80.0
+        ]
+      ],
+      "closed": true
+    },
+    {
+      "type": "CIRCLE",
+      "layer": "HOLES",
+      "color": 256,
+      "center": [
+        50.0,
+        40.0,
+        0.0
+      ],
+      "radius": 15.0
+    },
+    {
+      "type": "CIRCLE",
+      "layer": "HOLES",
+      "color": 256,
+      "center": [
+        25.0,
+        20.0,
+        0.0
+      ],
+      "radius": 5.0
+    },
+    {
+      "type": "CIRCLE",
+      "layer": "HOLES",
+      "color": 256,
+      "center": [
+        75.0,
+        20.0,
+        0.0
+      ],
+      "radius": 5.0
+    },
+    {
+      "type": "CIRCLE",
+      "layer": "HOLES",
+      "color": 256,
+      "center": [
+        25.0,
+        60.0,
+        0.0
+      ],
+      "radius": 5.0
+    },
+    {
+      "type": "CIRCLE",
+      "layer": "HOLES",
+      "color": 256,
+      "center": [
+        75.0,
+        60.0,
+        0.0
+      ],
+      "radius": 5.0
+    },
+    {
+      "type": "LINE",
+      "layer": "SLOTS",
+      "color": 256,
+      "start": [
+        30.0,
+        30.0,
+        0.0
+      ],
+      "end": [
+        70.0,
+        30.0,
+        0.0
+      ]
+    },
+    {
+      "type": "LINE",
+      "layer": "SLOTS",
+      "color": 256,
+      "start": [
+        70.0,
+        30.0,
+        0.0
+      ],
+      "end": [
+        70.0,
+        50.0,
+        0.0
+      ]
+    },
+    {
+      "type": "LINE",
+      "layer": "SLOTS",
+      "color": 256,
+      "start": [
+        70.0,
+        50.0,
+        0.0
+      ],
+      "end": [
+        30.0,
+        50.0,
+        0.0
+      ]
+    },
+    {
+      "type": "LINE",
+      "layer": "SLOTS",
+      "color": 256,
+      "start": [
+        30.0,
+        50.0,
+        0.0
+      ],
+      "end": [
+        30.0,
+        30.0,
+        0.0
+      ]
+    },
+    {
+      "type": "TEXT",
+      "layer": "TEXT",
+      "color": 256,
+      "text": "Sample Part",
+      "position": [
+        50.0,
+        90.0,
+        0.0
+      ],
+      "height": 5.0
+    }
+  ]
+}

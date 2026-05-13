@@ -1,254 +1,165 @@
-# 快速开始指南
+# 快速开始
 
-本文档将帮助您快速上手基于CAD图纸的3D建模系统。
+版本：1.0.0
+变更日期：2026-05-13
+影响范围：安装、配置、测试、CLI、GUI
 
-## 前置准备
+## 1. 准备环境
 
-### 1. 安装Python
+推荐使用已创建的 Conda 环境：
 
-确保已安装Python 3.10或更高版本：
-
-```bash
+```powershell
+conda activate cad_study
+cd E:\Code\CAD
 python --version
 ```
 
-### 2. 安装FreeCAD
+已验证环境：
 
-从 [FreeCAD官网](https://www.freecadweb.org/) 下载并安装FreeCAD 1.0+。
+- Python 3.11.15
+- ezdxf 1.4.3
+- pytest 9.0.3
+- openai 2.26.0
+- shapely 2.1.2
+- scikit-learn 1.8.0
+- PyYAML 6.0.3
 
-### 3. 安装 LibreDWG（用于DWG文件支持）
+在当前 PowerShell 中，如果 `conda run` 出现临时文件或 `chcp` 相关报错，可直接调用：
 
-LibreDWG 是处理 DWG 文件的核心工具：
-- 下载地址：https://www.gnu.org/software/libredwg/
-- 我们已配置路径：`D:\Code\libredwg-0.13.4.8160-win64\`
-
-### 4. 获取API密钥（可选但推荐）
-
-- 注册 DeepSeek 平台账号
-- 获取 DeepSeek V4 Pro API 密钥
-
-## 安装步骤
-
-### 1. 克隆项目
-
-```bash
-cd E:\Code\CAD
+```powershell
+D:\anaconda3\envs\cad_study\python.exe
 ```
 
-### 2. 使用 Conda 环境
+## 2. 安装依赖
 
-```bash
-# 激活环境
-conda activate cad_study
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-### 3. 安装依赖
+或使用项目元数据安装开发依赖：
 
-```bash
-pip install -r requirements.txt
+```powershell
+python -m pip install -e ".[dev]"
 ```
 
-### 4. 配置项目
+## 3. 配置 `.env`
 
-配置文件已设置完成（已包含API密钥和路径配置）。
+复制模板：
 
-## CAD 文件处理指南
-
-### DXF 文件处理
-DXF 是开放格式，可以直接解析：
-
-```python
-from src.dxf_parser import DXFParser
-
-# 创建解析器
-parser = DXFParser("examples/dxf_files/your_file.dxf")
-
-# 解析文件
-geometry_data = parser.parse()
-
-# 导出为JSON
-parser.export_json("output.json")
+```powershell
+Copy-Item .env.example .env
 ```
 
-### DWG 文件处理（重点！）
+填写：
 
-DWG 是 AutoCAD 专有格式，需要转换。我们使用 LibreDWG 自动转换：
-
-```python
-from src.dxf_parser import DXFParser
-from src.utils import load_config
-
-# 加载配置（包含 LibreDWG 路径）
-config = load_config()
-
-# 直接解析 DWG 文件 - 系统会自动转换为DXF！
-parser = DXFParser("examples/dxf_files/your_file.dwg", config.get("dxf_parser", {}))
-
-# 解析（转换+解析，全程自动化！
-geometry_data = parser.parse()
+```env
+DEEPSEEK_API_KEY=your-deepseek-api-key-here
+LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
+FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 ```
 
-### DWG 转换原理
-1. **自动检测文件扩展名
-2. 使用 LibreDWG 转换
-3. 转换后的 DXF 保存于同目录
-4. 解析转换后的 DXF
+配置读取优先级：
 
-## 第一个示例
+1. 系统环境变量
+2. `.env`
+3. `config/config.yaml`
 
-### 方式一：图形界面（推荐）
+更多说明见 [配置与密钥管理](configuration.md)。
 
-```bash
-python gui_example.py
+## 4. 运行测试
+
+```powershell
+D:\anaconda3\envs\cad_study\python.exe -m pytest tests\unit -q
 ```
 
-打开图形界面后，双击文件列表中的图纸即可预览，设置参数后点击「开始处理」一键完成 2D→3D 转换。详见 [GUI 使用指南](./gui_guide.md)。
+当前单元测试验证结果：
 
-### 方式二：命令行脚本
-
-将您的 DXF 或 DWG 文件放入 `examples/cad_files/` 目录。
-
-```bash
-# 运行完整示例
-python examples/scripts/quickstart.py
+```text
+3 passed
 ```
 
-生成的3D模型将保存在 `examples/output/` 目录中。
+`ezdxf/pyparsing` 可能输出弃用警告，不影响当前测试通过。
 
-## 核心模块使用
+## 5. 启动 GUI
 
-### DXF/DWG 解析模块（重点！
-
-```python
-from src.dxf_parser import DXFParser
-from src.utils import load_config
-
-# 加载配置
-config = load_config()
-
-# 解析 DXF 文件
-parser_dxf = DXFParser("examples/dxf_files/your_file.dxf", config.get("dxf_parser", {}))
-geometry_data = parser_dxf.parse()
-
-# 或者解析 DWG 文件（自动转换）
-parser_dwg = DXFParser("examples/dxf_files/your_file.dwg", config.get("dxf_parser", {}))
-geometry_data = parser_dwg.parse()
-
-# 导出为 JSON
-parser.export_json("output.json")
+```powershell
+D:\anaconda3\envs\cad_study\python.exe gui_example.py
 ```
 
-### 几何关系分析模块
+GUI 支持：
 
-```python
-from src.geometry_analyzer import GeometryAnalyzer
-from src.utils import load_config
+- 扫描 `examples/cad_files`
+- 预览 DXF/DWG 图纸
+- 设置拉伸高度
+- 基础模式或智能模式处理
+- 输出 STEP/STL/FCStd 和预览 PNG
 
-# 加载配置
-config = load_config()
+预览图保存位置：
 
-# 创建分析器
-api_key = config.get("api", {}).get("deepseek", {}).get("api_key", "")
-analyzer_config = config.get("api", {}).get("deepseek", {})
-analyzer = GeometryAnalyzer(api_key, analyzer_config)
-
-# 分析关系
-relationships = analyzer.analyze(geometry_data)
+```text
+examples/output/<图纸名>/<图纸名>_preview.png
 ```
 
-### 3D建模模块
+## 6. 使用 CLI
 
-```python
-from src.model_generator import FreeCADModeler
-from src.utils import load_config
+列出文件：
 
-# 加载配置
-config = load_config()
-
-# 创建建模器
-modeler_config = {}
-if "freecad" in config:
-    modeler_config.update(config.get("freecad", {}))
-if "modeling" in config:
-    modeler_config.update(config.get("modeling", {}))
-
-modeler = FreeCADModeler(modeler_config)
-
-# 生成模型
-model = modeler.generate(geometry_data, relationships)
-
-# 导出模型
-model.export("output.step", format="STEP")
+```powershell
+D:\anaconda3\envs\cad_study\python.exe cad_cli.py --list
 ```
 
-## 完整端到端示例
+基础模式：
 
-```python
-from src.dxf_parser import DXFParser
-from src.geometry_analyzer import GeometryAnalyzer
-from src.model_generator import FreeCADModeler
-from src.utils import load_config
-
-# 1. 加载配置
-config = load_config()
-
-# 2. 解析 CAD 文件（DXF 或 DWG）
-parser = DXFParser("examples/dxf_files/your_file.dxf", config.get("dxf_parser", {}))
-geometry_data = parser.parse()
-
-# 3. 分析几何关系
-api_key = config.get("api", {}).get("deepseek", {}).get("api_key", "")
-analyzer = GeometryAnalyzer(api_key, config.get("api", {}).get("deepseek", {}))
-relationships = analyzer.analyze(geometry_data)
-
-# 4. 生成 3D 模型
-modeler_config = {}
-if "freecad" in config:
-    modeler_config.update(config.get("freecad", {}))
-if "modeling" in config:
-    modeler_config.update(config.get("modeling", {}))
-
-modeler = FreeCADModeler(modeler_config)
-modeler.generate(geometry_data, relationships)
-modeler.export("examples/models/output.step")
+```powershell
+D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf
 ```
 
-## 常见问题
+智能模式：
 
-### Q: FreeCAD导入失败怎么办？
-
-A: 确保FreeCAD已正确安装，并且Python可以找到FreeCAD的库路径。检查 config.yaml 中的 freecad.bin_path 配置。
-
-### Q: DWG文件如何处理？
-
-A: 非常简单！直接使用相同的 DXFParser，系统会自动使用 LibreDWG 转换 DWG 文件！无需额外步骤！只需：
-1. 确保 config.yaml 中配置了 libredwg_path
-2. 直接传入 .dwg 文件路径即可
-3. 系统自动转换并解析
-
-### Q: 如何验证 DWG 转换是否正常？
-
-A: 运行：
-```bash
-python examples/scripts/test_config.py
+```powershell
+D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf --intelligent
 ```
-它会检查 LibreDWG 是否可用。
 
-### Q: API调用费用如何？
+仅分析不建模：
 
-A: 请参考 DeepSeek 平台的定价页面。也可以使用本地几何计算库减少API调用（analyzer 会优先尝试本地计算）。
+```powershell
+D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf --analysis-only
+```
 
-### Q: DWG 转换失败可能原因？
+## 7. 常见问题
 
-1. 检查 LibreDWG 路径是否配置正确
-2. 确认 DWG 文件没有损坏
-3. 确保 DWG 文件没有加密
-4. 尝试在 config.yaml 检查 libredwg_path 路径正确
-5. 运行 `test_config.py 检查
+### 找不到 API Key
 
-## 下一步
+确认 `.env` 中存在：
 
-- 阅读 [API文档](../api/index.md) 了解详细接口
-- 查看 [示例脚本](../../examples/scripts/) 获取更多用法
-- 查看 [Conda配置指南](./conda_setup.md) 了解环境配置
+```env
+DEEPSEEK_API_KEY=...
+```
 
+并确认 `config/config.yaml` 使用：
+
+```yaml
+api:
+  deepseek:
+    api_key: "${DEEPSEEK_API_KEY}"
+```
+
+### 找不到 FreeCAD
+
+优先在 `.env` 设置：
+
+```env
+FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
+```
+
+如果不设置，系统会尝试扫描 Windows 常见安装路径。
+
+### DWG 转换失败
+
+确认：
+
+```env
+LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
+```
+
+并确保该目录下存在 `dwg2dxf.exe`，或子目录中可搜索到该文件。

@@ -63,12 +63,7 @@ class FreeCADBridge:
                 logger.info(f"FreeCAD subprocess mode: {self.freecad_python}")
                 return
 
-        candidates = [
-            r"D:\FreeCAD 1.0\bin\python.exe",
-            r"C:\Program Files\FreeCAD 1.0\bin\python.exe",
-            r"D:\FreeCAD 0.21\bin\python.exe",
-            r"C:\Program Files\FreeCAD 0.21\bin\python.exe",
-        ]
+        candidates = self._find_freecad_candidates()
         for c in candidates:
             if Path(c).exists():
                 self.freecad_python = c
@@ -80,8 +75,22 @@ class FreeCADBridge:
         self.freecad_available = False
         self.mode = "unavailable"
         logger.warning(
-            "FreeCAD not available. Install FreeCAD 1.0+ and set 'freecad.bin_path' in config.yaml"
+            "FreeCAD not available. Install FreeCAD 1.0+ and set 'FREECAD_BIN_PATH' in .env"
         )
+
+    @staticmethod
+    def _find_freecad_candidates() -> list:
+        candidates = []
+        if os.name == "nt":
+            drives = ["D:\\", "C:\\"]
+            versions = ["FreeCAD 1.0", "FreeCAD 0.21", "FreeCAD 0.20"]
+            for drive in drives:
+                for ver in versions:
+                    candidates.append(rf"{drive}\{ver}\bin\python.exe")
+                    base = rf"{drive}\Program Files\{ver}\bin\python.exe"
+                    if base not in candidates:
+                        candidates.append(base)
+        return candidates
 
     def execute_script(self, script_content: str, output_dir: str,
                        timeout: int = 300) -> Dict[str, Any]:

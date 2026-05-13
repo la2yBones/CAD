@@ -250,7 +250,6 @@ class CADApp:
             self._generate_and_show_preview(fname)
 
     def _generate_and_show_preview(self, fname: str):
-        import tempfile
         self._init_pipeline()
         if not self.pipeline:
             self._log("管道未就绪")
@@ -268,10 +267,13 @@ class CADApp:
             parser.parse()
             if len(parser.entities) == 0:
                 self._log(f"预览: {fname} 未提取到实体，图纸可能为空或格式不支持")
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            tmp.close()
-            parser.visualize(tmp.name)
-            self._show_image(tmp.name, Path(fname).stem)
+                return
+            stem = Path(fname).stem
+            preview_dir = Path("examples/output") / stem
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            preview_path = str(preview_dir / f"{stem}_preview.png")
+            parser.visualize(preview_path)
+            self._show_image(preview_path, stem)
         except Exception as e:
             self._log(f"预览失败: {e}")
 

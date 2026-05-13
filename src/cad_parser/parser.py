@@ -20,6 +20,7 @@ class CADParser:
     def __init__(self, file_path: str, config: Optional[Dict] = None):
         self.file_path = Path(file_path)
         self.config = config or {}
+        self.output_dir = Path(self.config.get("output_dir", "examples/output"))
         self.doc: Optional[ezdxf.document.Drawing] = None
         self.entities: List[Dict] = []
         self._block_cache: Dict[str, List[Dict]] = {}
@@ -385,12 +386,18 @@ class CADParser:
         可视化DXF文件（使用matplotlib）
 
         Args:
-            output_path: 可选，保存为图片文件
+            output_path: 可选，保存为图片文件。不指定时自动保存到output_dir
         """
         try:
             import matplotlib.pyplot as plt
             from ezdxf.addons.drawing import RenderContext, Frontend
             from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+
+            if output_path is None:
+                out_dir = self.output_dir
+                out_dir.mkdir(parents=True, exist_ok=True)
+                base_name = Path(self.file_path).stem
+                output_path = str(out_dir / f"{base_name}_preview.png")
 
             for layer in self.doc.layers:
                 layer.on()
@@ -401,12 +408,8 @@ class CADParser:
             out = MatplotlibBackend(ax)
             Frontend(ctx, out).draw_layout(self.doc.modelspace(), finalize=True)
 
-            if output_path:
-                plt.savefig(output_path, dpi=150, bbox_inches='tight')
-                logger.info(f"可视化已保存到: {output_path}")
-            else:
-                plt.show()
-
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            logger.info(f"可视化已保存到: {output_path}")
             plt.close()
 
         except ImportError:

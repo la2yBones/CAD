@@ -35,14 +35,27 @@ env/
 # 配置文件（包含密钥）
 config/config.yaml
 
+# 环境变量（API Key等敏感信息）
+.env
+.env.*
+!.env.example
+
 # 日志文件
 logs/
 *.log
 
+# 输出文件
+examples/output/
+output/
+
+# 缓存
+.cache/
+*.cache
+
 # 生成的模型文件
-examples/models/*.step
-examples/models/*.stl
-examples/models/*.FCStd
+*.step
+*.stl
+*.FCStd
 
 # 测试和覆盖率
 .pytest_cache/

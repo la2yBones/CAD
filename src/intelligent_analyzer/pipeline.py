@@ -1,124 +1,275 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-智能分析流水线
-
-整合视图分析、尺寸提取与建模指令生成，提供统一的分析入口。
+智能工程图纸处理管道
+整合视图识别、尺寸提取、本地几何分析回退和建模指令生成
 """
-
-import time
+import logging
+from typing import Dict, List, Any, Optional
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
-from ..utils.result import Result
-from .view_analyzer import ViewAnalyzer
+from .view_analyzer import EngineeringViewAnalyzer
 from .dimension_extractor import DimensionExtractor
-from .modeling_generator import ModelingGenerator
+from .modeling_generator import FreeCADInstructionGenerator
+
+logger = logging.getLogger(__name__)
+
+LOCAL_ANALYSIS_ENTITY_LIMIT = 300
 
 
 class IntelligentEngineeringAnalyzer:
     """
-    智能工程分析器。
-
-    整合以下分析步骤：
-    1. 视图识别（ViewAnalyzer）
-    2. 尺寸提取（DimensionExtractor）
-    3. 建模指令生成（ModelingGenerator）
+    智能工程图纸分析器
+    集成所有分析功能的完整管道
     """
 
-    def __init__(
-        self,
-        api_key: str,
-        api_config: Optional[Dict[str, Any]] = None,
-        enable_cache: bool = True,
-        cache_dir: Optional[str] = None,
-        cache_ttl: int = 86400,
-    ):
-        self._api_key = api_key
-        self._api_config = api_config or {}
-        self._enable_cache = enable_cache
-        self._cache_dir = cache_dir
-        self._cache_ttl = cache_ttl
-
-        self._view_analyzer = ViewAnalyzer(
-            api_key=api_key,
-            api_config=self._api_config,
-        )
-        self._dim_extractor = DimensionExtractor(
-            api_key=api_key,
-            api_config=self._api_config,
-        )
-        self._modeling_generator = ModelingGenerator()
-
-    def analyze_full(
-        self,
-        geometry_data: Dict[str, Any],
-        extrude_height: float = 10.0,
-        file_path: Optional[str] = None,
-    ) -> Result[Dict[str, Any]]:
+    def __init__(self, api_key: str, config: Optional[Dict] = None,
+                 enable_cache: bool = True,
+                 cache_dir: Optional[str] = None,
+                 cache_ttl: Optional[int] = None):
         """
-        执行完整的智能分析流水线。
+        初始化分析器
 
         Args:
-            geometry_data: CAD 解析后的几何数据（含 entities, layers 等）
-            extrude_height: 默认拉伸高度（毫米）
-            file_path: 原始文件路径（用于缓存键）
+            api_key: DeepSeek API密钥
+            config: 配置字典
+            enable_cache: 是否启用缓存
+            cache_dir: 缓存目录
+            cache_ttl: 缓存过期时间（秒）
+        """
+        self.api_key = api_key
+        self.config = config or {}
+
+        self.view_analyzer = EngineeringViewAnalyzer(config)
+        self.dimension_extractor = DimensionExtractor(config)
+        self.modeling_generator = FreeCADInstructionGenerator(api_key, config)
+
+        self.enable_cache = enable_cache
+        self.cache = None
+
+        if self.enable_cache:
+            try:
+                from src.utils.cache import AnalysisCache
+                cache_ttl = cache_ttl or self.config.get('cache_ttl', 3600 * 24 * 7)
+                cache_dir = cache_dir or self.config.get('cache_dir', '.cache/analysis')
+                self.cache = AnalysisCache(cache_dir=cache_dir, default_ttl=cache_ttl, config=config)
+                logger.info("缓存系统已启用")
+            except Exception as e:
+                logger.warning(f"缓存系统初始化失败，将不使用缓存: {e}")
+                self.cache = None
+
+    def analyze_full(self, geometry_data: Dict[str, Any],
+                     extrude_height: float = 10.0,
+                     file_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        执行完整的智能分析和建模指令生成
+
+        Args:
+            geometry_data: CAD解析得到的几何数据
+            extrude_height: 默认拉伸高度
+            file_path: 原始图纸文件路径（用于缓存）
 
         Returns:
-            Result[Dict]: Ok 时包含 views/dimensions/modeling_instructions 等字段
+            完整分析结果字典
         """
-        start_time = time.time()
+        # 尝试从缓存读取
+        if self.cache and file_path:
+            cached = self.cache.get(file_path, extrude_height)
+            if cached:
+                logger.info("从缓存加载分析结果")
+                return cached
 
-        entities = geometry_data.get("entities", [])
-        layers = geometry_data.get("layers", [])
+        logger.info("=== 开始智能工程图纸分析 ===")
 
-        if not entities:
-            return Result.Err("几何数据中未找到任何实体，无法进行分析。")
+        # 1. 视图分析
+        logger.info("步骤1: 分析视图结构...")
+        view_result = self.view_analyzer.analyze_views(geometry_data)
 
-        view_result = self._view_analyzer.analyze_views(entities, layers)
-        if view_result.is_err():
-            return Result.Err(f"视图分析失败: {view_result.error}")
-        views = view_result.value
+        # 2. 尺寸提取
+        logger.info("步骤2: 提取尺寸标注...")
+        dimension_result = self.dimension_extractor.extract_dimensions(geometry_data)
 
-        dim_result = self._dim_extractor.extract_dimensions(entities, views)
-        if dim_result.is_err():
-            return Result.Err(f"尺寸提取失败: {dim_result.error}")
-        dimensions = dim_result.value
+        # 3. 本地几何关系分析 (STRtree, O(n log n))
+        logger.info("步骤3: 本地几何关系分析...")
+        local_analysis = self._analyze_local_fallback(geometry_data)
 
-        gen_result = self._modeling_generator.generate(views, dimensions, extrude_height)
-        if gen_result.is_err():
-            return Result.Err(f"建模指令生成失败: {gen_result.error}")
-        generation = gen_result.value
+        # 4. 生成建模指令 (AI, 传入本地分析结果作为辅助)
+        logger.info("步骤4: 生成FreeCAD建模指令...")
+        enriched_geometry = dict(geometry_data)
+        if local_analysis:
+            enriched_geometry["_local_relationships"] = local_analysis
+        modeling_result = self.modeling_generator.generate(
+            enriched_geometry if local_analysis else geometry_data,
+            view_result,
+            dimension_result,
+            extrude_height
+        )
 
-        elapsed = round(time.time() - start_time, 2)
+        result = {
+            "view_analysis": view_result,
+            "dimension_extraction": dimension_result,
+            "local_relationships": local_analysis,
+            "modeling_instructions": modeling_result
+        }
 
-        return Result.Ok({
-            "success": True,
-            "views": views,
-            "dimensions": dimensions,
-            "modeling_instructions": generation.get("modeling_instructions", {}),
-            "freecad_script": generation.get("freecad_script", ""),
-            "extrude_height": extrude_height,
-            "statistics": {
-                "entity_count": len(entities),
-                "layer_count": len(layers),
-                "view_count": len(views),
-                "dimension_count": len(dimensions),
-                "analysis_time_seconds": elapsed,
-            },
-            "analysis_id": self._generate_analysis_id(file_path),
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        })
+        logger.info("=== 智能分析完成 ===")
 
-    def _generate_analysis_id(self, file_path: Optional[str]) -> str:
-        """基于文件路径和时间戳生成分析ID。"""
-        if file_path:
-            stem = Path(file_path).stem
-            return f"analysis_{stem}_{int(time.time())}"
-        return f"analysis_{int(time.time())}"
+        # 保存到缓存
+        if self.cache and file_path:
+            self.cache.set(file_path, extrude_height, result)
 
-    def get_view_analyzer(self) -> ViewAnalyzer:
-        """获取视图分析器实例。"""
-        return self._view_analyzer
+        return result
 
-    def get_dimension_extractor(self) -> DimensionExtractor:
-        """获取尺寸提取器实例。"""
-        return self._dim_extractor
+    def save_results(self, analysis_result: Dict[str, Any],
+                     output_dir: str, base_name: str = "analysis") -> None:
+        """
+        保存分析结果到文件
+
+        Args:
+            analysis_result: 分析结果
+            output_dir: 输出目录
+            base_name: 文件基名
+        """
+        import json
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # 保存完整分析结果
+        with open(output_path / f"{base_name}_full.json", 'w', encoding='utf-8') as f:
+            json.dump(analysis_result, f, ensure_ascii=False, indent=2)
+
+        # 保存FreeCAD脚本
+        if "modeling_instructions" in analysis_result:
+            script = analysis_result["modeling_instructions"].get("freecad_script", "")
+            if script:
+                script_path = output_path / f"{base_name}_freecad.py"
+                with open(script_path, 'w', encoding='utf-8') as f:
+                    f.write(script)
+                logger.info(f"FreeCAD脚本已保存: {script_path}")
+
+        # 保存分析报告
+        report = self._generate_report(analysis_result)
+        with open(output_path / f"{base_name}_report.txt", 'w', encoding='utf-8') as f:
+            f.write(report)
+
+    def _entity_to_shapely(self, entity: Dict):
+        import shapely.geometry as sg
+
+        entity_type = entity.get("type")
+
+        if entity_type == "LINE":
+            return sg.LineString([entity["start"][:2], entity["end"][:2]])
+        elif entity_type == "CIRCLE":
+            return sg.Point(entity["center"][:2]).buffer(entity["radius"])
+        elif entity_type in ("LWPOLYLINE", "ELLIPSE", "SPLINE"):
+            points = [p[:2] for p in entity.get("vertices", [])]
+            if not points:
+                return None
+            closed = entity.get("closed", False)
+            if closed and len(points) >= 3:
+                return sg.Polygon(points)
+            else:
+                return sg.LineString(points)
+        elif entity_type == "ARC":
+            return None
+
+        return None
+
+    def _calculate_relationship(self, shape1, shape2) -> str:
+        if shape1.contains(shape2) or shape2.contains(shape1):
+            return "包含"
+        elif shape1.intersects(shape2):
+            if shape1.touches(shape2):
+                return "相切"
+            else:
+                return "相交"
+        else:
+            return "相离"
+
+    def _analyze_local_fallback(self, geometry_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            import shapely.geometry as sg
+            from shapely.strtree import STRtree
+
+            entities = geometry_data.get("entities", [])
+            if len(entities) > LOCAL_ANALYSIS_ENTITY_LIMIT:
+                logger.info(
+                    f"实体数 {len(entities)} 超过阈值 {LOCAL_ANALYSIS_ENTITY_LIMIT}，跳过全量本地分析"
+                )
+                return None
+
+            shapes = []
+            for i, entity in enumerate(entities):
+                shape = self._entity_to_shapely(entity)
+                if shape:
+                    shapes.append((i, shape, entity))
+
+            if len(shapes) < 2:
+                return None
+
+            shapely_objects = [s[1] for s in shapes]
+            tree = STRtree(shapely_objects)
+
+            pairs = []
+            for i in range(len(shapes)):
+                idx1, shape1, _ = shapes[i]
+                candidates = tree.query(shape1)
+                for j in candidates:
+                    if j <= i:
+                        continue
+                    idx2, shape2, _ = shapes[j]
+                    relationship = self._calculate_relationship(shape1, shape2)
+                    if relationship != "相离":
+                        pairs.append({
+                            "id1": idx1,
+                            "id2": idx2,
+                            "relationship": relationship
+                        })
+
+            return {
+                "entity_pairs": pairs,
+                "summary": f"本地分析: {len(entities)} 实体, {len(pairs)} 对关系",
+                "method": "local_fallback"
+            }
+
+        except ImportError:
+            logger.warning("Shapely 不可用，跳过本地几何分析回退")
+            return None
+
+    def _generate_report(self, analysis_result: Dict[str, Any]) -> str:
+        """生成分析报告"""
+        lines = []
+        lines.append("="*60)
+        lines.append("工程图纸智能分析报告")
+        lines.append("="*60)
+        lines.append("")
+
+        # 视图分析
+        view_data = analysis_result.get("view_analysis", {})
+        lines.append("【视图分析】")
+        views = view_data.get("views", [])
+        lines.append(f"- 识别视图数: {len(views)}")
+        for view in views:
+            lines.append(f"  * {view.get('type', view.get('name'))}: {view.get('entity_count', 0)} 个实体")
+        lines.append("")
+
+        # 尺寸分析
+        dim_data = analysis_result.get("dimension_extraction", {})
+        lines.append("【尺寸提取】")
+        lines.append(f"- 提取尺寸数: {dim_data.get('total', 0)}")
+        classified = dim_data.get("classified", {})
+        for dim_type, dims in classified.items():
+            lines.append(f"  * {dim_type}: {len(dims)} 个")
+        lines.append("")
+
+        # 建模指令
+        model_data = analysis_result.get("modeling_instructions", {})
+        lines.append("【建模策略】")
+        lines.append(model_data.get("analysis_summary", "无分析总结"))
+        lines.append("")
+        lines.append(model_data.get("modeling_strategy", "无建模策略"))
+        lines.append("")
+
+        lines.append("="*60)
+        return "\n".join(lines)

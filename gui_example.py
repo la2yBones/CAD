@@ -79,8 +79,12 @@ class CADApp:
         if self.pipeline is not None:
             return
         try:
-            from src.batch_processor import BatchPipeline
-            self.pipeline = BatchPipeline(self.config or {})
+            from src.batch_processor import CADPipeline
+            self.pipeline = CADPipeline(
+                config=self.config or {},
+                input_dir="examples/cad_files",
+                output_dir="examples/output"
+            )
             self._log("管道初始化成功")
         except Exception as e:
             self._log(f"管道初始化失败: {e}")
@@ -209,6 +213,7 @@ class CADApp:
         if d:
             self._init_pipeline()
             if self.pipeline:
+                self.pipeline.set_input_dir(d)
                 self._log(f"输入目录: {d}")
                 self._refresh_file_list()
 
@@ -220,21 +225,10 @@ class CADApp:
         if not self.pipeline:
             return
 
-        from src.batch_processor import FileManager
-        scan_result = FileManager.scan_files(
-            self.pipeline._config.get("input_dir", "examples/cad_files")
-        )
-        if scan_result.is_err():
-            self._log(f"扫描失败: {scan_result.error}")
-            return
-
-        files = scan_result.value
+        files = self.pipeline.list_available_files()
         for f in files:
-            try:
-                size_kb = f.stat().st_size / 1024
-            except OSError:
-                size_kb = 0
-            self._file_tree.insert("", tk.END, values=(f.name, f"{size_kb:.1f} KB", ""))
+            size = f"{f['size'] / 1024:.1f} KB"
+            self._file_tree.insert("", tk.END, values=(f["name"], size, ""))
         self._log(f"刷新完成，共 {len(files)} 个文件")
 
     def _on_file_select(self, event):
@@ -256,28 +250,28 @@ class CADApp:
             self._generate_and_show_preview(fname)
 
     def _generate_and_show_preview(self, fname: str):
+        import tempfile
         self._init_pipeline()
         if not self.pipeline:
             self._log("管道未就绪")
             return
 
         from src.cad_parser import CADParser
-        from src.batch_processor import FileManager
-
-        file_path = Path("examples/cad_files") / fname
-        if not file_path.exists():
+        file_path = self.pipeline.file_manager.resolve_file_path(fname)
+        if not file_path:
             self._log(f"找不到文件: {fname}")
             return
 
         try:
-            self._log(f"正在解析预览: {fname} ...")
-            parser = CADParser(self.pipeline._config)
-            result = parser.parse(str(file_path))
-            if result.is_ok():
-                entities = result.value.get("entities", [])
-                self._log(f"预览: {fname} 提取到 {len(entities)} 个实体")
-            else:
-                self._log(f"解析失败: {result.error}")
+            self._log(f"正在生成预览: {fname} ...")
+            parser = CADParser(str(file_path), self.config.get("dxf_parser", {}))
+            parser.parse()
+            if len(parser.entities) == 0:
+                self._log(f"预览: {fname} 未提取到实体，图纸可能为空或格式不支持")
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.close()
+            parser.visualize(tmp.name)
+            self._show_image(tmp.name, Path(fname).stem)
         except Exception as e:
             self._log(f"预览失败: {e}")
 
@@ -383,12 +377,8 @@ class CADApp:
                 return
             filenames = [fname]
         else:
-            from src.batch_processor import FileManager
-            scan_result = FileManager.scan_files("examples/cad_files")
-            if scan_result.is_err():
-                self._log(f"扫描失败: {scan_result.error}")
-                return
-            filenames = [f.name for f in scan_result.value]
+            files = self.pipeline.list_available_files()
+            filenames = [f["name"] for f in files]
             if not filenames:
                 self._log("没有可处理的文件")
                 return
@@ -409,7 +399,6 @@ class CADApp:
         total = len(filenames)
         enable_ai = self.analysis_var.get()
         height = self.height_var.get()
-        api_key = self.config.get("api", {}).get("deepseek", {}).get("api_key", "")
 
         for idx, fname in enumerate(filenames):
             if self._cancel_flag.is_set():
@@ -423,26 +412,22 @@ class CADApp:
             self._update_file_status(fname, status)
 
             try:
-                file_path = str(Path("examples/cad_files") / fname)
                 if enable_ai:
-                    result = self.pipeline.process_file_intelligent(
-                        file_path, api_key, "examples/output", height
-                    )
+                    result = self.pipeline.process_file_intelligent(fname, height)
                 else:
-                    result = self.pipeline.process_file(
-                        file_path, "examples/output", height
-                    )
+                    result = self.pipeline.process_file(fname, height, enable_analysis=False)
 
                 if result.success:
                     status = "✓"
-                    self._log_safe(
-                        f"[{idx + 1}/{total}] ✓ {fname}  耗时: {result.processing_time_seconds:.1f}秒"
-                    )
-                    if result.model_result:
-                        self._log_safe(f"    输出目录: {result.model_result.get('output_dir', '')}")
+                    self._log_safe(f"[{idx + 1}/{total}] ✓ {fname}  实体: {result.entity_count}")
+                    for key, path in result.output_paths.items():
+                        self._log_safe(f"    {key}: {path}")
                     if idx == 0:
-                        self._last_output_dir = result.model_result.get("output_dir", "") if result.model_result else ""
-                        self._last_step_path = ""
+                        self._last_output_dir = str(
+                            Path(result.output_paths.get("model_step", "")).parent
+                            if result.output_paths else ""
+                        )
+                        self._last_step_path = result.output_paths.get("model_step", "")
                 else:
                     status = "✗"
                     self._log_safe(f"[{idx + 1}/{total}] ✗ {fname}: {result.error_message or '未知错误'}")

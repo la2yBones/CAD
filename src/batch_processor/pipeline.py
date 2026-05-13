@@ -1,202 +1,238 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-批量处理流水线
-
-提供从文件发现到模型生成的端到端接口。
-支持 CLI 入口和编程式调用。
+CAD处理管道
+提供高级接口，支持单文件和批量处理
 """
 
-import logging
-import os
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-from ..utils.config import load_config
-from ..utils.result import Result
-from .file_manager import FileManager
+from typing import List, Dict, Optional, Callable
+import logging
+from .file_manager import CADFileManager
 from .processor import CADProcessor, CADProcessResult
 
 logger = logging.getLogger(__name__)
 
 
-class BatchPipeline:
-    """端到端批量处理流水线。"""
+class CADPipeline:
+    """
+    CAD处理管道
+    提供标准化的处理接口，支持单文件和批量处理
+    """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self._config = config or load_config()
-        self._file_manager = FileManager()
-        self._processor = CADProcessor(self._config)
-
-    def process_directory(
-        self,
-        input_dir: str,
-        output_dir: Optional[str] = None,
-        extrude_height: float = 10.0,
-    ) -> Tuple[List[CADProcessResult], Dict[str, Any]]:
+    def __init__(self, config: Optional[Dict] = None,
+                 input_dir: Optional[str] = None,
+                 output_dir: Optional[str] = None):
         """
-        基础模式：批量处理目录中所有 CAD 文件。
+        初始化处理管道
 
         Args:
+            config: 配置字典
             input_dir: 输入目录
             output_dir: 输出目录
-            extrude_height: 默认拉伸高度（毫米）
-
-        Returns:
-            (处理结果列表, 汇总统计)
         """
-        output_dir = output_dir or self._config.get("generation", {}).get("output_dir", "output")
-        logger.info(f"开始批量处理: {input_dir} → {output_dir}")
+        self.config = config or {}
+        self.file_manager = CADFileManager(input_dir, output_dir)
+        self.processor = CADProcessor(config)
+        self._setup_logging()
 
-        scan_result = FileManager.scan_files(input_dir)
-        if scan_result.is_err():
-            logger.error(scan_result.error)
-            return [], {"error": scan_result.error}
+    def _setup_logging(self):
+        """设置日志配置"""
+        log_config = self.config.get('logging', {})
+        level = getattr(logging, log_config.get('level', 'INFO'))
+        logging.basicConfig(level=level)
 
-        files = scan_result.value
-        logger.info(f"发现 {len(files)} 个文件待处理")
+    def set_input_dir(self, input_dir: str):
+        """设置输入目录"""
+        self.file_manager.set_input_dir(input_dir)
 
-        results = []
-        for i, file_path in enumerate(files):
-            logger.info(f"[{i + 1}/{len(files)}] 处理: {file_path}")
-            result = self._processor.process_single_file(
-                str(file_path), extrude_height, output_dir
-            )
-            results.append(result)
+    def set_output_dir(self, output_dir: str):
+        """设置输出目录"""
+        self.file_manager.set_output_dir(output_dir)
 
-        summary = self._processor.generate_summary(results)
-        logger.info(
-            f"批量处理完成: {summary['successful']}/{summary['total_files']} 成功 "
-            f"({summary['success_rate']})"
-        )
-        return results, summary
+    def list_available_files(self, input_dir: Optional[str] = None) -> List[Dict]:
+        """列出可用的CAD文件"""
+        return self.file_manager.list_available_files(input_dir)
 
-    def process_file(
-        self,
-        file_path: str,
-        output_dir: Optional[str] = None,
-        extrude_height: float = 10.0,
-    ) -> CADProcessResult:
+    def process_file(self, filename: str, extrude_height: float = 10.0,
+                     enable_analysis: bool = True) -> CADProcessResult:
         """
-        基础模式：处理单个 CAD 文件。
+        处理单个文件（外部接口）
 
         Args:
-            file_path: CAD 文件路径
-            output_dir: 输出目录
-            extrude_height: 默认拉伸高度（毫米）
+            filename: 文件名或完整路径
+            extrude_height: 拉伸高度
+            enable_analysis: 是否启用AI分析
 
         Returns:
-            CADProcessResult: 处理结果
+            处理结果对象
         """
-        validate_result = FileManager.validate_file(file_path)
-        if validate_result.is_err():
-            r = CADProcessResult(file_path=file_path)
-            r.error_message = validate_result.error
-            return r
+        # 解析文件路径
+        file_path = self.file_manager.resolve_file_path(filename)
+        if not file_path:
+            result = CADProcessResult(success=False, input_file=filename)
+            result.error_message = f"找不到文件: {filename}"
+            logger.error(result.error_message)
+            return result
 
-        output_dir = output_dir or self._config.get("generation", {}).get("output_dir", "output")
-        return self._processor.process_single_file(file_path, extrude_height, output_dir)
+        # 验证文件
+        valid, error_msg = self.file_manager.validate_file(str(file_path))
+        if not valid:
+            result = CADProcessResult(success=False, input_file=str(file_path))
+            result.error_message = error_msg
+            logger.error(error_msg)
+            return result
 
-    def process_file_intelligent(
-        self,
-        file_path: str,
-        api_key: str,
-        output_dir: Optional[str] = None,
-        extrude_height: float = 10.0,
-    ) -> CADProcessResult:
-        """
-        智能模式：使用 AI 分析处理单个 CAD 文件。
+        # 创建输出结构
+        output_structure = self.file_manager.create_output_structure(str(file_path))
 
-        Args:
-            file_path: CAD 文件路径
-            api_key: AI 服务 API 密钥
-            output_dir: 输出目录
-            extrude_height: 默认拉伸高度（毫米）
-
-        Returns:
-            CADProcessResult: 处理结果
-        """
-        validate_result = FileManager.validate_file(file_path)
-        if validate_result.is_err():
-            r = CADProcessResult(file_path=file_path, mode="intelligent")
-            r.error_message = validate_result.error
-            return r
-
-        output_dir = output_dir or self._config.get("generation", {}).get("output_dir", "output")
-        return self._processor.process_with_intelligent_analysis(
-            file_path, api_key, extrude_height, output_dir
+        # 执行处理
+        return self.processor.process_single_file(
+            str(file_path),
+            output_structure,
+            extrude_height,
+            enable_analysis
         )
 
-    @classmethod
-    def run_complete_pipeline(
-        cls,
-        input_path: str,
-        output_dir: str = "output",
-        extrude_height: float = 10.0,
-        mode: str = "basic",
-        api_key: Optional[str] = None,
-        config_path: Optional[str] = None,
-    ) -> Result[Dict[str, Any]]:
+    def process_multiple_files(self, filenames: List[str],
+                               extrude_height: float = 10.0,
+                               enable_analysis: bool = True,
+                               progress_callback: Optional[Callable] = None) -> Dict[str, CADProcessResult]:
         """
-        便捷入口：执行完整的 解析→分析→生成 流水线。
+        批量处理多个文件（外部接口）
 
         Args:
-            input_path: 输入文件或目录路径
-            output_dir: 输出目录
-            extrude_height: 默认拉伸高度（毫米）
-            mode: 'basic' 或 'intelligent'
-            api_key: 智能模式所需的 AI API 密钥
-            config_path: 配置文件路径
+            filenames: 文件名列表
+            extrude_height: 拉伸高度
+            enable_analysis: 是否启用AI分析
+            progress_callback: 进度回调函数，接收(current, total, result)
 
         Returns:
-            Result[Dict]: Ok 时包含完整的流水线结果
+            处理结果字典 {文件名: 结果对象}
         """
-        start_time = time.time()
-        config = load_config(config_path)
+        results = {}
+        total = len(filenames)
 
-        if mode == "intelligent" and (not api_key or api_key == "your-deepseek-api-key-here"):
-            return Result.Err("智能模式需要有效的 API 密钥")
+        for idx, filename in enumerate(filenames):
+            logger.info(f"[{idx + 1}/{total}] 处理: {filename}")
+            result = self.process_file(filename, extrude_height, enable_analysis)
+            results[filename] = result
 
-        in_path = Path(input_path)
+            if progress_callback:
+                progress_callback(idx + 1, total, result)
 
-        if not in_path.exists():
-            return Result.Err(f"输入路径不存在: {input_path}")
+        return results
 
-        pipeline = cls(config)
+    def process_directory(self, input_dir: Optional[str] = None,
+                          extrude_height: float = 10.0,
+                          enable_analysis: bool = True,
+                          progress_callback: Optional[Callable] = None) -> Dict[str, CADProcessResult]:
+        """
+        处理整个目录中的所有CAD文件（外部接口）
 
-        if in_path.is_dir():
-            results, summary = pipeline.process_directory(
-                str(in_path), output_dir, extrude_height
-            )
-            if not results and "error" in summary:
-                return Result.Err(summary["error"])
-        else:
-            validate_result = FileManager.validate_file(input_path)
-            if validate_result.is_err():
-                return Result.Err(validate_result.error)
+        Args:
+            input_dir: 输入目录，可选
+            extrude_height: 拉伸高度
+            enable_analysis: 是否启用AI分析
+            progress_callback: 进度回调函数
 
-            if mode == "intelligent":
-                result = pipeline.process_file_intelligent(
-                    input_path, api_key or "", output_dir, extrude_height
-                )
-            else:
-                result = pipeline.process_file(input_path, output_dir, extrude_height)
-            results = [result]
-            summary = pipeline._processor.generate_summary(results)
+        Returns:
+            处理结果字典
+        """
+        files = self.list_available_files(input_dir)
+        if not files:
+            logger.warning("没有找到可处理的CAD文件")
+            return {}
 
-        elapsed = round(time.time() - start_time, 2)
+        filenames = [f['name'] for f in files]
 
-        return Result.Ok({
-            "success": summary.get("failed", 0) == 0,
-            "results": [
-                {
-                    "file_path": r.file_path,
-                    "success": r.success,
-                    "error": r.error_message,
-                    "model": r.model_result.get("model_path") if r.model_result else None,
-                    "time_seconds": r.processing_time_seconds,
-                }
-                for r in results
-            ],
-            "summary": summary,
-            "total_time_seconds": elapsed,
-        })
+        if input_dir:
+            self.set_input_dir(input_dir)
+
+        return self.process_multiple_files(
+            filenames,
+            extrude_height,
+            enable_analysis,
+            progress_callback
+        )
+
+    def get_summary(self, results: Dict[str, CADProcessResult]) -> Dict:
+        """
+        生成处理摘要
+
+        Args:
+            results: 处理结果字典
+
+        Returns:
+            摘要信息字典
+        """
+        total = len(results)
+        success_count = sum(1 for r in results.values() if r.success)
+        fail_count = total - success_count
+        total_entities = sum(r.entity_count for r in results.values())
+
+        return {
+            'total': total,
+            'success': success_count,
+            'failed': fail_count,
+            'total_entities': total_entities,
+            'details': {name: result.to_dict() for name, result in results.items()}
+        }
+
+    def process_file_intelligent(self, filename: str, extrude_height: float = 10.0) -> CADProcessResult:
+        """
+        使用智能分析处理单个文件（视图识别、尺寸提取、建模指令生成）
+
+        Args:
+            filename: 文件名或路径
+            extrude_height: 拉伸高度
+
+        Returns:
+            处理结果
+        """
+        # 解析文件路径
+        file_path = self.file_manager.resolve_file_path(filename)
+        if not file_path:
+            result = CADProcessResult(success=False, input_file=filename)
+            result.error_message = f"找不到文件: {filename}"
+            logger.error(result.error_message)
+            return result
+
+        # 验证文件
+        valid, error_msg = self.file_manager.validate_file(str(file_path))
+        if not valid:
+            result = CADProcessResult(success=False, input_file=str(file_path))
+            result.error_message = error_msg
+            logger.error(error_msg)
+            return result
+
+        # 创建输出结构
+        output_structure = self.file_manager.create_output_structure(str(file_path))
+
+        # 执行处理
+        return self.processor.process_with_intelligent_analysis(
+            str(file_path),
+            output_structure,
+            extrude_height
+        )
+
+    def print_summary(self, results: Dict[str, CADProcessResult]):
+        """打印处理摘要"""
+        summary = self.get_summary(results)
+        print("\n" + "=" * 60)
+        print("处理摘要")
+        print("=" * 60)
+        print(f"总数: {summary['total']}")
+        print(f"成功: {summary['success']}")
+        print(f"失败: {summary['failed']}")
+        print(f"总实体数: {summary['total_entities']}")
+        print("\n详细信息:")
+        for name, detail in summary['details'].items():
+            status = "✓ 成功" if detail['success'] else "✗ 失败"
+            extra_info = ""
+            if detail.get('has_intelligent_analysis'):
+                extra_info = " [智能分析]"
+            print(f"  {name}: {status}, 实体数: {detail['entity_count']}{extra_info}")
+            if not detail['success'] and detail.get('error_message'):
+                print(f"    错误: {detail['error_message']}")
+        print("=" * 60)

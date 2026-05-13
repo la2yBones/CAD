@@ -13,8 +13,8 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from src.utils import load_config, setup_logging, Result
-from src.batch_processor import BatchPipeline, CADProcessor, CADProcessResult, FileManager
+from src.utils import load_config, setup_logging
+from src.batch_processor import CADPipeline, CADProcessor
 
 
 logger = logging.getLogger(__name__)
@@ -30,48 +30,32 @@ def _run_intelligent_analysis_only(file_path, config, extrude_height, output_dir
         logger.error("未配置DeepSeek API Key，请在 config/config.yaml 中设置")
         return None
 
-    parser = CADParser(config)
-    parse_result = parser.parse(file_path)
-    if parse_result.is_err():
-        logger.error(f"解析失败: {parse_result.error}")
-        return None
-    geometry_data = parse_result.value
+    parser = CADParser(file_path, config.get("dxf_parser", {}))
+    geometry_data = parser.parse()
     entity_count = len(geometry_data.get("entities", []))
     logger.info(f"解析完成，提取到 {entity_count} 个实体")
 
-    cache_config = config.get("cache", {})
     analyzer = IntelligentEngineeringAnalyzer(
         api_key,
         config.get("api", {}).get("deepseek", {}),
         enable_cache=True,
-        cache_dir=cache_config.get("cache_dir"),
+        cache_dir=config.get("cache_dir", ".cache/analysis"),
         cache_ttl=config.get("cache_ttl", 3600 * 24 * 7)
     )
     analysis_result = analyzer.analyze_full(
         geometry_data, extrude_height, file_path=str(file_path)
     )
-    if analysis_result.is_err():
-        logger.error(f"智能分析失败: {analysis_result.error}")
-        return None
-
-    analysis_data = analysis_result.value
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     base_name = Path(file_path).stem
-
-    script = analysis_data.get("freecad_script", "")
-    if script:
-        script_path = output_path / f"{base_name}_freecad.py"
-        script_path.write_text(script, encoding="utf-8")
-        logger.info(f"  FreeCAD脚本: {script_path}")
-
-    import json
-    json_path = output_path / f"{base_name}_full.json"
-    json_path.write_text(json.dumps(analysis_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    analyzer.save_results(analysis_result, str(output_path), base_name)
 
     logger.info("智能分析结果已保存:")
-    logger.info(f"  完整数据: {json_path}")
+    logger.info(f"  分析报告: {output_path / f'{base_name}_report.txt'}")
+    logger.info(f"  完整数据: {output_path / f'{base_name}_full.json'}")
+    if analysis_result.get("modeling_instructions", {}).get("freecad_script"):
+        logger.info(f"  FreeCAD脚本: {output_path / f'{base_name}_freecad.py'}")
 
     return {"entity_count": entity_count, "output_dir": str(output_path)}
 
@@ -92,7 +76,7 @@ def main():
   python cad_cli.py --file sample.dxf --height 10 --analysis
   python cad_cli.py --file sample.dxf --intelligent
   python cad_cli.py --file sample.dxf --analysis-only
-  python cad_cli.py --dir examples/cad_files --out examples/output
+  python cad_cli.py --dir examples/cad_files --out my_output
   python cad_cli.py --list
         """
     )
@@ -130,18 +114,19 @@ def main():
     logger.info("=" * 60)
 
     if args.list:
-        scan_result = FileManager.scan_files(args.input_dir)
-        if scan_result.is_err():
-            logger.info(f"目录扫描失败: {scan_result.error}")
+        pipeline = CADPipeline(
+            config=config,
+            input_dir=args.input_dir,
+            output_dir=args.output_dir
+        )
+        files = pipeline.list_available_files()
+        if not files:
+            logger.info("未找到CAD文件")
         else:
-            files = scan_result.value
             logger.info(f"找到 {len(files)} 个CAD文件:")
             for f in files:
-                try:
-                    size_kb = f.stat().st_size / 1024
-                    logger.info(f"  - {f.name} ({size_kb:.1f} KB)")
-                except OSError:
-                    logger.info(f"  - {f.name}")
+                size_kb = f["size"] / 1024
+                logger.info(f"  - {f['name']} ({size_kb:.1f} KB)")
         return
 
     if args.file:
@@ -160,7 +145,7 @@ def _process_single_file(args, config):
             args.file, config, args.height, args.output_dir
         )
         if result:
-            logger.info(f"\n√ 分析完成! 实体数: {result['entity_count']}")
+            logger.info(f"\n✓ 分析完成! 实体数: {result['entity_count']}")
             logger.info(f"  输出目录: {result['output_dir']}")
         else:
             sys.exit(1)
@@ -171,36 +156,37 @@ def _process_single_file(args, config):
     logger.info(f"模式: {mode_label}")
     logger.info(f"拉伸高度: {args.height}mm")
 
-    pipeline = BatchPipeline(config)
+    pipeline = CADPipeline(
+        config=config,
+        input_dir=args.input_dir,
+        output_dir=args.output_dir
+    )
 
     if args.intelligent:
-        api_key = config.get("api", {}).get("deepseek", {}).get("api_key", "")
         result = pipeline.process_file_intelligent(
             args.file,
-            api_key,
-            output_dir=args.output_dir,
             extrude_height=args.height
         )
     elif args.analysis:
         result = pipeline.process_file(
             args.file,
-            output_dir=args.output_dir,
-            extrude_height=args.height
+            extrude_height=args.height,
+            enable_analysis=True
         )
     else:
         result = pipeline.process_file(
             args.file,
-            output_dir=args.output_dir,
-            extrude_height=args.height
+            extrude_height=args.height,
+            enable_analysis=False
         )
 
     if result.success:
-        logger.info("\n√ 处理成功!")
-        logger.info(f"  处理时间: {result.processing_time_seconds:.1f}秒")
-        if result.model_result:
-            logger.info(f"  输出目录: {result.model_result.get('output_dir', '')}")
+        logger.info("\n✓ 处理成功!")
+        logger.info(f"  实体数: {result.entity_count}")
+        for key, path in result.output_paths.items():
+            logger.info(f"  {key}: {path}")
     else:
-        logger.error(f"\n× 处理失败: {result.error_message}")
+        logger.error(f"\n✗ 处理失败: {result.error_message}")
         sys.exit(1)
 
 
@@ -208,20 +194,24 @@ def _process_directory(args, config):
     logger.info(f"处理目录: {args.dir}")
     logger.info(f"拉伸高度: {args.height}mm")
 
-    pipeline = BatchPipeline(config)
-
-    results, summary = pipeline.process_directory(
-        input_dir=args.dir,
-        output_dir=args.output_dir,
-        extrude_height=args.height
+    pipeline = CADPipeline(
+        config=config,
+        input_dir=args.input_dir,
+        output_dir=args.output_dir
     )
 
-    for r in results:
-        status = "√" if r.success else "×"
-        logger.info(f"  {status} {Path(r.file_path).name}")
+    def progress(current, total, result):
+        logger.info(f"[{current}/{total}] {'✓' if result.success else '✗'} {Path(result.input_file).name}")
 
-    if summary.get("error"):
-        logger.error(f"批量处理失败: {summary['error']}")
-        sys.exit(1)
-    else:
-        logger.info(f"\n批量处理完成: {summary['successful']}/{summary['total_files']} 成功 ({summary['success_rate']})")
+    results = pipeline.process_directory(
+        input_dir=args.dir,
+        extrude_height=args.height,
+        enable_analysis=args.analysis,
+        progress_callback=progress
+    )
+
+    pipeline.print_summary(results)
+
+
+if __name__ == "__main__":
+    main()

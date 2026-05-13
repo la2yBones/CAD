@@ -1,140 +1,252 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-AI 建模脚本执行器
-
-在隔离上下文中运行 AI 生成的 FreeCAD Python 建模脚本。
-支持两种模式：direct（当前 Python）和 bridge（子进程）。
+AI生成的FreeCAD脚本执行器
+支持 direct 和 subprocess 双模式执行
 """
-
-import json
-import os
 import sys
-import traceback
+import os
+import tempfile
+import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional, Dict, Any
 
-from ..utils.result import Result
+logger = logging.getLogger(__name__)
 
 
 class AIScriptRunner:
     """
-    AI 脚本执行器。
-
-    优先使用 direct 模式，若当前环境非 FreeCAD Python 则通过 FreeCADBridge 子进程执行。
+    AI脚本执行器 - 运行AI生成的FreeCAD Python脚本
     """
 
-    SCRIPT_WRAPPER_TEMPLATE = """
-import sys
-import json
-import traceback
+    def __init__(self, config: Optional[Dict] = None):
+        self.config = config or {}
+        self.bridge = None
+        self.App = None
+        self.Part = None
+        self._init_freecad()
 
-_output = {{}}
-_stderr = ""
+    def _init_freecad(self):
+        from .freecad_bridge import FreeCADBridge
+        self.bridge = FreeCADBridge(self.config)
+        if self.bridge.mode == "direct":
+            self.App = self.bridge.App
+            self.Part = self.bridge.Part
+            logger.info("FreeCAD environment ready (direct mode)")
+        elif self.bridge.mode == "subprocess":
+            self.App = None
+            self.Part = None
+            logger.info("FreeCAD will be called via subprocess")
+        else:
+            self.App = None
+            self.Part = None
+            logger.warning("FreeCAD not available")
 
-try:
-{script_body}
-    _output['success'] = True
-except Exception as e:
-    _output['success'] = False
-    _output['error'] = str(e)
-    _stderr = traceback.format_exc()
-
-print("__JSON_OUTPUT_START__")
-print(json.dumps(_output, default=str))
-print("__JSON_OUTPUT_END__")
-if _stderr:
-    print("__STDERR_START__")
-    print(_stderr, file=sys.stderr)
-    print("__STDERR_END__", file=sys.stderr)
-"""
-
-    def __init__(self, bridge=None):
-        self._bridge = bridge
-
-    def run_script(self, script: str, timeout: int = 120) -> Result[Dict[str, Any]]:
+    def run_script(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         """
-        执行 AI 生成的建模脚本。
+        运行AI生成的FreeCAD脚本（双模式自适应）
 
         Args:
-            script: FreeCAD Python 脚本内容
-            timeout: 超时时间（秒）
+            script_content: Python脚本内容
+            output_path: 可选的STEP输出路径
 
         Returns:
-            Result[Dict]: Ok 时包含执行结果，Err 时包含错误信息
+            包含执行结果的字典
+        """
+        if not self.bridge or not self.bridge.freecad_available:
+            return {"success": False, "error": "FreeCAD not available"}
+
+        if self.bridge.mode == "subprocess":
+            return self._run_via_bridge(script_content, output_path)
+
+        return self._run_direct(script_content, output_path)
+
+    def _run_via_bridge(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
+        logger.info("executing AI script via subprocess bridge")
+        output_dir = str(Path(output_path).parent) if output_path else tempfile.mkdtemp(prefix="ai_model_")
+
+        result = self.bridge.execute_script(script_content, output_dir)
+
+        if result.get("success"):
+            return {
+                "success": True,
+                "step_path": result.get("step_path"),
+                "fcstd_path": result.get("fcstd_path"),
+                "sandbox_mode": True,
+            }
+
+        return {
+            "success": False,
+            "error": result.get("error", "unknown subprocess error"),
+            "stdout": result.get("stdout", ""),
+        }
+
+    def _run_direct(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
+        logger.info("executing AI script (direct mode)")
+
+        try:
+            # 创建新文档
+            doc = self.App.newDocument("AI_Model")
+            
+            # 准备脚本 - 插入明确的导入语句
+            modified_script = """
+import FreeCAD as App
+import Part
+
+""" + script_content
+
+            # 准备执行环境
+            local_vars = {
+                "App": self.App,
+                "Part": self.Part,
+                "FreeCAD": self.App,
+                "doc": doc
+            }
+
+            # 执行脚本
+            logger.info("开始执行AI生成的FreeCAD脚本")
+            
+            # 在全局命名空间执行，避免列表解析的问题
+            global_vars = globals().copy()
+            global_vars.update({
+                "App": self.App,
+                "Part": self.Part,
+                "FreeCAD": self.App,
+                "doc": doc
+            })
+            
+            exec(modified_script, global_vars, {})
+            doc.recompute()
+            logger.info("脚本执行完成")
+
+            # 查找最终的形状对象
+            result_shape = None
+            final_obj = None
+            
+            # 从执行后的全局变量获取文档（因为脚本可能自己新建了文档）
+            if "doc" in global_vars and hasattr(global_vars["doc"], "Objects"):
+                doc = global_vars["doc"]
+            
+            # 也检查ActiveDocument
+            if hasattr(self.App, "ActiveDocument") and self.App.ActiveDocument:
+                doc = self.App.ActiveDocument
+
+            logger.info(f"文档对象数: {len(doc.Objects)}")
+            
+            # 先检查全局变量里的solid/final_shape等
+            possible_names = ["solid", "final_shape", "result_shape", "body", "part", "extrusion"]
+            for name in possible_names:
+                if name in global_vars:
+                    val = global_vars[name]
+                    if hasattr(val, "isValid") and val.isValid() and hasattr(val, "Volume"):
+                        result_shape = val
+                        logger.info(f"从全局变量找到形状: {name}")
+                        break
+
+            # 如果没找到，再检查文档对象
+            if not result_shape:
+                valid_shapes = []
+                for obj in doc.Objects:
+                    if hasattr(obj, "Shape") and obj.Shape.isValid():
+                        try:
+                            if obj.Shape.Volume > 0:
+                                valid_shapes.append(obj)
+                                logger.debug(f"有效对象: {obj.Name} ({obj.Shape.Volume:.2f} mm^3)")
+                        except:
+                            pass
+
+                if valid_shapes:
+                    # 优先找名称匹配的
+                    for obj in valid_shapes:
+                        obj_name = obj.Name.lower() if hasattr(obj, "Name") else ""
+                        obj_label = obj.Label.lower() if hasattr(obj, "Label") else ""
+                        if any(s in obj_name or s in obj_label for s in ["final", "model", "body", "part", "base", "plate"]):
+                            final_obj = obj
+                            result_shape = obj.Shape
+                            logger.info(f"找到匹配名称的对象: {obj.Name}")
+                            break
+                    
+                    # 如果没找到，取最大体积的
+                    if not result_shape:
+                        valid_shapes.sort(key=lambda o: o.Shape.Volume, reverse=True)
+                        final_obj = valid_shapes[0]
+                        result_shape = final_obj.Shape
+                        logger.info(f"取最大体积对象: {final_obj.Name} ({final_obj.Shape.Volume:.2f} mm^3)")
+
+            result = {
+                "success": True,
+                "document": doc,
+                "shape": result_shape,
+                "object": final_obj
+            }
+
+            # 导出STEP
+            if output_path:
+                output_dir = Path(output_path).parent
+                output_dir.mkdir(parents=True, exist_ok=True)
+                fcstd_path = str(Path(output_path).with_suffix(".FCStd"))
+                
+                try:
+                    # 先保存FCStd，总是有效的
+                    doc.saveAs(fcstd_path)
+                    logger.info(f"FCStd已保存: {fcstd_path}")
+                    result["fcstd_path"] = fcstd_path
+                    
+                    # 然后尝试导出STEP
+                    if result_shape:
+                        try:
+                            result_shape.exportStep(output_path)
+                            if Path(output_path).exists():
+                                size = Path(output_path).stat().st_size
+                                logger.info(f"STEP已导出: {output_path} ({size} bytes)")
+                                result["step_path"] = output_path
+                        except Exception as e1:
+                            logger.warning(f"直接导出STEP失败: {e1}")
+                            # 尝试通过文档对象导出
+                            if final_obj:
+                                try:
+                                    final_obj.Shape.exportStep(output_path)
+                                    if Path(output_path).exists():
+                                        size = Path(output_path).stat().st_size
+                                        logger.info(f"通过对象导出STEP成功: {output_path} ({size} bytes)")
+                                        result["step_path"] = output_path
+                                except Exception as e2:
+                                    logger.warning(f"通过对象导出也失败: {e2}")
+                    else:
+                        logger.warning("没有找到形状对象，仅保存FCStd")
+                        
+                except Exception as e:
+                    logger.error(f"保存文件出错: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
+            return result
+
+        except Exception as e:
+            logger.error(f"执行AI脚本失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "success": False,
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+
+    def run_script_from_file(self, script_file: str, output_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        从文件运行脚本
+
+        Args:
+            script_file: .py脚本文件路径
+            output_path: 可选的STEP输出路径
+
+        Returns:
+            执行结果
         """
         try:
-            if self._uses_direct_mode():
-                return self._run_direct(script)
-            elif self._bridge is not None:
-                return self._run_via_bridge(script, timeout)
-            else:
-                return Result.Err("无可用的 FreeCAD 执行环境：既非 direct 模式，也未配置 FreeCADBridge。")
+            with open(script_file, 'r', encoding='utf-8') as f:
+                script_content = f.read()
+            return self.run_script(script_content, output_path)
         except Exception as e:
-            return Result.Err(f"脚本执行异常: {str(e)}\n{traceback.format_exc()}")
-
-    def _uses_direct_mode(self) -> bool:
-        """检测当前是否在 FreeCAD Python 环境中运行。"""
-        try:
-            import FreeCAD  # type: ignore[import-untyped]
-            return True
-        except ImportError:
-            return False
-
-    def _run_direct(self, script: str) -> Result[Dict[str, Any]]:
-        """在 FreeCAD Python 环境中直接执行脚本。"""
-        try:
-            local_ns: Dict[str, Any] = {}
-            exec(script, {"__builtins__": __builtins__}, local_ns)  # nosec
-
-            result: Dict[str, Any] = {}
-            for key, value in local_ns.items():
-                if not key.startswith("__"):
-                    result[key] = value
-
-            return Result.Ok(result)
-        except Exception as e:
-            return Result.Err(f"direct 模式脚本执行失败: {str(e)}\n{traceback.format_exc()}")
-
-    def _run_via_bridge(self, script: str, timeout: int) -> Result[Dict[str, Any]]:
-        """通过 FreeCADBridge 子进程执行脚本。"""
-        wrapped_script = self._wrap_script(script)
-
-        bridge_result = self._bridge.execute_script(wrapped_script, timeout)
-        if bridge_result.is_err():
-            return Result.Err(f"bridge 模式执行失败: {bridge_result.error}")
-
-        exec_output = bridge_result.value
-        stdout = exec_output.get("output", "")
-        stderr = exec_output.get("stderr", "")
-        returncode = exec_output.get("returncode", -1)
-
-        if returncode != 0:
-            return Result.Err(
-                f"FreeCAD 脚本返回非零退出码 ({returncode})。\n"
-                f"stdout: {stdout[:500]}\n"
-                f"stderr: {stderr[:500]}"
-            )
-
-        return self._parse_bridge_output(stdout)
-
-    def _wrap_script(self, script: str) -> str:
-        """将脚本包装为带输出捕获的子进程可执行格式。"""
-        indented = "\n".join(f"    {line}" for line in script.split("\n"))
-        return self.SCRIPT_WRAPPER_TEMPLATE.format(script_body=indented)
-
-    def _parse_bridge_output(self, stdout: str) -> Result[Dict[str, Any]]:
-        """解析子进程 stdout 中的 JSON 输出。"""
-        start_marker = "__JSON_OUTPUT_START__"
-        end_marker = "__JSON_OUTPUT_END__"
-
-        try:
-            start_idx = stdout.index(start_marker) + len(start_marker)
-            end_idx = stdout.index(end_marker)
-            json_str = stdout[start_idx:end_idx].strip()
-            data = json.loads(json_str)
-
-            if data.get("success"):
-                return Result.Ok(data)
-            else:
-                return Result.Err(data.get("error", "脚本执行失败，未提供详细错误信息"))
-        except (ValueError, json.JSONDecodeError) as e:
-            return Result.Err(f"解析 bridge 输出失败: {str(e)}")
+            logger.error(f"读取脚本文件失败: {e}")
+            return {"success": False, "error": str(e)}

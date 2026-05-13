@@ -1,7 +1,3 @@
-"""
-CAD 解析模块
-支持 DXF/DWG 文件的解析与图元提取
-"""
-from .parser import CADParser
+from .parser import CADParser, DXFParser
 
-__all__ = ["CADParser"]
+__all__ = ["CADParser", "DXFParser"]

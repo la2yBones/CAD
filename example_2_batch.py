@@ -12,17 +12,23 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from src.utils import load_config, setup_logging
-from src.batch_processor import BatchPipeline, FileManager
+from src.batch_processor import CADPipeline
 
 
-def progress_callback(current, total, result):
-    print(f"进度: [{current}/{total}] {'✓' if result.success else '✗'} {Path(result.file_path).name}")
+def progress_callback(current: int, total: int, result):
+    """进度回调函数"""
+    print(f"进度: [{current}/{total}] {'✓' if result.success else '✗'} {Path(result.input_file).name}")
 
 
 def main():
-    INPUT_DIR = "examples/cad_files"
-    OUTPUT_DIR = "examples/output"
-    EXTRUDE_HEIGHT = 10.0
+    # ==========================================
+    # 配置区域
+    # ==========================================
+    INPUT_DIR = "examples/cad_files"   # 图纸文件夹
+    OUTPUT_DIR = "examples/output"     # 输出文件夹
+    EXTRUDE_HEIGHT = 10.0              # 拉伸高度
+    ENABLE_ANALYSIS = False            # 是否启用AI分析
+    # ==========================================
 
     logger = setup_logging(level="INFO")
     config = load_config()
@@ -31,32 +37,34 @@ def main():
     logger.info("CAD图纸批量处理 - 多文件示例")
     logger.info("=" * 60)
 
-    pipeline = BatchPipeline(config)
+    # 创建处理管道
+    pipeline = CADPipeline(
+        config=config,
+        input_dir=INPUT_DIR,
+        output_dir=OUTPUT_DIR
+    )
 
-    scan_result = FileManager.scan_files(INPUT_DIR)
-    if scan_result.is_err():
-        logger.warning(f"扫描失败: {scan_result.error}")
+    # 列出可用文件
+    files = pipeline.list_available_files()
+    if not files:
+        logger.warning("未找到CAD文件!")
         return
 
-    files = scan_result.value
     logger.info(f"找到 {len(files)} 个CAD文件:")
     for f in files:
-        logger.info(f"  - {f.name}")
+        logger.info(f"  - {f['name']}")
 
+    # 批量处理
     logger.info("\n开始批量处理...")
-    results, summary = pipeline.process_directory(
+    results = pipeline.process_directory(
         input_dir=INPUT_DIR,
-        output_dir=OUTPUT_DIR,
-        extrude_height=EXTRUDE_HEIGHT
+        extrude_height=EXTRUDE_HEIGHT,
+        enable_analysis=ENABLE_ANALYSIS,
+        progress_callback=progress_callback
     )
 
-    for i, r in enumerate(results):
-        progress_callback(i + 1, len(results), r)
-
-    logger.info(
-        f"\n批量处理完成: {summary['successful']}/{summary['total_files']} 成功 "
-        f"({summary['success_rate']})"
-    )
+    # 打印摘要
+    pipeline.print_summary(results)
 
 
 if __name__ == "__main__":

@@ -12,14 +12,19 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from src.utils import load_config, setup_logging
-from src.batch_processor import BatchPipeline, FileManager
+from src.batch_processor import CADPipeline
 
 
 def main():
-    CAD_FILENAME = "sample.dxf"
-    EXTRUDE_HEIGHT = 10.0
-    INPUT_DIR = "examples/cad_files"
-    OUTPUT_DIR = "examples/output"
+    # ==========================================
+    # 配置区域 - 修改这里的参数即可
+    # ==========================================
+    CAD_FILENAME = "sample.dxf"  # 你的图纸文件名
+    EXTRUDE_HEIGHT = 10.0        # 拉伸高度(mm)
+    INPUT_DIR = "examples/cad_files"  # 图纸所在目录
+    OUTPUT_DIR = "examples/output"    # 输出目录
+    ENABLE_ANALYSIS = False       # 是否启用AI分析
+    # ==========================================
 
     logger = setup_logging(level="INFO")
     config = load_config()
@@ -28,29 +33,34 @@ def main():
     logger.info("CAD图纸批量处理 - 单文件示例")
     logger.info("=" * 60)
 
-    pipeline = BatchPipeline(config)
-
-    logger.info("\n可用的CAD文件:")
-    scan_result = FileManager.scan_files(INPUT_DIR)
-    if scan_result.is_err():
-        logger.warning(f"扫描失败: {scan_result.error}")
-        return
-    for f in scan_result.value:
-        logger.info(f"  - {f.name}")
-
-    file_path = str(Path(INPUT_DIR) / CAD_FILENAME)
-    logger.info(f"\n开始处理: {CAD_FILENAME}")
-    result = pipeline.process_file(
-        file_path,
-        output_dir=OUTPUT_DIR,
-        extrude_height=EXTRUDE_HEIGHT
+    # 创建处理管道
+    pipeline = CADPipeline(
+        config=config,
+        input_dir=INPUT_DIR,
+        output_dir=OUTPUT_DIR
     )
 
+    # 先列出可用的文件
+    logger.info("\n可用的CAD文件:")
+    files = pipeline.list_available_files()
+    for f in files:
+        logger.info(f"  - {f['name']}")
+
+    # 处理指定文件
+    logger.info(f"\n开始处理: {CAD_FILENAME}")
+    result = pipeline.process_file(
+        CAD_FILENAME,
+        extrude_height=EXTRUDE_HEIGHT,
+        enable_analysis=ENABLE_ANALYSIS
+    )
+
+    # 显示结果
     if result.success:
         logger.info("\n✓ 处理成功!")
-        logger.info(f"  处理时间: {result.processing_time_seconds:.1f}秒")
-        if result.model_result:
-            logger.info(f"  输出目录: {result.model_result.get('output_dir', '')}")
+        logger.info(f"  提取实体数: {result.entity_count}")
+        logger.info(f"  输出文件:")
+        for key, path in result.output_paths.items():
+            logger.info(f"    {key}: {path}")
     else:
         logger.error(f"\n✗ 处理失败: {result.error_message}")
 

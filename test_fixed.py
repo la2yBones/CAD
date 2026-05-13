@@ -10,14 +10,16 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from src.utils import setup_logging, load_config
-from src.batch_processor import CADProcessor, FileManager
+from src.batch_processor import CADProcessor, CADFileManager
 import logging
 
 
 def test_fixed_flow():
+    """测试修复后的流程"""
     logger = setup_logging(level="INFO")
     config = load_config()
 
+    # 找到图纸
     cad_dir = project_root / "examples/cad_files"
     cad_file = None
     for name in ["底座二视图.dxf", "底座二视图.DXF"]:
@@ -34,32 +36,33 @@ def test_fixed_flow():
     logger.info(f"测试: {cad_file.name}")
     logger.info("=" * 60)
 
-    api_key = config.get("api", {}).get("deepseek", {}).get("api_key", "")
-    if not api_key or api_key == "your-deepseek-api-key-here":
-        logger.error("未配置有效的 API 密钥，请在 config/config.yaml 中设置")
-        return
+    # 准备输出
+    output_dir = project_root / "examples/output/test_fixed_flow"
+    file_manager = CADFileManager(str(output_dir))
+    output_structure = file_manager.create_output_structure(str(cad_file))
 
-    output_dir = str(project_root / "examples/output/test_fixed_flow")
-    output_result = FileManager.build_output_structure(str(cad_file), output_dir)
-    if output_result.is_err():
-        logger.error(f"构建输出结构失败: {output_result.error}")
-        return
-
+    # 创建处理器
     processor = CADProcessor(config)
 
+    # 处理
     logger.info("\n开始处理...")
     result = processor.process_with_intelligent_analysis(
         str(cad_file),
-        api_key,
-        extrude_height=10.0,
-        output_dir=output_dir
+        output_structure,
+        extrude_height=10.0
     )
 
+    # 输出结果
     logger.info("\n" + "=" * 60)
     if result.success:
         logger.info("✓ 处理成功！")
-        if result.model_result:
-            logger.info(f"  输出目录: {result.model_result.get('output_dir', '')}")
+        for key, path in result.output_paths.items():
+            p = Path(path)
+            if p.exists():
+                size = p.stat().st_size
+                logger.info(f"  {key}: {path} ({size} bytes)")
+            else:
+                logger.warning(f"  {key}: {path} (不存在)")
     else:
         logger.error("✗ 处理失败")
         if result.error_message:

@@ -18,79 +18,79 @@ logger = setup_logging(level="INFO")
 
 
 def test_file_manager():
+    """测试文件管理器"""
     logger.info("\n" + "="*50)
     logger.info("测试1: 文件管理器")
     logger.info("="*50)
 
-    from src.batch_processor import FileManager
+    from src.batch_processor import CADFileManager
 
-    result = FileManager.scan_files("examples/cad_files")
-    if result.is_err():
-        logger.error(f"扫描失败: {result.error}")
-        return False
+    fm = CADFileManager(
+        input_dir="examples/cad_files",
+        output_dir="examples/output/test"
+    )
 
-    files = result.value
+    # 测试列出文件
+    files = fm.list_available_files()
     logger.info(f"找到 {len(files)} 个CAD文件")
     for f in files[:3]:
-        logger.info(f"  - {f.name}")
+        logger.info(f"  - {f['name']}")
 
+    # 测试文件验证
     if files:
-        validate_result = FileManager.validate_file(str(files[0]))
-        if validate_result.is_ok():
-            logger.info(f"文件验证通过: {validate_result.value.name}")
-        else:
-            logger.warning(f"文件验证失败: {validate_result.error}")
+        test_file = files[0]['path']
+        valid, msg = fm.validate_file(test_file)
+        logger.info(f"文件验证: {valid} - {msg}")
 
+    # 测试输出路径生成
     if files:
-        build_result = FileManager.build_output_structure(
-            str(files[0]), "examples/output/test"
-        )
-        if build_result.is_ok():
-            logger.info(f"输出结构:")
-            for key, path in build_result.value.items():
-                logger.info(f"  {key}: {path}")
-        else:
-            logger.error(f"构建输出结构失败: {build_result.error}")
+        structure = fm.create_output_structure(files[0]['path'])
+        logger.info(f"输出结构:")
+        for key, path in structure.items():
+            logger.info(f"  {key}: {path}")
 
     logger.info("✓ 文件管理器测试完成")
     return True
 
 
 def test_processor():
+    """测试处理器（模拟）"""
     logger.info("\n" + "="*50)
     logger.info("测试2: 处理器接口")
     logger.info("="*50)
 
-    from src.batch_processor import CADProcessResult
+    from src.batch_processor.processor import CADProcessResult
 
-    result = CADProcessResult(file_path="test.dxf")
-    result.success = True
-    result.model_result = {"output_dir": "test_output", "model_path": "test.step"}
+    # 测试结果对象
+    result = CADProcessResult(success=True, input_file="test.dxf")
+    result.entity_count = 10
+    result.output_paths['model_step'] = "test.step"
 
     logger.info(f"结果对象: success={result.success}")
-    logger.info(f"file_path: {result.file_path}")
-    logger.info(f"model_result: {result.model_result}")
+    logger.info(f"输出字典: {result.to_dict()}")
 
     logger.info("✓ 处理器接口测试完成")
     return True
 
 
 def test_pipeline():
+    """测试处理管道"""
     logger.info("\n" + "="*50)
     logger.info("测试3: 处理管道")
     logger.info("="*50)
 
-    from src.batch_processor import BatchPipeline
+    from src.batch_processor import CADPipeline
     config = load_config()
 
-    pipeline = BatchPipeline(config)
+    pipeline = CADPipeline(
+        config=config,
+        input_dir="examples/cad_files",
+        output_dir="examples/output/test"
+    )
 
-    from src.batch_processor import FileManager
-    scan_result = FileManager.scan_files("examples/cad_files")
-    if scan_result.is_err():
-        logger.warning(f"扫描目录失败: {scan_result.error}")
-    else:
-        logger.info(f"管道找到 {len(scan_result.value)} 个文件")
+    # 测试列出文件
+    files = pipeline.list_available_files()
+    logger.info(f"管道找到 {len(files)} 个文件")
 
     logger.info("✓ 处理管道接口测试完成")
     return True

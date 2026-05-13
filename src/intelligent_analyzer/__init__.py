@@ -1,15 +1,16 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-智能分析模块
-提供 AI 驱动的工程视图分析、尺寸提取与建模指令生成
+智能工程图纸分析模块
 """
-from .view_analyzer import ViewAnalyzer
+from .view_analyzer import EngineeringViewAnalyzer
 from .dimension_extractor import DimensionExtractor
-from .modeling_generator import ModelingGenerator
+from .modeling_generator import FreeCADInstructionGenerator
 from .pipeline import IntelligentEngineeringAnalyzer
 
 __all__ = [
-    "ViewAnalyzer",
+    "EngineeringViewAnalyzer",
     "DimensionExtractor",
-    "ModelingGenerator",
-    "IntelligentEngineeringAnalyzer",
+    "FreeCADInstructionGenerator",
+    "IntelligentEngineeringAnalyzer"
 ]

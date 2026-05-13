@@ -1,67 +1,64 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 工程视图分析器
 识别二视图、三视图等工程视图结构
 支持 DBSCAN 聚类自动识别 + 中国画法几何投影对齐验证
 """
-import logging
+import json
 import math
+import logging
+from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
-
-from ..utils.result import Result
 
 logger = logging.getLogger(__name__)
 
 
-class ViewAnalyzer:
+class EngineeringViewAnalyzer:
     """
-    工程视图分析器。
-    优先级: DBSCAN 聚类 > 自适应间隙检测 > 硬编码坐标区域回退。
-    验证规则: 长对正 / 高平齐 / 宽相等（中国画法几何投影原理）。
+    工程视图分析器
+    优先级: DBSCAN 聚类 > 硬编码坐标区域回退
+    验证规则: 长对正 / 高平齐 / 宽相等 (中国画法几何投影原理)
     """
 
+    # 旧版硬编码区域，作为聚类失败时的回退
     VIEW_ZONES = {
         "main": {"x": (0, 150), "y": (50, 150)},
         "top": {"x": (0, 150), "y": (150, 250)},
         "left": {"x": (-100, 0), "y": (50, 150)},
         "right": {"x": (150, 250), "y": (50, 150)},
-        "bottom": {"x": (0, 150), "y": (-50, 50)},
+        "bottom": {"x": (0, 150), "y": (-50, 50)}
     }
 
+    # DBSCAN 参数
     DBSCAN_EPS_AUTO_FRACTION = 0.22
     DBSCAN_MIN_SAMPLES = 3
     CLUSTER_MERGE_OVERLAP_THRESHOLD = 0.25
 
-    def __init__(self, api_key: str = "", api_config: Optional[Dict[str, Any]] = None):
-        self._api_key = api_key
-        self._api_config = api_config or {}
+    def __init__(self, config: Optional[Dict] = None):
+        self.config = config or {}
         self._dbscan_available = self._check_dbscan()
 
     def _check_dbscan(self) -> bool:
         try:
-            from sklearn.cluster import DBSCAN  # noqa: F401
+            from sklearn.cluster import DBSCAN
             return True
         except ImportError:
-            logger.info("scikit-learn 不可用，回退到基于坐标区域的视图检测")
+            logger.info("scikit-learn not available, using zone-based view detection")
             return False
 
-    def analyze_views(
-        self, entities: List[Dict[str, Any]], layers: Optional[List[Dict[str, Any]]] = None
-    ) -> Result[Dict[str, Any]]:
+    def analyze_views(self, geometry_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        分析工程图纸视图结构。
-
-        Args:
-            entities: 几何实体列表
-            layers: 图层信息（可选）
-
-        Returns:
-            Result[Dict]: Ok 时包含 views/relationships/layers 等信息
+        分析工程图纸视图结构
+          1. 自适应间隙检测分区 (首选)
+          2. DBSCAN 聚类 (sklearn 可用时，作为补充)
+          3. 硬编码坐标区域 (最终回退)
+          4. 投影对齐验证
         """
         logger.info("开始分析工程视图结构")
+        entities = geometry_data.get("entities", [])
 
-        layers = layers or []
-        layer_map = self._group_by_layer(entities)
+        layers = self._group_by_layer(entities)
 
         structural_entities = [
             e for e in entities
@@ -78,8 +75,7 @@ class ViewAnalyzer:
 
         if len(centers) < self.DBSCAN_MIN_SAMPLES:
             logger.info("实体数太少，回退到硬编码区域识别")
-            data = self._analyze_fallback(entities, layer_map)
-            return Result.Ok(data)
+            return self._analyze_fallback(entities, layers)
 
         view_groups = self._adaptive_zone_detect(centers, structural_entities)
         detection_method = "adaptive_zone"
@@ -94,13 +90,12 @@ class ViewAnalyzer:
                     )
                     view_groups = self._merge_aligned_clusters(raw_groups)
                     detection_method = "DBSCAN"
-                    logger.info(f"DBSCAN: {len(raw_groups)}→{len(view_groups)} 个簇")
+                    logger.info(f"DBSCAN: {len(raw_groups)}->{len(view_groups)} clusters")
             except Exception as e:
-                logger.warning(f"DBSCAN 失败: {e}")
+                logger.warning(f"DBSCAN failed: {e}")
 
         if view_groups is None:
-            data = self._analyze_fallback(entities, layer_map)
-            return Result.Ok(data)
+            return self._analyze_fallback(entities, layers)
 
         views = self._infer_view_types(view_groups, centers, valid_indices, structural_entities)
         view_relationships = self._analyze_projection_relationships(views)
@@ -108,18 +103,21 @@ class ViewAnalyzer:
         result = {
             "views": views,
             "relationships": view_relationships,
-            "layers": list(layer_map.keys()),
+            "layers": list(layers.keys()),
             "total_entities": len(entities),
             "detection_method": detection_method,
         }
 
         logger.info(f"视图分析完成: {len(views)} 个视图 ({detection_method})")
-        return Result.Ok(result)
+        return result
 
     def _adaptive_zone_detect(
         self, centers: List[Tuple[float, float]], entities: List[Dict]
     ) -> Optional[Dict[int, List[Dict]]]:
-        """自适应间隙检测：基于 X/Y 坐标间隙自动划分视图区域。"""
+        """
+        自适应间隙检测：基于 X/Y 坐标分布的间隙自动划分视图区域。
+        间隙 = 排序后相邻坐标的最大跳跃距离。
+        """
         xs = [c[0] for c in centers]
         ys = [c[1] for c in centers]
         min_x, max_x = min(xs), max(xs)
@@ -130,6 +128,7 @@ class ViewAnalyzer:
         y_boundaries = self._find_gaps(ys, min_gap_ratio=0.08, max_groups=3)
 
         if len(x_boundaries) <= 1 and len(y_boundaries) <= 1:
+            logger.debug("gap detection found only 1 region, trying DBSCAN")
             return None
 
         x_zones: List[Tuple[float, float]] = []
@@ -147,34 +146,48 @@ class ViewAnalyzer:
         y_zones.append((prev, max_y + data_range))
 
         groups = self._assign_to_grid(centers, entities, x_zones, y_zones)
+
         nonempty = {k: v for k, v in groups.items() if v}
         if len(nonempty) >= 2:
             logger.info(
-                f"自适应区域: {len(x_zones)}×{len(y_zones)} 网格, "
-                f"{len(nonempty)} 个非空单元格"
+                f"adaptive zone: {len(x_zones)}x{len(y_zones)} grid, "
+                f"{len(nonempty)} non-empty cells"
             )
             return nonempty
+
         return None
 
     def _find_gaps(
         self, values: List[float], min_gap_ratio: float, max_groups: int
     ) -> List[float]:
-        """在排序值中寻找显著间隙。"""
+        """
+        在排序值中寻找显著间隙。
+        返回间隙位置列表（用于分割区域）。
+        """
         if len(values) < 4:
             return []
+
         sorted_vals = sorted(values)
         data_range = sorted_vals[-1] - sorted_vals[0]
         if data_range <= 0:
             return []
+
         min_gap = data_range * min_gap_ratio
+
         gaps: List[Tuple[float, float]] = []
         for i in range(len(sorted_vals) - 1):
             g = sorted_vals[i + 1] - sorted_vals[i]
             if g >= min_gap:
                 mid = (sorted_vals[i] + sorted_vals[i + 1]) / 2
                 gaps.append((g, mid))
+
         gaps.sort(key=lambda x: -x[0])
-        return [mid for _, mid in gaps[:max_groups - 1]]
+
+        boundaries: List[float] = []
+        for _, mid in gaps[:max_groups - 1]:
+            boundaries.append(mid)
+
+        return boundaries
 
     def _assign_to_grid(
         self,
@@ -183,7 +196,7 @@ class ViewAnalyzer:
         x_zones: List[Tuple[float, float]],
         y_zones: List[Tuple[float, float]],
     ) -> Dict[int, List[Dict]]:
-        """将实体分配到网格的各个单元格。"""
+        """将实体分配到网格的各个单元格中"""
         groups: Dict[int, List[Dict]] = defaultdict(list)
         for ci, (cx, cy) in enumerate(centers):
             xi = 0
@@ -200,49 +213,61 @@ class ViewAnalyzer:
             groups[cell_id].append(entities[ci])
         return dict(groups)
 
-    def _analyze_fallback(
-        self, entities: List[Dict], layers: Dict[str, List[Dict]]
-    ) -> Dict[str, Any]:
-        """硬编码区域回退（保持向后兼容）。"""
+    def _analyze_fallback(self, entities: List[Dict], layers: Dict) -> Dict[str, Any]:
+        """硬编码区域回退（保持向后兼容）"""
         view_groups = self._group_by_position(entities)
         views = self._identify_view_types(view_groups, layers)
-        relationships = self._analyze_view_relationships(views)
+        view_relationships = self._analyze_view_relationships(views)
+
         return {
             "views": views,
-            "relationships": relationships,
+            "relationships": view_relationships,
             "layers": list(layers.keys()),
             "total_entities": len(entities),
             "detection_method": "zone_fallback",
         }
 
     def _dbscan_cluster(self, centers: List[Tuple[float, float]]) -> List[int]:
+        """
+        DBSCAN 聚类，eps 基于数据范围自动估算
+        """
         from sklearn.cluster import DBSCAN
+
         xs = [c[0] for c in centers]
         ys = [c[1] for c in centers]
         data_range = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
         eps = data_range * self.DBSCAN_EPS_AUTO_FRACTION
+
         eps = max(eps, 5.0)
         eps = min(eps, 500.0)
+
+        logger.debug(f"DBSCAN eps={eps:.1f}, n_points={len(centers)}, range={data_range:.1f}")
+
         clustering = DBSCAN(eps=eps, min_samples=self.DBSCAN_MIN_SAMPLES)
         return list(clustering.fit_predict(centers))
 
     def _build_cluster_groups(
         self, entities: List[Dict], valid_indices: List[int], labels: List[int]
     ) -> Dict[int, List[Dict]]:
+        """按聚类标签分组实体"""
         groups: Dict[int, List[Dict]] = defaultdict(list)
         for vi, label in zip(valid_indices, labels):
             if label >= 0:
                 groups[label].append(entities[vi])
         return dict(groups)
 
-    def _merge_aligned_clusters(
-        self, groups: Dict[int, List[Dict]]
-    ) -> Dict[int, List[Dict]]:
-        """合并投影对齐的碎片簇。"""
+    def _merge_aligned_clusters(self, groups: Dict[int, List[Dict]]) -> Dict[int, List[Dict]]:
+        """
+        合并投影对齐的碎片簇。
+        规则: 两个簇的 X 范围重叠度 > 阈值 → 同一列 → 合并
+              两个簇的 Y 范围重叠度 > 阈值 → 同一行 → 合并
+        """
         if len(groups) <= 1:
             return groups
+
         labels = list(groups.keys())
         bboxes = {l: self._compute_bbox_for_cluster(groups[l]) for l in labels}
+
         parent = {l: l for l in labels}
 
         def find(x):
@@ -258,9 +283,16 @@ class ViewAnalyzer:
 
         for i in range(len(labels)):
             for j in range(i + 1, len(labels)):
-                bi, bj = bboxes[labels[i]], bboxes[labels[j]]
-                x_overlap = self._range_overlap((bi[0], bi[2]), (bj[0], bj[2]))
-                y_overlap = self._range_overlap((bi[1], bi[3]), (bj[1], bj[3]))
+                bi = bboxes[labels[i]]
+                bj = bboxes[labels[j]]
+
+                x_overlap = self._range_overlap(
+                    (bi[0], bi[2]), (bj[0], bj[2])
+                )
+                y_overlap = self._range_overlap(
+                    (bi[1], bi[3]), (bj[1], bj[3])
+                )
+
                 if x_overlap > self.CLUSTER_MERGE_OVERLAP_THRESHOLD or \
                    y_overlap > self.CLUSTER_MERGE_OVERLAP_THRESHOLD:
                     union(labels[i], labels[j])
@@ -269,47 +301,51 @@ class ViewAnalyzer:
         for l in labels:
             root = find(l)
             merged[root].extend(groups[l])
+
         return dict(merged)
 
-    def _compute_bbox_for_cluster(
-        self, entities: List[Dict]
-    ) -> Tuple[float, float, float, float]:
+    def _compute_bbox_for_cluster(self, entities: List[Dict]) -> Tuple[float, float, float, float]:
+        """
+        基于实体端点和顶点计算簇的真实包围盒（非仅中心点）。
+        这对投影对齐判断更准确。
+        """
         min_x, min_y = float('inf'), float('inf')
         max_x, max_y = float('-inf'), float('-inf')
+
         for e in entities:
-            for x, y in self._extract_coords(e):
+            etype = e.get("type")
+            coords: List[Tuple[float, float]] = []
+
+            if etype in ("LINE",):
+                coords.append((e["start"][0], e["start"][1]))
+                coords.append((e["end"][0], e["end"][1]))
+            elif etype in ("CIRCLE", "ARC"):
+                cx, cy = e["center"][0], e["center"][1]
+                r = e.get("radius", 0)
+                coords.append((cx - r, cy - r))
+                coords.append((cx + r, cy + r))
+            elif etype in ("LWPOLYLINE", "ELLIPSE", "SPLINE"):
+                for v in e.get("vertices", []):
+                    coords.append((v[0], v[1]))
+            elif etype == "TEXT":
+                coords.append((e["position"][0], e["position"][1]))
+            elif etype == "DIMENSION":
+                for p in e.get("definition_points", []):
+                    coords.append((p[0], p[1]))
+            else:
+                c = self._get_entity_center(e)
+                if c:
+                    coords.append(c)
+
+            for x, y in coords:
                 min_x = min(min_x, x)
                 min_y = min(min_y, y)
                 max_x = max(max_x, x)
                 max_y = max(max_y, y)
+
         if min_x == float('inf'):
             return (0.0, 0.0, 0.0, 0.0)
         return (min_x, min_y, max_x, max_y)
-
-    def _extract_coords(self, entity: Dict) -> List[Tuple[float, float]]:
-        etype = entity.get("type")
-        coords: List[Tuple[float, float]] = []
-        if etype == "LINE":
-            coords.append((entity["start"][0], entity["start"][1]))
-            coords.append((entity["end"][0], entity["end"][1]))
-        elif etype in ("CIRCLE", "ARC"):
-            cx, cy = entity["center"][0], entity["center"][1]
-            r = entity.get("radius", 0)
-            coords.append((cx - r, cy - r))
-            coords.append((cx + r, cy + r))
-        elif etype in ("LWPOLYLINE", "ELLIPSE", "SPLINE"):
-            for v in entity.get("vertices", []):
-                coords.append((v[0], v[1]))
-        elif etype == "TEXT":
-            coords.append((entity["position"][0], entity["position"][1]))
-        elif etype == "DIMENSION":
-            for p in entity.get("definition_points", []):
-                coords.append((p[0], p[1]))
-        else:
-            c = self._get_entity_center(entity)
-            if c:
-                coords.append(c)
-        return coords
 
     def _infer_view_types(
         self,
@@ -318,7 +354,10 @@ class ViewAnalyzer:
         valid_indices: List[int],
         entities: List[Dict],
     ) -> List[Dict]:
-        """基于簇质心相对位置推断视图类型。"""
+        """
+        基于簇质心相对位置推断视图类型，同类簇自动合并。
+        使用中国画法几何第一角投影规则。
+        """
         if len(view_groups) == 1:
             label = list(view_groups.keys())[0]
             return [{
@@ -329,7 +368,10 @@ class ViewAnalyzer:
                 "bbox": self._compute_bbox(view_groups[label]),
             }]
 
-        centroids = {label: self._compute_centroid(group) for label, group in view_groups.items()}
+        centroids: Dict[int, Tuple[float, float]] = {}
+        for label, group in view_groups.items():
+            centroids[label] = self._compute_centroid(group)
+
         sorted_clusters = sorted(centroids.items(), key=lambda kv: kv[1][0])
         main_label = sorted_clusters[0][0]
         main_cx, main_cy = centroids[main_label]
@@ -340,66 +382,108 @@ class ViewAnalyzer:
         for label, (cx, cy) in centroids.items():
             if label == main_label:
                 continue
-            dx, dy = cx - main_cx, cy - main_cy
+            dx = cx - main_cx
+            dy = cy - main_cy
+
             if abs(dx) < abs(dy) * 0.8:
-                name_map["top" if dy > 0 else "bottom"].append(label)
+                name = "top" if dy > 0 else "bottom"
             else:
-                name_map["right" if dx > 0 else "left"].append(label)
+                name = "right" if dx > 0 else "left"
+
+            name_map[name].append(label)
 
         type_map = {
             "main": "主视图", "top": "俯视图", "bottom": "仰视图",
             "left": "左视图", "right": "右视图",
         }
+
         views: List[Dict] = []
         for name in ["main", "top", "bottom", "left", "right"]:
             labels = name_map.get(name)
             if not labels:
                 continue
-            merged = []
+            merged_entities = []
             for l in labels:
-                merged.extend(view_groups[l])
+                merged_entities.extend(view_groups[l])
             views.append({
                 "name": name,
                 "type": type_map[name],
-                "entities": merged,
-                "entity_count": len(merged),
-                "bbox": self._compute_bbox(merged),
-                "centroid": list(self._compute_centroid(merged)),
+                "entities": merged_entities,
+                "entity_count": len(merged_entities),
+                "bbox": self._compute_bbox(merged_entities),
+                "centroid": list(self._compute_centroid(merged_entities)),
             })
+
         return views
 
     def _analyze_projection_relationships(self, views: List[Dict]) -> List[Dict]:
-        """中国画法几何投影对齐验证。"""
+        """
+        投影对齐验证 (中国画法几何)
+          长对正: 主视图与俯视图 X 范围对齐
+          高平齐: 主视图与左/右视图 Y 范围对齐
+          宽相等: 俯视图与左/右视图宽度相等
+        """
         if len(views) < 2:
             return []
+
+        relationships = []
         main = next((v for v in views if v["name"] == "main"), None)
         if main is None:
             return []
+
         main_bbox = main.get("bbox") or self._compute_bbox(main["entities"])
-        relationships = []
+
         for view in views:
             if view["name"] == "main":
                 continue
+
             v_bbox = view.get("bbox") or self._compute_bbox(view["entities"])
+
             relation = {"type": "projection", "views": ["main", view["name"]]}
-            x_overlap = self._range_overlap((main_bbox[0], main_bbox[2]), (v_bbox[0], v_bbox[2]))
-            y_overlap = self._range_overlap((main_bbox[1], main_bbox[3]), (v_bbox[1], v_bbox[3]))
+
+            # X 方向重叠 → 长对正 (主<->俯/仰)
+            x_overlap = self._range_overlap(
+                (main_bbox[0], main_bbox[2]),
+                (v_bbox[0], v_bbox[2]),
+            )
+
+            # Y 方向重叠 → 高平齐 (主<->左/右)
+            y_overlap = self._range_overlap(
+                (main_bbox[1], main_bbox[3]),
+                (v_bbox[1], v_bbox[3]),
+            )
+
+            main_width = main_bbox[2] - main_bbox[0]
+            main_height = main_bbox[3] - main_bbox[1]
+            v_width = v_bbox[2] - v_bbox[0]
+            v_height = v_bbox[3] - v_bbox[1]
+
             if view["name"] in ("top", "bottom"):
                 if x_overlap > 0.5:
-                    relation["description"] = f"主视图与{view['type']}长对正 (X重叠度 {x_overlap:.0%})"
+                    relation["description"] = (
+                        f"主视图与{view['type']}长对正 (X重叠度 {x_overlap:.0%})"
+                    )
                 else:
-                    relation["description"] = f"主视图与{view['type']}X方向偏差较大 (重叠度 {x_overlap:.0%})"
+                    relation["description"] = (
+                        f"主视图与{view['type']}X方向偏差较大 (重叠度 {x_overlap:.0%})"
+                    )
+
             if view["name"] in ("left", "right"):
                 if y_overlap > 0.5:
-                    relation["description"] = f"主视图与{view['type']}高平齐 (Y重叠度 {y_overlap:.0%})"
+                    relation["description"] = (
+                        f"主视图与{view['type']}高平齐 (Y重叠度 {y_overlap:.0%})"
+                    )
                 else:
-                    relation["description"] = f"主视图与{view['type']}Y方向偏差较大 (重叠度 {y_overlap:.0%})"
-            v_width = v_bbox[2] - v_bbox[0]
-            main_width = main_bbox[2] - main_bbox[0]
+                    relation["description"] = (
+                        f"主视图与{view['type']}Y方向偏差较大 (重叠度 {y_overlap:.0%})"
+                    )
+
             width_ratio = min(main_width, v_width) / max(main_width, v_width, 0.001)
             if width_ratio > 0.3 and view["name"] in ("top", "bottom"):
                 relation["width_match"] = f"宽相等 (宽度比 {width_ratio:.0%})"
+
             relationships.append(relation)
+
         return relationships
 
     def _range_overlap(self, r1: Tuple[float, float], r2: Tuple[float, float]) -> float:
@@ -418,7 +502,9 @@ class ViewAnalyzer:
             if c:
                 xs.append(c[0])
                 ys.append(c[1])
-        return (sum(xs) / len(xs), sum(ys) / len(ys)) if xs else (0.0, 0.0)
+        if not xs:
+            return (0.0, 0.0)
+        return (sum(xs) / len(xs), sum(ys) / len(ys))
 
     def _compute_bbox(self, entities: List[Dict]) -> Tuple[float, float, float, float]:
         xs, ys = [], []
@@ -427,21 +513,25 @@ class ViewAnalyzer:
             if c:
                 xs.append(c[0])
                 ys.append(c[1])
-        return (min(xs), min(ys), max(xs), max(ys)) if xs else (0.0, 0.0, 0.0, 0.0)
+        if not xs:
+            return (0.0, 0.0, 0.0, 0.0)
+        return (min(xs), min(ys), max(xs), max(ys))
 
     def _group_by_layer(self, entities: List[Dict]) -> Dict[str, List[Dict]]:
-        layers: Dict[str, List[Dict]] = defaultdict(list)
+        layers = defaultdict(list)
         for entity in entities:
             layer = entity.get("layer", "default")
             layers[layer].append(entity)
         return dict(layers)
 
     def _group_by_position(self, entities: List[Dict]) -> Dict[str, List[Dict]]:
-        view_groups: Dict[str, List[Dict]] = defaultdict(list)
+        view_groups = defaultdict(list)
+
         for entity in entities:
             center = self._get_entity_center(entity)
             if center is None:
                 continue
+
             for view_name, zone in self.VIEW_ZONES.items():
                 if zone["x"][0] <= center[0] <= zone["x"][1] and \
                    zone["y"][0] <= center[1] <= zone["y"][1]:
@@ -449,78 +539,95 @@ class ViewAnalyzer:
                     break
             else:
                 view_groups["unknown"].append(entity)
+
         return dict(view_groups)
 
     def _get_entity_center(self, entity: Dict) -> Optional[Tuple[float, float]]:
         entity_type = entity.get("type")
+
         if entity_type == "CIRCLE":
             return (entity["center"][0], entity["center"][1])
         elif entity_type == "LINE":
-            return (
-                (entity["start"][0] + entity["end"][0]) / 2,
-                (entity["start"][1] + entity["end"][1]) / 2,
-            )
+            x = (entity["start"][0] + entity["end"][0]) / 2
+            y = (entity["start"][1] + entity["end"][1]) / 2
+            return (x, y)
         elif entity_type in ("LWPOLYLINE", "ELLIPSE", "SPLINE"):
             pts = entity.get("vertices", [])
             if pts:
-                return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+                x = sum(p[0] for p in pts) / len(pts)
+                y = sum(p[1] for p in pts) / len(pts)
+                return (x, y)
         elif entity_type == "TEXT":
             return (entity["position"][0], entity["position"][1])
         elif entity_type == "DIMENSION":
             pts = entity.get("definition_points", [])
             if pts:
-                return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+                x = sum(p[0] for p in pts) / len(pts)
+                y = sum(p[1] for p in pts) / len(pts)
+                return (x, y)
         elif entity_type == "ARC":
             return (entity["center"][0], entity["center"][1])
         elif entity_type == "INSERT":
             pos = entity.get("position")
             if pos:
                 return (pos[0], pos[1])
+
         return None
 
-    def _identify_view_types(
-        self, view_groups: Dict[str, List[Dict]], layers: Dict[str, List[Dict]]
-    ) -> List[Dict]:
+    def _identify_view_types(self, view_groups: Dict[str, List[Dict]],
+                             layers: Dict[str, List[Dict]]) -> List[Dict]:
         views = []
+
         for view_name, group_entities in view_groups.items():
             if view_name == "unknown" or not group_entities:
                 continue
+
             views.append({
                 "name": view_name,
                 "type": self._determine_view_type(view_name),
                 "entities": group_entities,
                 "entity_count": len(group_entities),
-                "layers": list(set(e.get("layer", "default") for e in group_entities)),
+                "layers": list(set(e.get("layer", "default") for e in group_entities))
             })
+
         return views
 
     def _determine_view_type(self, view_name: str) -> str:
-        return {
-            "main": "主视图", "top": "俯视图",
-            "left": "左视图", "right": "右视图", "bottom": "仰视图",
-        }.get(view_name, "未知视图")
+        type_map = {
+            "main": "主视图",
+            "top": "俯视图",
+            "left": "左视图",
+            "right": "右视图",
+            "bottom": "仰视图"
+        }
+        return type_map.get(view_name, "未知视图")
 
     def _analyze_view_relationships(self, views: List[Dict]) -> List[Dict]:
         relationships = []
+
         main_view = next((v for v in views if v["name"] == "main"), None)
         top_view = next((v for v in views if v["name"] == "top"), None)
         left_view = next((v for v in views if v["name"] == "left"), None)
+
         if main_view and top_view:
             relationships.append({
                 "type": "projection",
                 "views": ["main", "top"],
-                "description": "主视图与俯视图长对正",
+                "description": "主视图与俯视图长对正"
             })
+
         if main_view and left_view:
             relationships.append({
                 "type": "projection",
                 "views": ["main", "left"],
-                "description": "主视图与左视图高平齐",
+                "description": "主视图与左视图高平齐"
             })
+
         if top_view and left_view:
             relationships.append({
                 "type": "projection",
                 "views": ["top", "left"],
-                "description": "俯视图与左视图宽相等",
+                "description": "俯视图与左视图宽相等"
             })
+
         return relationships

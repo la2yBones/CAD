@@ -388,7 +388,16 @@ class CADParser:
         Args:
             output_path: 可选，保存为图片文件。不指定时自动保存到output_dir
         """
+        import os as _os
+        _os.environ.setdefault('MPLBACKEND', 'Agg')
+
         try:
+            import sys as _sys
+            if 'matplotlib' not in _sys.modules:
+                import matplotlib as _mpl
+                _mpl.use('Agg')
+            import matplotlib
+            matplotlib.use('Agg')
             import matplotlib.pyplot as plt
             from ezdxf.addons.drawing import RenderContext, Frontend
             from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
@@ -410,7 +419,10 @@ class CADParser:
 
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             logger.info(f"可视化已保存到: {output_path}")
-            plt.close()
+            plt.close('all')
+
+            import gc
+            gc.collect()
 
         except ImportError:
             logger.error("需要安装matplotlib才能使用可视化功能")

@@ -247,7 +247,6 @@ class CADProcessor:
                         
                 except Exception as e:
                     logger.warning(f"智能分析失败: {e}")
-                    import traceback
                     logger.warning(traceback.format_exc())
 
             # 3. 生成3D模型 - 优先使用AI脚本

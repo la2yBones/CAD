@@ -6,6 +6,16 @@ CAD图纸处理命令行工具（统一版）
 """
 
 import sys
+import os
+
+os.environ.setdefault('MPLBACKEND', 'Agg')
+
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+except Exception:
+    pass
+
 import argparse
 import logging
 from pathlib import Path

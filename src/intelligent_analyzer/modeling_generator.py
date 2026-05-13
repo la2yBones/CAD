@@ -5,6 +5,7 @@ FreeCAD建模指令生成器
 通过大模型分析工程图纸并生成FreeCAD兼容的建模指令
 """
 import json
+import math
 import logging
 from typing import Dict, List, Any, Optional
 from pathlib import Path
@@ -53,6 +54,16 @@ class FreeCADInstructionGenerator:
         prompt = self._build_prompt(geometry_data, view_analysis, dimension_data, extrude_height)
 
         try:
+            max_tokens = self.config.get("max_tokens", 8000)
+            use_thinking = self.config.get("thinking", True)
+
+            if use_thinking:
+                max_tokens = max(max_tokens, 16000)
+
+            extra_body = None
+            if use_thinking:
+                extra_body = {"thinking": {"type": "enabled", "reasoning_effort": self.config.get("reasoning_effort", "max")}}
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -64,7 +75,8 @@ class FreeCADInstructionGenerator:
 3. 零件形状特征
 然后生成可执行的FreeCAD Python建模脚本。
 
-输出格式要求：JSON格式，包含以下字段：
+你必须严格按照JSON格式输出，直接返回一个JSON对象，不要包含任何markdown标记或额外文本。
+JSON必须包含以下字段：
 - analysis_summary: 图纸分析总结
 - modeling_strategy: 建模策略说明
 - freecad_script: 完整的FreeCAD Python脚本（字符串形式）
@@ -75,12 +87,19 @@ class FreeCADInstructionGenerator:
                     },
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=self.config.get("max_tokens", 8000),
-                extra_body={"thinking": {"type": "enabled", "reasoning_effort": self.config.get("reasoning_effort", "max")}} if self.config.get("thinking", True) else None,
-                response_format={"type": "json_object"}
+                max_tokens=max_tokens,
+                extra_body=extra_body
             )
 
-            result = json.loads(response.choices[0].message.content)
+            content = response.choices[0].message.content
+            if not content:
+                reasoning = getattr(response.choices[0].message, 'reasoning_content', None)
+                if reasoning:
+                    logger.warning("AI response content is empty (all tokens consumed by reasoning). "
+                                   "Will rely on reasoning_content for fallback extraction.")
+                raise ValueError("Empty response content from AI model")
+
+            result = self._extract_json(content)
             logger.info("建模指令生成成功")
             return result
 
@@ -169,75 +188,185 @@ class FreeCADInstructionGenerator:
 
     def _generate_fallback_script(self, geometry_data: Dict[str, Any],
                                   extrude_height: float) -> str:
-        """生成降级版本的脚本（当AI分析失败时使用）"""
         entities = geometry_data.get("entities", [])
+        contours = self._group_entities_into_contours(entities)
 
         script_lines = [
             "import FreeCAD as App",
             "import Part",
-            "import Sketcher",
             "",
             "doc = App.newDocument('GeneratedModel')",
             "",
-            "# 创建草图",
-            "sketch = doc.addObject('Sketcher::SketchObject', 'BaseSketch')",
-            "sketch.Placement = App.Placement(App.Vector(0,0,0), App.Rotation(0,0,0,1))",
-            ""
+            f"extrude_height = {extrude_height}",
+            "",
         ]
 
-        line_count = 0
-        circle_count = 0
+        for ci, contour in enumerate(contours):
+            edges = []
+            for entity in contour:
+                etype = entity.get("type")
+                if etype == "LINE":
+                    x1, y1 = entity["start"][0], entity["start"][1]
+                    x2, y2 = entity["end"][0], entity["end"][1]
+                    edges.append(
+                        f"Part.LineSegment(App.Vector({x1},{y1},0), App.Vector({x2},{y2},0)).toShape()"
+                    )
+                elif etype == "CIRCLE":
+                    cx, cy = entity["center"][0], entity["center"][1]
+                    r = entity["radius"]
+                    edges.append(
+                        f"Part.Circle(App.Vector({cx},{cy},0), App.Vector(0,0,1), {r}).toShape()"
+                    )
+                elif etype == "ARC":
+                    cx, cy = entity["center"][0], entity["center"][1]
+                    r = entity["radius"]
+                    sa = entity.get("start_angle", 0)
+                    ea = entity.get("end_angle", 0)
+                    edges.append(
+                        f"Part.ArcOfCircle("
+                        f"Part.Circle(App.Vector({cx},{cy},0), App.Vector(0,0,1), {r}), "
+                        f"{sa}, {ea}).toShape()"
+                    )
 
-        for entity in entities:
-            etype = entity.get("type")
-            if etype == "LWPOLYLINE" and entity.get("closed", False):
-                # 添加多段线
-                vertices = entity.get("vertices", [])
-                if len(vertices) >= 3:
-                    script_lines.append(f"# 添加闭合轮廓")
-                    for i in range(len(vertices)):
-                        x1, y1 = vertices[i][0], vertices[i][1]
-                        x2, y2 = vertices[(i+1)%len(vertices)][0], vertices[(i+1)%len(vertices)][1]
-                        script_lines.append(
-                            f"sketch.addGeometry(Part.LineSegment("
-                            f"App.Vector({x1}, {y1}, 0), "
-                            f"App.Vector({x2}, {y2}, 0)), False)"
-                        )
-            elif etype == "LINE":
-                x1, y1 = entity["start"][0], entity["start"][1]
-                x2, y2 = entity["end"][0], entity["end"][1]
-                script_lines.append(
-                    f"sketch.addGeometry(Part.LineSegment("
-                    f"App.Vector({x1}, {y1}, 0), "
-                    f"App.Vector({x2}, {y2}, 0)), False)"
-                )
-                line_count += 1
-            elif etype == "CIRCLE":
-                cx, cy = entity["center"][0], entity["center"][1]
-                r = entity["radius"]
-                script_lines.append(
-                    f"sketch.addGeometry(Part.Circle("
-                    f"App.Vector({cx}, {cy}, 0), "
-                    f"App.Vector(0,0,1), {r}), False)"
-                )
-                circle_count += 1
+            if not edges:
+                continue
+
+            script_lines.append(f"# 轮廓 {ci+1}")
+            script_lines.append(f"edges_{ci} = [{', '.join(edges)}]")
+            script_lines.append(f"wire_{ci} = Part.Wire(edges_{ci})")
+            script_lines.append(f"if wire_{ci}.isClosed():")
+            script_lines.append(f"    face_{ci} = Part.Face(wire_{ci})")
+            script_lines.append(f"    solid_{ci} = face_{ci}.extrude(App.Vector(0, 0, extrude_height))")
+            script_lines.append(f"    Part.show(solid_{ci})")
+            script_lines.append(f"else:")
+            script_lines.append(f"    print('警告: 轮廓 {ci+1} 未闭合, 跳过拉伸')")
+            script_lines.append("")
 
         script_lines.extend([
-            "",
             "doc.recompute()",
             "",
-            "# 拉伸",
-            f"pad = doc.addObject('PartDesign::Pad', 'Pad')",
-            "pad.Profile = sketch",
-            f"pad.Length = {extrude_height}",
-            "doc.recompute()",
-            "",
-            f"# 保存",
             "doc.saveAs('model.FCStd')",
-            "print('建模完成')"
+            "print('建模完成')",
+            f"print('BRIDGE_FEATURE_COUNT:' + str(len(doc.Objects)))",
         ])
 
         return "\n".join(script_lines)
+
+    @staticmethod
+    def _group_entities_into_contours(entities: List[Dict]) -> List[List[Dict]]:
+        TOL = 1e-3
+
+        processed = set()
+        contours = []
+
+        def get_endpoints(e):
+            t = e.get("type")
+            if t == "LINE":
+                s = tuple(e.get("start", [0, 0]))
+                e_pt = tuple(e.get("end", [0, 0]))
+                return s, e_pt
+            elif t == "ARC":
+                cx, cy = e.get("center", [0, 0])
+                r = e.get("radius", 0)
+                sa = math.radians(e.get("start_angle", 0))
+                ea = math.radians(e.get("end_angle", 0))
+                sx, sy = cx + r * math.cos(sa), cy + r * math.sin(sa)
+                ex, ey = cx + r * math.cos(ea), cy + r * math.sin(ea)
+                return (sx, sy), (ex, ey)
+            return None, None
+
+        def pts_close(p1, p2):
+            return abs(p1[0] - p2[0]) < TOL and abs(p1[1] - p2[1]) < TOL
+
+        def follow_chain(start_pt, remaining):
+            chain = []
+            current_pt = start_pt
+            while True:
+                found = None
+                found_idx = -1
+                for ri, (_, entity) in enumerate(remaining):
+                    s, e = get_endpoints(entity)
+                    if s is None:
+                        continue
+                    if pts_close(current_pt, s):
+                        found = entity
+                        found_idx = ri
+                        next_pt = e
+                        break
+                    elif pts_close(current_pt, e):
+                        found = entity
+                        found_idx = ri
+                        next_pt = s
+                        break
+                if found is None:
+                    break
+                chain.append(found)
+                remaining.pop(found_idx)
+                current_pt = next_pt
+                if pts_close(current_pt, start_pt):
+                    break
+            return chain, current_pt
+
+        model_entities = [e for e in entities
+                          if e.get("type") in ("LINE", "CIRCLE", "ARC")]
+
+        for i, entity in enumerate(model_entities):
+            if i in processed:
+                continue
+            etype = entity.get("type")
+            if etype == "CIRCLE":
+                contours.append([entity])
+                processed.add(i)
+                continue
+
+            start, end = get_endpoints(entity)
+            if start is None:
+                continue
+
+            remaining = [(j, e) for j, e in enumerate(model_entities) if j != i and j not in processed]
+            chain, final_pt = follow_chain(end, remaining)
+
+            contour = [entity] + chain
+            for j in range(len(model_entities)):
+                for c in chain:
+                    if c is model_entities[j]:
+                        processed.add(j)
+
+            if pts_close(final_pt, start):
+                contours.append(contour)
+            elif len(contour) >= 1:
+                contours.append(contour)
+
+            processed.add(i)
+
+        logger.info(f"轮廓分组: {len(model_entities)} 个有效实体 -> {len(contours)} 个轮廓")
+        return contours
+
+    def _extract_json(self, content: str) -> Dict[str, Any]:
+        content = content.strip()
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if len(lines) > 1 and lines[-1].strip() == "```":
+                content = "\n".join(lines[1:-1])
+            elif len(lines) > 1:
+                content = "\n".join(lines[1:])
+            else:
+                content = content.strip("`").strip()
+
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            pass
+
+        import re
+        match = re.search(r'\{[\s\S]*\}', content)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        raise ValueError(f"无法从响应中提取有效JSON。内容前200字符: {content[:200]}")
 
     def save_script(self, script_content: str, output_path: str) -> None:
         """保存生成的脚本到文件"""

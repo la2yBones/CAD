@@ -33,7 +33,7 @@ pip install -r requirements.txt
 ### requirements.txt 包含的主要依赖：
 
 - **ezdxf** - DXF 文件解析库
-- **openai** - OpenAI API 客户端（兼容 Qwen API）
+- **openai** - OpenAI API 客户端（兼容 DeepSeek API）
 - **shapely** - 几何计算库
 - **numpy** - 数值计算库
 - **pyyaml** - YAML 配置文件解析
@@ -80,7 +80,7 @@ cd e:\Code\CAD
 python examples\scripts\test_config.py
 ```
 
-## 6. 测试 Qwen3.6 API
+## 6. 测试 DeepSeek API
 
 配置文件 `config/config.yaml` 已经包含了您的 API 密钥，让我们测试一下：
 
@@ -89,7 +89,7 @@ python examples\scripts\test_config.py
 conda activate cad_study
 
 cd e:\Code\CAD
-python examples\scripts\test_qwen_api.py
+python examples\scripts\test_api.py
 ```
 
 ## 7. 完整测试流程

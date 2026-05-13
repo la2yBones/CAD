@@ -1,266 +1,189 @@
-import ezdxf
-import json
-import subprocess
-import sys
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-import logging
+"""
+DXF/DWG 解析器
 
-logger = logging.getLogger(__name__)
+支持 DXF（直接 ezdxf 解析）和 DWG（通过 LibreDWG 转换为 DXF 后解析）。
+提取图层、实体、嵌套图块等工程图元信息。
+"""
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import subprocess
+import tempfile
+
+import ezdxf
+
+from ..utils.config import load_config
+from ..utils.result import Result
 
 
 class CADParser:
-    """CAD文件解析器，支持DXF和DWG格式，提取几何实体并转换为标准化格式"""
+    """CAD 图纸解析器，支持 DXF 和 DWG 格式。"""
 
-    def __init__(self, file_path: str, config: Optional[Dict] = None):
-        self.file_path = Path(file_path)
-        self.config = config or {}
-        self.doc: Optional[ezdxf.document.Drawing] = None
-        self.entities: List[Dict] = []
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self._config: Dict[str, Any] = config or load_config()
 
-    def parse(self) -> Dict[str, Any]:
+    def parse(self, file_path: str) -> Result[Dict[str, Any]]:
         """
-        解析DXF文件
+        解析 CAD 文件，返回工程图元数据。
+
+        Args:
+            file_path: DXF 或 DWG 文件路径
 
         Returns:
-            包含版本、单位和实体数据的字典
+            Result[Dict]: Ok 时包含 layers/entities/blocks 等键，
+                          解析失败时返回 Err。
         """
-        if not self.file_path.exists():
-            raise FileNotFoundError(f"文件不存在: {self.file_path}")
+        path = Path(file_path)
+        if not path.exists():
+            return Result.Err(f"文件不存在: {file_path}")
 
-        logger.info(f"正在解析文件: {self.file_path}")
+        suffix = path.suffix.lower()
 
-        # 处理DWG文件（如果需要）
-        if self.file_path.suffix.lower() == ".dwg":
-            self._convert_dwg_to_dxf()
+        if suffix == ".dwg":
+            return self._parse_dwg(path)
+        elif suffix == ".dxf":
+            return self._parse_dxf(path)
+        else:
+            return Result.Err(f"不支持的文件格式: {suffix}，仅支持 .dxf 和 .dwg")
 
-        # 加载DXF文件
-        self.doc = ezdxf.readfile(str(self.file_path))
-
-        # 提取实体
-        self._extract_entities()
-
-        # 构建结果
-        result = {
-            "version": self.doc.dxfversion,
-            "units": self._get_units(),
-            "entities": self.entities
-        }
-
-        logger.info(f"解析完成，共提取 {len(self.entities)} 个实体")
-        return result
-
-    def _convert_dwg_to_dxf(self):
-        """将DWG转换为DXF，支持ODA或LibreDWG"""
-        converter_type = self.config.get("dwg_converter", "libredwg").lower()
-        
+    def _parse_dxf(self, path: Path) -> Result[Dict[str, Any]]:
+        """直接解析 DXF 文件。"""
         try:
-            if converter_type == "libredwg":
-                self._convert_with_libredwg()
-            else:
-                self._convert_with_oda()
+            doc = ezdxf.readfile(str(path))
+            msp = doc.modelspace()
+
+            entities = []
+            for entity in msp:
+                entity_data = self._extract_entity(entity)
+                if entity_data:
+                    entities.append(entity_data)
+
+            layers = self._extract_layers(doc)
+            blocks = self._extract_blocks(doc)
+
+            return Result.Ok({
+                "file_path": str(path),
+                "file_type": "dxf",
+                "layers": layers,
+                "entities": entities,
+                "blocks": blocks,
+                "entity_count": len(entities),
+                "layer_count": len(layers),
+                "block_count": len(blocks),
+            })
         except Exception as e:
-            logger.error(f"DWG转换失败: {e}")
-            raise
-    
-    def _convert_with_libredwg(self):
-        """使用LibreDWG将DWG转换为DXF"""
-        libredwg_path = Path(self.config.get("libredwg_path", ""))
-        
-        if not libredwg_path.exists():
-            raise FileNotFoundError(f"LibreDWG路径不存在: {libredwg_path}")
-        
-        # 查找 dwg2dxf 可执行文件
-        dwg2dxf = libredwg_path / "dwg2dxf.exe"
+            return Result.Err(f"DXF 解析失败: {e}")
+
+    def _parse_dwg(self, path: Path) -> Result[Dict[str, Any]]:
+        """通过 LibreDWG 将 DWG 转换为 DXF 后解析。"""
+        libredwg_path = self._config.get("dxf_parser", {}).get("libredwg_path", "")
+        if not libredwg_path:
+            return Result.Err(
+                "未配置 LibreDWG 路径。请在 config/config.yaml 中设置 dxf_parser.libredwg_path。"
+            )
+
+        dwg2dxf = Path(libredwg_path) / "dwg2dxf.exe"
         if not dwg2dxf.exists():
-            # 尝试在子目录中查找
-            for p in libredwg_path.rglob("dwg2dxf.exe"):
-                dwg2dxf = p
-                break
-        
-        if not dwg2dxf.exists():
-            raise FileNotFoundError(f"未找到 dwg2dxf.exe 在: {libredwg_path}")
-        
-        dxf_path = self.file_path.with_suffix(".dxf")
-        
-        # 构建命令
-        cmd = [
-            str(dwg2dxf),
-            "-o", str(dxf_path),
-            str(self.file_path)
-        ]
-        
-        logger.info(f"执行LibreDWG转换: {' '.join(cmd)}")
-        
-        # 执行转换
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='ignore'
-        )
-        
-        if result.returncode != 0:
-            logger.error(f"LibreDWG转换错误 (退出码: {result.returncode})")
-            logger.error(f"STDOUT: {result.stdout}")
-            logger.error(f"STDERR: {result.stderr}")
-            raise RuntimeError(f"LibreDWG转换失败: {result.stderr}")
-        
-        if not dxf_path.exists():
-            raise FileNotFoundError(f"转换后的DXF文件未生成: {dxf_path}")
-        
-        self.file_path = dxf_path
-        logger.info(f"LibreDWG转换成功: {dxf_path}")
-    
-    def _convert_with_oda(self):
-        """使用ODA File Converter将DWG转换为DXF"""
-        try:
-            from ezdxf.addons import odafc
-            dxf_path = self.file_path.with_suffix(".dxf")
-            odafc.convert(str(self.file_path), str(dxf_path))
-            self.file_path = dxf_path
-            logger.info(f"ODA转换成功: {dxf_path}")
-        except Exception as e:
-            logger.error(f"ODA转换失败: {e}")
-            raise
-
-    def _extract_entities(self):
-        """从模型空间提取几何实体"""
-        msp = self.doc.modelspace()
-        supported_types = self.config.get("extract_entities", [
-            "LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "MTEXT"
-        ])
-
-        for entity in msp:
-            entity_type = entity.dxftype()
-            if entity_type in supported_types:
-                parsed = self._parse_entity(entity)
-                if parsed:
-                    self.entities.append(parsed)
-
-    def _parse_entity(self, entity) -> Optional[Dict]:
-        """解析单个DXF实体"""
-        base_info = {
-            "type": entity.dxftype(),
-            "layer": entity.dxf.layer,
-            "color": entity.dxf.color,
-        }
+            return Result.Err(f"LibreDWG 工具未找到: {dwg2dxf}")
 
         try:
-            if entity.dxftype() == "LINE":
-                base_info.update({
-                    "start": list(entity.dxf.start),
-                    "end": list(entity.dxf.end)
-                })
-            elif entity.dxftype() == "CIRCLE":
-                base_info.update({
-                    "center": list(entity.dxf.center),
-                    "radius": entity.dxf.radius
-                })
-            elif entity.dxftype() == "ARC":
-                base_info.update({
-                    "center": list(entity.dxf.center),
-                    "radius": entity.dxf.radius,
-                    "start_angle": entity.dxf.start_angle,
-                    "end_angle": entity.dxf.end_angle
-                })
-            elif entity.dxftype() == "LWPOLYLINE":
-                base_info.update({
-                    "vertices": [list(v) for v in entity.get_points("xy")],
-                    "closed": entity.closed
-                })
-            elif entity.dxftype() == "TEXT":
-                base_info.update({
-                    "text": entity.dxf.text,
-                    "position": list(entity.dxf.insert),
-                    "height": entity.dxf.height
-                })
-            elif entity.dxftype() == "MTEXT":
-                base_info.update({
-                    "text": entity.text,
-                    "position": list(entity.dxf.insert)
-                })
-            else:
-                return None
+            with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
 
-            return base_info
+            proc = subprocess.run(
+                [str(dwg2dxf), str(path), "-o", str(tmp_path)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                encoding="utf-8",
+                errors="replace",
+            )
 
+            if proc.returncode != 0:
+                tmp_path.unlink(missing_ok=True)
+                return Result.Err(f"DWG 转换 DXF 失败: {proc.stderr.strip()}")
+
+            result = self._parse_dxf(tmp_path)
+            tmp_path.unlink(missing_ok=True)
+            return result
+
+        except subprocess.TimeoutExpired:
+            return Result.Err("DWG 转换 DXF 超时（60秒）")
         except Exception as e:
-            logger.warning(f"解析实体失败: {entity.dxftype()}, 错误: {e}")
+            return Result.Err(f"DWG 解析失败: {e}")
+
+    def _extract_entity(self, entity) -> Optional[Dict[str, Any]]:
+        """提取单个实体的属性。"""
+        try:
+            dxftype = entity.dxftype()
+
+            data: Dict[str, Any] = {
+                "type": dxftype,
+                "handle": entity.dxf.handle,
+                "layer": entity.dxf.layer,
+            }
+
+            if dxftype in ("LINE", "CIRCLE", "ARC", "ELLIPSE"):
+                self._add_geometry(data, entity)
+            elif dxftype == "LWPOLYLINE":
+                self._add_polyline(data, entity)
+            elif dxftype == "TEXT":
+                data["text"] = entity.dxf.text
+            elif dxftype == "MTEXT":
+                data["text"] = entity.text
+                data["plain_text"] = entity.plain_text() if hasattr(entity, 'plain_text') else entity.text
+            elif dxftype == "INSERT":
+                data["block_name"] = entity.dxf.name
+
+            return data
+        except Exception:
             return None
 
-    def _get_units(self) -> str:
-        """获取图纸单位"""
-        units_map = {
-            0: "Unitless", 1: "Inches", 2: "Feet", 3: "Miles",
-            4: "Millimeters", 5: "Centimeters", 6: "Meters",
-            7: "Kilometers", 8: "Microinches", 9: "Mils",
-            10: "Yards", 11: "Angstroms", 12: "Nanometers",
-            13: "Microns", 14: "Decimeters", 15: "Decameters",
-            16: "Hectometers", 17: "Gigameters", 18: "Astronomical units",
-            19: "Light years", 20: "Parsecs"
-        }
-        return units_map.get(self.doc.units, "Unitless")
+    def _add_geometry(self, data: Dict[str, Any], entity) -> None:
+        """添加几何信息（LINE/CIRCLE/ARC/ELLIPSE）。"""
+        if data["type"] == "LINE":
+            data["start"] = (entity.dxf.start.x, entity.dxf.start.y)
+            data["end"] = (entity.dxf.end.x, entity.dxf.end.y)
+        elif data["type"] == "CIRCLE":
+            data["center"] = (entity.dxf.center.x, entity.dxf.center.y)
+            data["radius"] = entity.dxf.radius
+        elif data["type"] == "ARC":
+            data["center"] = (entity.dxf.center.x, entity.dxf.center.y)
+            data["radius"] = entity.dxf.radius
+        elif data["type"] == "ELLIPSE":
+            data["center"] = (entity.dxf.center.x, entity.dxf.center.y)
 
-    def export_json(self, output_path: str):
-        """
-        导出解析结果为JSON文件
+    def _add_polyline(self, data: Dict[str, Any], entity) -> None:
+        """添加多段线的顶点信息。"""
+        points = []
+        with entity.points() as pts:
+            for p in pts:
+                points.append((p[0], p[1]))
+        data["points"] = points
+        data["is_closed"] = entity.closed
 
-        Args:
-            output_path: 输出文件路径
-        """
-        if not self.entities:
-            logger.warning("没有实体数据可导出")
-            return
+    def _extract_layers(self, doc) -> List[Dict[str, Any]]:
+        """提取所有图层信息。"""
+        layers = []
+        for layer in doc.layers:
+            layers.append({
+                "name": layer.dxf.name,
+                "color": layer.dxf.color,
+                "linetype": layer.dxf.linetype,
+                "is_frozen": layer.is_frozen(),
+                "is_locked": layer.is_locked(),
+            })
+        return layers
 
-        result = {
-            "version": self.doc.dxfversion if self.doc else "unknown",
-            "units": self._get_units() if self.doc else "unknown",
-            "entities": self.entities
-        }
-
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-
-        logger.info(f"已导出到: {output_path}")
-
-    def visualize(self, output_path: Optional[str] = None):
-        """
-        可视化DXF文件（使用matplotlib）
-
-        Args:
-            output_path: 可选，保存为图片文件
-        """
-        try:
-            import matplotlib.pyplot as plt
-            from ezdxf.addons.drawing import RenderContext, Frontend
-            from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
-
-            fig = plt.figure(figsize=(12, 8))
-            ax = fig.add_axes([0, 0, 1, 1])
-            ctx = RenderContext(self.doc)
-            out = MatplotlibBackend(ax)
-            Frontend(ctx, out).draw_layout(self.doc.modelspace(), finalize=True)
-
-            if output_path:
-                plt.savefig(output_path, dpi=150, bbox_inches='tight')
-                logger.info(f"可视化已保存到: {output_path}")
-            else:
-                plt.show()
-
-            plt.close()
-
-        except ImportError:
-            logger.error("需要安装matplotlib才能使用可视化功能")
-        except Exception as e:
-            logger.error(f"可视化失败: {e}")
-
-
-# 向后兼容性：保持 DXFParser 作为 CADParser 的别名
-class DXFParser(CADParser):
-    """
-    DXFParser 已重命名为 CADParser。
-    此别名保持向后兼容性，请使用 CADParser。
-    """
-    pass
+    def _extract_blocks(self, doc) -> List[Dict[str, Any]]:
+        """提取所有图块定义。"""
+        blocks = []
+        for block in doc.blocks:
+            if block.name.startswith("*"):
+                continue
+            entity_count = len(list(block))
+            blocks.append({
+                "name": block.name,
+                "entity_count": entity_count,
+            })
+        return blocks

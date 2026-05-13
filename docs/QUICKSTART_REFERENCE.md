@@ -18,8 +18,8 @@ pip install -r requirements.txt
 # 1. 测试配置
 python examples\scripts\test_config.py
 
-# 2. 测试Qwen API
-python examples\scripts\test_qwen_api.py
+# 2. 测试DeepSeek API
+python examples\scripts\test_api.py
 
 # 3. 创建示例DXF
 python examples\scripts\create_sample_dxf.py
@@ -51,14 +51,13 @@ e:\Code\CAD\
 ### config/config.yaml (已配置好)
 ```yaml
 api:
-  qwen:
-    api_key: "sk-68f41b0d6ab14c74bba02043b8c5779d"
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    model: "qwen3.6-plus"
-
+  deepseek:
+    api_key: "sk-xxxxxxxxxxxxxxxx"
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-v4-pro"
+```
 dxf_parser:
   libredwg_path: "D:\\Code\\libredwg-0.13.4.8160-win64"
-  dwg_converter: "libredwg"  # 可选: "libredwg" 或 "oda"
 
 freecad:
   bin_path: "D:\\FreeCAD 1.0\\bin"
@@ -109,7 +108,7 @@ from src.cad_parser import DXFParser  # 仍然可用！
 | 操作 | 命令 |
 |------|------|
 | 激活环境 | `conda activate cad_study` |
-| 运行API测试 | `python examples\scripts\test_qwen_api.py` |
+| 运行API测试 | `python examples\scripts\test_api.py` |
 | 运行完整示例 | `python examples\scripts\quickstart.py` |
 | 创建DXF示例 | `python examples\scripts\create_sample_dxf.py` |
 | 测试DWG处理 | `python examples\scripts\test_dwg_conversion.py` |

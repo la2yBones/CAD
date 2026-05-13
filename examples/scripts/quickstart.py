@@ -14,7 +14,7 @@ sys.path.insert(0, str(project_root))
 
 from src.utils import setup_logging, load_config
 from src.cad_parser import CADParser
-from src.geometry_analyzer import GeometryAnalyzer
+from src.intelligent_analyzer import IntelligentEngineeringAnalyzer
 from src.model_generator import FreeCADModeler
 
 
@@ -53,17 +53,18 @@ def main():
     except Exception as e:
         logger.warning(f"可视化跳过: {e}")
 
-    # 2. 分析几何关系
-    logger.info("\n[步骤2] 分析几何关系")
-    api_key = config.get("api", {}).get("qwen", {}).get("api_key", "")
+    # 2. 统一智能分析（视图识别 + 尺寸提取 + 建模指令）
+    logger.info("\n[步骤2] 智能分析几何关系")
+    api_key = config.get("api", {}).get("deepseek", {}).get("api_key", "")
 
-    if api_key and api_key != "your-dashscope-api-key-here":
-        analyzer_config = config.get("api", {}).get("qwen", {})
-        analyzer = GeometryAnalyzer(api_key, analyzer_config)
-        relationships = analyzer.analyze(geometry_data)
-        logger.info(f"关系分析完成: {relationships.get('summary', '')}")
+    if api_key and api_key != "your-deepseek-api-key-here":
+        analyzer_config = config.get("api", {}).get("deepseek", {})
+        analyzer = IntelligentEngineeringAnalyzer(api_key, analyzer_config, enable_cache=True)
+        analysis_result = analyzer.analyze_full(geometry_data, extrude_height=10.0)
+        relationships = analysis_result.get("modeling_instructions", {})
+        logger.info(f"智能分析完成")
     else:
-        logger.warning("未配置API密钥，跳过AI分析")
+        logger.warning("未配置API密钥，跳过智能分析")
         relationships = {}
 
     # 3. 生成3D模型

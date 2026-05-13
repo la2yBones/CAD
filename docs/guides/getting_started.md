@@ -24,8 +24,8 @@ LibreDWG 是处理 DWG 文件的核心工具：
 
 ### 4. 获取API密钥（可选但推荐）
 
-- 注册阿里云百炼平台账号
-- 获取Qwen3.6 API密钥
+- 注册 DeepSeek 平台账号
+- 获取 DeepSeek V4 Pro API 密钥
 
 ## 安装步骤
 
@@ -96,18 +96,22 @@ geometry_data = parser.parse()
 
 ## 第一个示例
 
-### 1. 准备CAD文件
+### 方式一：图形界面（推荐）
 
-将您的 DXF 或 DWG 文件放入 `examples/dxf_files/` 目录。
+```bash
+python gui_example.py
+```
 
-### 2. 运行示例脚本
+打开图形界面后，双击文件列表中的图纸即可预览，设置参数后点击「开始处理」一键完成 2D→3D 转换。详见 [GUI 使用指南](./gui_guide.md)。
+
+### 方式二：命令行脚本
+
+将您的 DXF 或 DWG 文件放入 `examples/cad_files/` 目录。
 
 ```bash
 # 运行完整示例
 python examples/scripts/quickstart.py
 ```
-
-### 3. 查看结果
 
 生成的3D模型将保存在 `examples/output/` 目录中。
 
@@ -144,8 +148,8 @@ from src.utils import load_config
 config = load_config()
 
 # 创建分析器
-api_key = config.get("api", {}).get("qwen", {}).get("api_key", "")
-analyzer_config = config.get("api", {}).get("qwen", {})
+api_key = config.get("api", {}).get("deepseek", {}).get("api_key", "")
+analyzer_config = config.get("api", {}).get("deepseek", {})
 analyzer = GeometryAnalyzer(api_key, analyzer_config)
 
 # 分析关系
@@ -193,8 +197,8 @@ parser = DXFParser("examples/dxf_files/your_file.dxf", config.get("dxf_parser", 
 geometry_data = parser.parse()
 
 # 3. 分析几何关系
-api_key = config.get("api", {}).get("qwen", {}).get("api_key", "")
-analyzer = GeometryAnalyzer(api_key, config.get("api", {}).get("qwen", {}))
+api_key = config.get("api", {}).get("deepseek", {}).get("api_key", "")
+analyzer = GeometryAnalyzer(api_key, config.get("api", {}).get("deepseek", {}))
 relationships = analyzer.analyze(geometry_data)
 
 # 4. 生成 3D 模型
@@ -232,7 +236,7 @@ python examples/scripts/test_config.py
 
 ### Q: API调用费用如何？
 
-A: 请参考阿里云百炼平台的定价页面。也可以使用本地几何计算库减少API调用（analyzer 会优先尝试本地计算）。
+A: 请参考 DeepSeek 平台的定价页面。也可以使用本地几何计算库减少API调用（analyzer 会优先尝试本地计算）。
 
 ### Q: DWG 转换失败可能原因？
 

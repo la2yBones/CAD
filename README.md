@@ -9,7 +9,7 @@
 ### 核心功能
 
 - **数据解析**：支持DXF/DWG格式解析，提取几何实体
-- **关系分析**：基于Qwen3.6的智能几何关系识别
+- **关系分析**：基于DeepSeek的智能几何关系识别
 - **建模生成**：自动生成FreeCAD建模脚本
 - **模型导出**：支持STEP、STL等格式导出
 - **可扩展性**：模块化设计，便于新增CAD格式支持
@@ -20,7 +20,7 @@
 |------|---------|------|
 | 开发语言 | Python | 3.10+ |
 | CAD解析 | ezdxf | 1.4.3+ |
-| AI模型 | 通义千问Qwen3.6 | Flash/Plus |
+| AI模型 | DeepSeek | V3/Chat |
 | 3D建模 | FreeCAD | 1.0+ |
 | DWG转换 | LibreDWG | 0.13.4+ |
 | 几何计算 | Shapely | 2.0+ |
@@ -73,7 +73,7 @@ pip install -r requirements.txt
 ### 2. 配置项目
 
 配置文件已设置完成，包含：
-- ✅ Qwen3.6 API 密钥
+- ✅ DeepSeek API 密钥
 - ✅ LibreDWG 路径
 - ✅ FreeCAD 路径
 
@@ -83,8 +83,8 @@ pip install -r requirements.txt
 # 测试配置和依赖
 python examples\scripts\test_config.py
 
-# 测试Qwen API
-python examples\scripts\test_qwen_api.py
+# 测试DeepSeek API
+python examples\scripts\test_api.py
 ```
 
 ### 4. 运行示例
@@ -115,8 +115,8 @@ parser = CADParser("examples/cad_files/sample.dxf", config.get("dxf_parser", {})
 geometry_data = parser.parse()
 
 # 2. 分析几何关系
-api_key = config.get("api", {}).get("qwen", {}).get("api_key", "")
-analyzer_config = config.get("api", {}).get("qwen", {})
+api_key = config.get("api", {}).get("deepseek", {}).get("api_key", "")
+analyzer_config = config.get("api", {}).get("deepseek", {})
 analyzer = GeometryAnalyzer(api_key, analyzer_config)
 relationships = analyzer.analyze(geometry_data)
 
@@ -146,7 +146,7 @@ from src.cad_parser import DXFParser  # 仍然可用！
 - [x] 项目结构搭建
 - [x] 配置文件和文档
 - [x] CAD解析模块基础（通用名称，支持扩展）
-- [x] Qwen API集成
+- [x] DeepSeek API集成
 - [ ] 完整几何关系分析
 - [ ] FreeCAD建模模块完善
 - [ ] 系统集成与测试
@@ -155,7 +155,7 @@ from src.cad_parser import DXFParser  # 仍然可用！
 ## 示例脚本说明
 
 - `test_config.py` - 测试环境配置和依赖
-- `test_qwen_api.py` - 测试Qwen API连接和几何分析
+- `test_api.py` - 测试DeepSeek API连接和几何分析
 - `test_dwg_conversion.py` - 测试DWG文件处理功能
 - `create_sample_dxf.py` - 创建示例DXF文件
 - `quickstart.py` - 完整的端到端示例

@@ -3,12 +3,14 @@
 
 # API配置
 api:
-  qwen:
-    api_key: "your-dashscope-api-key-here"
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    model: "qwen3.6-plus"
-    temperature: 0.3
+  deepseek:
+    api_key: "your-deepseek-api-key-here"
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-v4-pro"
     max_tokens: 4096
+    max_prompt_tokens: 12000
+    thinking: true  # 思考模式，DeepSeek V4 推荐开启
+    reasoning_effort: "max"  # 思考强度: high(默认) / max(最大)
 
 # DXF解析配置
 dxf_parser:
@@ -27,13 +29,19 @@ dxf_parser:
     - "LWPOLYLINE"
     - "TEXT"
     - "MTEXT"
-  oda_converter_path: ""  # ODA File Converter路径（可选）
+    - "ELLIPSE"
+    - "SPLINE"
+    - "DIMENSION"
+    - "INSERT"
   libredwg_path: "D:\\Code\\libredwg-0.13.4.8160-win64"  # LibreDWG路径，用于DWG→DXF转换
-  dwg_converter: "libredwg"  # 可选: "libredwg" 或 "oda"
 
 # FreeCAD路径配置
+# 系统会自动检测运行环境，选择合适的调用方式：
+#   - direct 模式: 在 FreeCAD 自带 Python 中运行时直接导入
+#   - subprocess 模式: 在系统 Python 中通过子进程调用 FreeCAD Python
 freecad:
-  bin_path: "D:\\FreeCAD 1.0\\bin"  # FreeCAD二进制文件目录
+  bin_path: "D:\\FreeCAD 1.0\\bin"  # FreeCAD二进制文件目录（含 python.exe）
+  script_timeout: 300  # 子进程模式下的脚本执行超时(秒)
 
 # 3D建模配置
 modeling:

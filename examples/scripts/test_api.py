@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """
-测试 Qwen3.6 API 连接和基本功能
+测试 DeepSeek API 连接和基本功能
 """
 
 import sys
@@ -17,13 +17,13 @@ from src.utils import setup_logging, load_config
 def test_basic_api_call(config):
     """测试基本的 API 调用"""
     print("\n" + "=" * 50)
-    print("测试 Qwen3.6 API 连接")
+    print("测试 DeepSeek API 连接")
     print("=" * 50)
     
-    api_config = config.get("api", {}).get("qwen", {})
+    api_config = config.get("api", {}).get("deepseek", {})
     api_key = api_config.get("api_key", "")
     
-    if not api_key or api_key == "your-dashscope-api-key-here":
+    if not api_key or api_key == "your-deepseek-api-key-here":
         print("❌ 请先配置 API 密钥")
         return False
     
@@ -34,23 +34,23 @@ def test_basic_api_call(config):
         
         client = OpenAI(
             api_key=api_key,
-            base_url=api_config.get("base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+            base_url=api_config.get("base_url", "https://api.deepseek.com")
         )
         
         print(f"✓ OpenAI 客户端创建成功")
         
         # 发送简单测试消息
         response = client.chat.completions.create(
-            model=api_config.get("model", "qwen3.6-plus"),
+            model=api_config.get("model", "deepseek-v4-pro"),
             messages=[
                 {"role": "user", "content": "你好，请自我介绍一下"}
             ],
             max_tokens=200,
-            temperature=0.7
+            extra_body={"thinking": {"type": "enabled", "reasoning_effort": api_config.get("reasoning_effort", "max")}} if api_config.get("thinking", True) else None,
         )
         
         print(f"✓ API 调用成功!")
-        print(f"\nQwen 回复:")
+        print(f"\nDeepSeek 回复:")
         print("-" * 50)
         print(response.choices[0].message.content)
         print("-" * 50)
@@ -65,18 +65,18 @@ def test_basic_api_call(config):
 
 
 def test_geometry_analysis(config):
-    """测试几何分析功能"""
+    """测试智能几何分析功能"""
     print("\n" + "=" * 50)
-    print("测试几何关系分析")
+    print("测试智能几何分析（视图识别 + 尺寸提取 + 建模指令）")
     print("=" * 50)
     
     try:
-        from src.geometry_analyzer import GeometryAnalyzer
+        from src.intelligent_analyzer import IntelligentEngineeringAnalyzer
         
-        api_config = config.get("api", {}).get("qwen", {})
+        api_config = config.get("api", {}).get("deepseek", {})
         api_key = api_config.get("api_key", "")
         
-        analyzer = GeometryAnalyzer(api_key, api_config)
+        analyzer = IntelligentEngineeringAnalyzer(api_key, api_config, enable_cache=False)
         
         # 测试数据 - 简单几何图形
         test_data = {
@@ -102,23 +102,23 @@ def test_geometry_analysis(config):
         print(f"  - 圆1: 中心(0,0), 半径10")
         print(f"  - 圆2: 中心(0,0), 半径5")
         
-        result = analyzer.analyze(test_data)
+        result = analyzer.analyze_full(test_data)
         
         print(f"\n✓ 分析结果:")
         print("-" * 50)
-        print(f"分析方法: {result.get('method', 'unknown')}")
-        print(f"总结: {result.get('summary', '无总结')}")
-        
-        if "entity_pairs" in result:
-            print(f"\n识别到 {len(result['entity_pairs'])} 对关系:")
-            for pair in result["entity_pairs"]:
-                print(f"  - 实体{pair['id1']} <-> 实体{pair['id2']}: {pair['relationship']}")
+        view_analysis = result.get("view_analysis", {})
+        dim_extraction = result.get("dimension_extraction", {})
+        modeling = result.get("modeling_instructions", {})
+        print(f"视图识别: {len(view_analysis.get('views', []))} 个视图")
+        print(f"尺寸提取: {dim_extraction.get('total', 0)} 个尺寸")
+        print(f"建模策略: {modeling.get('modeling_strategy', '无')}")
+        print(f"分析总结: {modeling.get('analysis_summary', '无')}")
         
         print("-" * 50)
         return True
         
     except Exception as e:
-        print(f"❌ 几何分析测试失败: {e}")
+        print(f"❌ 智能分析测试失败: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -126,7 +126,7 @@ def test_geometry_analysis(config):
 
 def main():
     print("\n" + "=" * 50)
-    print("Qwen3.6 API 测试工具")
+    print("DeepSeek API 测试工具")
     print("=" * 50)
     
     # 加载配置

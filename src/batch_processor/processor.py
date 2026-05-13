@@ -73,6 +73,158 @@ class CADProcessor:
             self._modeler = FreeCADModeler
         return self._modeler
 
+    def _analyze_view_context(
+        self,
+        geometry_data: Dict[str, Any],
+        analysis_result: Optional[Dict[str, Any]] = None,
+        source_name: Optional[str] = None
+    ) -> Tuple[Dict[str, Any], bool]:
+        """Detect whether the drawing is a multi-view engineering drawing."""
+        view_analysis = {}
+
+        if analysis_result:
+            view_analysis = analysis_result.get("view_analysis") or {}
+
+        if not view_analysis:
+            try:
+                from src.intelligent_analyzer.view_analyzer import EngineeringViewAnalyzer
+                view_analysis = EngineeringViewAnalyzer(self.config).analyze_views(
+                    geometry_data,
+                    source_name=source_name
+                )
+            except Exception as e:
+                logger.warning(f"视图识别失败，暂按单视图处理: {e}")
+                return {}, False
+
+        is_multiview = self._is_multiview_view_analysis(view_analysis)
+        if source_name and self._has_planar_name_hint(source_name):
+            is_multiview = False
+        elif not is_multiview and source_name:
+            stem = Path(source_name).stem
+            is_multiview = any(
+                marker in stem
+                for marker in ("二视图", "两视图", "三视图", "多视图")
+            )
+
+        return view_analysis, is_multiview
+
+    def _has_planar_name_hint(self, source_name: str) -> bool:
+        """Treat assembly drawings as single-sheet planar/section drawings."""
+        stem = Path(source_name).stem
+        explicit_multiview = any(
+            marker in stem
+            for marker in ("二视图", "两视图", "三视图", "多视图")
+        )
+        if explicit_multiview:
+            return False
+
+        return any(marker in stem for marker in ("装配图", "总装图"))
+
+    def _is_multiview_view_analysis(self, view_analysis: Dict[str, Any]) -> bool:
+        """Return True when the view analyzer found two or more projected views."""
+        drawing_type = view_analysis.get("drawing_type")
+        if drawing_type in ("assembly_drawing", "single_view", "section_view"):
+            return False
+        if drawing_type in ("two_view", "three_view"):
+            return True
+
+        views = view_analysis.get("views") or []
+        relationships = view_analysis.get("relationships") or []
+
+        named_views = [
+            v for v in views
+            if v.get("name") not in ("single", "unknown", None)
+        ]
+        view_names = {v.get("name") for v in named_views}
+
+        if len(named_views) < 2:
+            return False
+
+        strong_relationships = [
+            rel for rel in relationships
+            if self._is_strong_projection_relationship(rel)
+        ]
+
+        if strong_relationships:
+            return True
+
+        return False
+
+    def _is_strong_projection_relationship(self, relationship: Dict[str, Any]) -> bool:
+        """Only treat validated projection alignment as a multi-view signal."""
+        if relationship.get("type") != "projection":
+            return False
+
+        description = str(relationship.get("description", ""))
+        if "偏差较大" in description:
+            return False
+
+        strong_markers = ("长对正", "高平齐", "宽相等")
+        if any(marker in description for marker in strong_markers):
+            return True
+
+        return any(
+            marker in str(value)
+            for key, value in relationship.items()
+            if key != "description"
+            for marker in strong_markers
+        )
+
+    def _build_multiview_block_message(
+        self,
+        view_analysis: Dict[str, Any],
+        reason: Optional[str] = None
+    ) -> str:
+        """Build a user-facing message for blocked planar extrusion fallback."""
+        label_map = {
+            "main": "主视图",
+            "top": "俯视图",
+            "bottom": "仰视图",
+            "left": "左视图",
+            "right": "右视图",
+        }
+        names = [
+            label_map.get(v.get("name"), str(v.get("name")))
+            for v in view_analysis.get("views", [])
+            if v.get("name") not in ("single", "unknown", None)
+        ]
+        view_text = "、".join(names) if names else "多个投影视图"
+        prefix = f"{reason}；" if reason else ""
+        return (
+            f"{prefix}检测到二视图/三视图工程图（{view_text}）。"
+            "当前通用建模器只能处理单一闭合轮廓的平面拉伸，"
+            "已阻止直接拉伸以避免生成错误模型。"
+            "请使用智能模式并确保 AI 生成可用的 FreeCAD 多视图建模脚本，"
+            "或实现多视图投影重建策略后再转换。"
+        )
+
+    def _is_fallback_modeling_result(self, modeling_result: Dict[str, Any]) -> bool:
+        """Detect the local fallback script generated when AI modeling failed."""
+        summary = str(modeling_result.get("analysis_summary", ""))
+        strategy = str(modeling_result.get("modeling_strategy", ""))
+        warnings = " ".join(str(item) for item in modeling_result.get("warnings", []) or [])
+
+        failure_text = " ".join([summary, strategy, warnings])
+        hard_failure_markers = (
+            "分析失败",
+            "生成失败",
+            "使用降级建模方法",
+            "降级建模",
+            "使用基础建模方法",
+            "基础拉伸降级",
+        )
+        if any(marker in failure_text for marker in hard_failure_markers):
+            return True
+
+        script = str(modeling_result.get("freecad_script", ""))
+        fallback_script_markers = (
+            "_group_entities_into_contours",
+            "for contour in contours",
+            "GeneratedModel",
+            "extrude_height =",
+        )
+        return sum(marker in script for marker in fallback_script_markers) >= 3
+
     def process_single_file(self, file_path: str, output_structure: Dict[str, Path],
                             extrude_height: float = 10.0,
                             enable_analysis: bool = True) -> CADProcessResult:
@@ -137,6 +289,22 @@ class CADProcessor:
                         logger.info("智能分析完成")
                     except Exception as e:
                         logger.warning(f"智能分析失败，使用纯几何建模: {e}")
+
+            view_analysis, is_multiview = self._analyze_view_context(
+                geometry_data,
+                result.intelligent_analysis,
+                source_name=file_path
+            )
+            if is_multiview:
+                result.intelligent_analysis = result.intelligent_analysis or {
+                    "view_analysis": view_analysis
+                }
+                result.error_message = self._build_multiview_block_message(
+                    view_analysis,
+                    reason="当前入口未执行 AI 建模脚本"
+                )
+                logger.warning(result.error_message)
+                return result
 
             # 3. 生成3D模型
             modeler_config = {}
@@ -207,10 +375,16 @@ class CADProcessor:
                 parser.export_json(str(output_structure['geometry']))
                 result.output_paths['geometry'] = str(output_structure['geometry'])
 
+            view_analysis, is_multiview = self._analyze_view_context(
+                geometry_data,
+                source_name=file_path
+            )
+
             # 2. 智能分析
             api_key = self.config.get("api", {}).get("deepseek", {}).get("api_key", "")
             has_ai_script = False
             ai_script_content = None
+            modeling_instructions = {}
 
             if api_key and api_key != "your-deepseek-api-key-here":
                 try:
@@ -242,12 +416,27 @@ class CADProcessor:
                     
                     # 获取AI生成的脚本
                     if 'modeling_instructions' in analysis_result:
-                        ai_script_content = analysis_result['modeling_instructions'].get('freecad_script')
+                        modeling_instructions = analysis_result['modeling_instructions']
+                        ai_script_content = modeling_instructions.get('freecad_script')
                         has_ai_script = bool(ai_script_content)
+
+                    view_analysis, is_multiview = self._analyze_view_context(
+                        geometry_data,
+                        analysis_result,
+                        source_name=file_path
+                    )
                         
                 except Exception as e:
                     logger.warning(f"智能分析失败: {e}")
                     logger.warning(traceback.format_exc())
+
+            if is_multiview and has_ai_script and self._is_fallback_modeling_result(modeling_instructions):
+                result.error_message = self._build_multiview_block_message(
+                    view_analysis,
+                    reason="AI 未能生成可靠的多视图建模脚本，当前脚本属于基础拉伸降级方案"
+                )
+                logger.warning(result.error_message)
+                return result
 
             # 3. 生成3D模型 - 优先使用AI脚本
             if has_ai_script and ai_script_content:
@@ -278,6 +467,14 @@ class CADProcessor:
 
             # 如果没有AI脚本，使用通用建模器
             if not has_ai_script:
+                if is_multiview:
+                    result.error_message = self._build_multiview_block_message(
+                        view_analysis,
+                        reason="未获得可执行的 AI 多视图建模脚本"
+                    )
+                    logger.warning(result.error_message)
+                    return result
+
                 logger.info("使用通用建模器")
                 modeler_config = {}
                 if "freecad" in self.config:
@@ -329,6 +526,17 @@ class CADProcessor:
         result.entity_count = len(geometry_data.get('entities', []))
 
         try:
+            allow_planar_extrude = bool((relationships or {}).get("allow_planar_extrude"))
+            view_analysis, is_multiview = self._analyze_view_context(geometry_data)
+            if is_multiview and not allow_planar_extrude:
+                result.intelligent_analysis = {"view_analysis": view_analysis}
+                result.error_message = self._build_multiview_block_message(
+                    view_analysis,
+                    reason="直接几何数据入口未声明允许平面拉伸"
+                )
+                logger.warning(result.error_message)
+                return result
+
             modeler_config = {}
             if "freecad" in self.config:
                 modeler_config.update(self.config.get("freecad", {}))

@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 from .view_analyzer import EngineeringViewAnalyzer
+from .llm_view_analyzer import LLMViewAnalyzer
 from .dimension_extractor import DimensionExtractor
 from .modeling_generator import FreeCADInstructionGenerator
 
@@ -22,6 +23,8 @@ class IntelligentEngineeringAnalyzer:
     智能工程图纸分析器
     集成所有分析功能的完整管道
     """
+
+    ANALYSIS_VERSION = "llm_view_classifier_v1"
 
     def __init__(self, api_key: str, config: Optional[Dict] = None,
                  enable_cache: bool = True,
@@ -41,6 +44,7 @@ class IntelligentEngineeringAnalyzer:
         self.config = config or {}
 
         self.view_analyzer = EngineeringViewAnalyzer(config)
+        self.llm_view_analyzer = LLMViewAnalyzer(api_key, config)
         self.dimension_extractor = DimensionExtractor(config)
         self.modeling_generator = FreeCADInstructionGenerator(api_key, config)
 
@@ -72,29 +76,43 @@ class IntelligentEngineeringAnalyzer:
         Returns:
             完整分析结果字典
         """
+        analysis_params = {"analysis_version": self.ANALYSIS_VERSION}
+
         # 尝试从缓存读取
         if self.cache and file_path:
-            cached = self.cache.get(file_path, extrude_height)
+            cached = self.cache.get(file_path, extrude_height, analysis_params=analysis_params)
             if cached:
                 logger.info("从缓存加载分析结果")
                 return cached
 
         logger.info("=== 开始智能工程图纸分析 ===")
 
-        # 1. 视图分析
-        logger.info("步骤1: 分析视图结构...")
-        view_result = self.view_analyzer.analyze_views(geometry_data)
+        # 1. 本地规则视图初判
+        logger.info("步骤1: 本地规则分析视图结构...")
+        rule_view_result = self.view_analyzer.analyze_views(
+            geometry_data,
+            source_name=file_path
+        )
 
         # 2. 尺寸提取
         logger.info("步骤2: 提取尺寸标注...")
         dimension_result = self.dimension_extractor.extract_dimensions(geometry_data)
 
-        # 3. 本地几何关系分析 (STRtree, O(n log n))
-        logger.info("步骤3: 本地几何关系分析...")
+        # 3. 大模型视图语义校正
+        logger.info("步骤3: LLM校正视图语义...")
+        view_result = self.llm_view_analyzer.refine_view_analysis(
+            geometry_data=geometry_data,
+            rule_result=rule_view_result,
+            dimension_data=dimension_result,
+            file_path=file_path,
+        )
+
+        # 4. 本地几何关系分析 (STRtree, O(n log n))
+        logger.info("步骤4: 本地几何关系分析...")
         local_analysis = self._analyze_local_fallback(geometry_data)
 
-        # 4. 生成建模指令 (AI, 传入本地分析结果作为辅助)
-        logger.info("步骤4: 生成FreeCAD建模指令...")
+        # 5. 生成建模指令 (AI, 传入校正后的视图分析)
+        logger.info("步骤5: 生成FreeCAD建模指令...")
         enriched_geometry = dict(geometry_data)
         if local_analysis:
             enriched_geometry["_local_relationships"] = local_analysis
@@ -107,6 +125,7 @@ class IntelligentEngineeringAnalyzer:
 
         result = {
             "view_analysis": view_result,
+            "rule_view_analysis": rule_view_result,
             "dimension_extraction": dimension_result,
             "local_relationships": local_analysis,
             "modeling_instructions": modeling_result
@@ -116,7 +135,12 @@ class IntelligentEngineeringAnalyzer:
 
         # 保存到缓存
         if self.cache and file_path:
-            self.cache.set(file_path, extrude_height, result)
+            self.cache.set(
+                file_path,
+                extrude_height,
+                result,
+                analysis_params=analysis_params
+            )
 
         return result
 

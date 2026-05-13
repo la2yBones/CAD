@@ -91,13 +91,24 @@ JSON必须包含以下字段：
                 extra_body=extra_body
             )
 
-            content = response.choices[0].message.content
+            choice = response.choices[0]
+            finish_reason = getattr(choice, "finish_reason", None)
+            message = choice.message
+            content = message.content
+            content_length = len(content) if content else 0
+            logger.info(
+                f"AI响应已返回: finish_reason={finish_reason}, content长度={content_length}"
+            )
             if not content:
-                reasoning = getattr(response.choices[0].message, 'reasoning_content', None)
+                reasoning = getattr(message, 'reasoning_content', None)
                 if reasoning:
-                    logger.warning("AI response content is empty (all tokens consumed by reasoning). "
-                                   "Will rely on reasoning_content for fallback extraction.")
-                raise ValueError("Empty response content from AI model")
+                    logger.warning(
+                        "AI正文为空，尝试从 reasoning_content 中提取建模JSON；"
+                        f"reasoning长度={len(reasoning)}"
+                    )
+                    content = reasoning
+                else:
+                    raise ValueError("AI响应正文为空，且没有 reasoning_content 可解析")
 
             result = self._extract_json(content)
             logger.info("建模指令生成成功")

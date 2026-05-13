@@ -47,7 +47,11 @@ class EngineeringViewAnalyzer:
             logger.info("scikit-learn not available, using zone-based view detection")
             return False
 
-    def analyze_views(self, geometry_data: Dict[str, Any]) -> Dict[str, Any]:
+    def analyze_views(
+        self,
+        geometry_data: Dict[str, Any],
+        source_name: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         分析工程图纸视图结构
           1. 自适应间隙检测分区 (首选)
@@ -59,6 +63,29 @@ class EngineeringViewAnalyzer:
         entities = geometry_data.get("entities", [])
 
         layers = self._group_by_layer(entities)
+
+        if self._has_planar_name_hint(source_name):
+            logger.info("检测到装配图/总装图命名，按单张整体图纸处理")
+            return {
+                "views": [{
+                    "name": "single",
+                    "type": "单张装配/平面图",
+                    "entities": entities,
+                    "entity_count": len(entities),
+                    "bbox": self._compute_bbox(entities),
+                    "layers": list(layers.keys()),
+                }],
+                "relationships": [],
+                "layers": list(layers.keys()),
+                "total_entities": len(entities),
+                "detection_method": "filename_planar_hint",
+            }
+
+        if self._has_two_view_name_hint(source_name):
+            two_view_result = self._analyze_explicit_two_view(entities, layers)
+            if two_view_result:
+                logger.info("检测到二视图命名，按两视图结构识别")
+                return two_view_result
 
         structural_entities = [
             e for e in entities
@@ -110,6 +137,115 @@ class EngineeringViewAnalyzer:
 
         logger.info(f"视图分析完成: {len(views)} 个视图 ({detection_method})")
         return result
+
+    def _has_planar_name_hint(self, source_name: Optional[str]) -> bool:
+        if not source_name:
+            return False
+
+        stem = str(source_name)
+        explicit_multiview = any(
+            marker in stem
+            for marker in ("二视图", "两视图", "三视图", "多视图")
+        )
+        if explicit_multiview:
+            return False
+
+        return any(marker in stem for marker in ("装配图", "总装图"))
+
+    def _has_two_view_name_hint(self, source_name: Optional[str]) -> bool:
+        if not source_name:
+            return False
+
+        stem = str(source_name)
+        return any(marker in stem for marker in ("二视图", "两视图"))
+
+    def _analyze_explicit_two_view(
+        self,
+        entities: List[Dict],
+        layers: Dict[str, List[Dict]]
+    ) -> Optional[Dict[str, Any]]:
+        structural_entities = [
+            e for e in entities
+            if e.get("type") not in ("TEXT", "MTEXT", "DIMENSION")
+        ]
+
+        points: List[Tuple[Dict, Tuple[float, float]]] = []
+        for entity in structural_entities:
+            center = self._get_entity_center(entity)
+            if center is not None:
+                points.append((entity, center))
+
+        if len(points) < self.DBSCAN_MIN_SAMPLES * 2:
+            return None
+
+        split = self._find_best_two_view_split(points)
+        if split is None:
+            return None
+
+        axis, group_a, group_b = split
+        if len(group_a) < self.DBSCAN_MIN_SAMPLES or len(group_b) < self.DBSCAN_MIN_SAMPLES:
+            return None
+
+        centroid_a = self._compute_centroid(group_a)
+        centroid_b = self._compute_centroid(group_b)
+
+        if axis == "y":
+            lower, upper = (group_a, group_b) if centroid_a[1] <= centroid_b[1] else (group_b, group_a)
+            view_defs = [("main", "主视图", lower), ("top", "俯视图", upper)]
+        else:
+            left, right = (group_a, group_b) if centroid_a[0] <= centroid_b[0] else (group_b, group_a)
+            view_defs = [("main", "主视图", left), ("right", "右视图", right)]
+
+        views = []
+        for name, view_type, group in view_defs:
+            views.append({
+                "name": name,
+                "type": view_type,
+                "entities": group,
+                "entity_count": len(group),
+                "bbox": self._compute_bbox_for_cluster(group),
+                "centroid": list(self._compute_centroid(group)),
+                "layers": list(set(e.get("layer", "default") for e in group)),
+            })
+
+        relationships = self._analyze_projection_relationships(views)
+        return {
+            "views": views,
+            "relationships": relationships,
+            "layers": list(layers.keys()),
+            "total_entities": len(entities),
+            "detection_method": "filename_two_view_split",
+        }
+
+    def _find_best_two_view_split(
+        self,
+        points: List[Tuple[Dict, Tuple[float, float]]]
+    ) -> Optional[Tuple[str, List[Dict], List[Dict]]]:
+        best: Optional[Tuple[float, str, int, List[Tuple[Dict, Tuple[float, float]]]]] = None
+
+        for axis, idx in (("x", 0), ("y", 1)):
+            sorted_points = sorted(points, key=lambda item: item[1][idx])
+            values = [p[1][idx] for p in sorted_points]
+            data_range = values[-1] - values[0]
+            if data_range <= 0:
+                continue
+
+            for i in range(self.DBSCAN_MIN_SAMPLES - 1, len(values) - self.DBSCAN_MIN_SAMPLES):
+                gap = values[i + 1] - values[i]
+                ratio = gap / data_range
+                if ratio < 0.12:
+                    continue
+
+                if best is None or ratio > best[0]:
+                    best = (ratio, axis, i, sorted_points)
+
+        if best is None:
+            return None
+
+        _, axis, split_index, sorted_points = best
+        group_a = [entity for entity, _ in sorted_points[:split_index + 1]]
+        group_b = [entity for entity, _ in sorted_points[split_index + 1:]]
+        return axis, group_a, group_b
 
     def _adaptive_zone_detect(
         self, centers: List[Tuple[float, float]], entities: List[Dict]

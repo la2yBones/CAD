@@ -4,12 +4,14 @@
 智能工程图纸分析模块
 """
 from .view_analyzer import EngineeringViewAnalyzer
+from .llm_view_analyzer import LLMViewAnalyzer
 from .dimension_extractor import DimensionExtractor
 from .modeling_generator import FreeCADInstructionGenerator
 from .pipeline import IntelligentEngineeringAnalyzer
 
 __all__ = [
     "EngineeringViewAnalyzer",
+    "LLMViewAnalyzer",
     "DimensionExtractor",
     "FreeCADInstructionGenerator",
     "IntelligentEngineeringAnalyzer"

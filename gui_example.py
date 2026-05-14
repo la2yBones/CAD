@@ -196,25 +196,15 @@ class CacheManagerPanel(ttk.Frame):
         return self._cache
 
     def _build_ui(self):
-        # 顶部统计栏
-        stats_frame = ttk.LabelFrame(self, text="缓存统计", padding=5)
-        stats_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
-
-        self.stats_vars = {}
-        row_frame = ttk.Frame(stats_frame)
-        row_frame.pack(fill=tk.X)
-        for col, (label, key) in enumerate([
-            ("条目数", "count"), ("总大小", "size"), ("已过期", "expired"),
-        ]):
-            ttk.Label(row_frame, text=label + ":").grid(row=0, column=col * 2, padx=(0, 2), sticky=tk.E)
-            var = tk.StringVar(value="--")
-            self.stats_vars[key] = var
-            ttk.Label(row_frame, textvariable=var, foreground="darkblue", font=("", 9, "bold")).grid(
-                row=0, column=col * 2 + 1, padx=(0, 15), sticky=tk.W)
-
         # 缓存条目列表
         list_frame = ttk.LabelFrame(self, text="缓存条目", padding=5)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
+
+        header_frame = ttk.Frame(list_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(header_frame, text="缓存条目", font=("", 9, "bold")).pack(side=tk.LEFT)
+        self.stats_summary_var = tk.StringVar(value="条目数: -- | 总大小: -- | 已过期: --")
+        ttk.Label(header_frame, textvariable=self.stats_summary_var, foreground="darkblue").pack(side=tk.RIGHT)
 
         columns = ("source_file", "extrude_height", "size", "timestamp", "status")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
@@ -284,9 +274,9 @@ class CacheManagerPanel(ttk.Frame):
 
             exp_count = sum(1 for e in entries if e.get('expired'))
             total_size = stats.get('total_size_mb', 0)
-            self.stats_vars['count'].set(str(stats.get('total_count', 0)))
-            self.stats_vars['size'].set(f"{total_size:.2f} MB")
-            self.stats_vars['expired'].set(str(exp_count))
+            self.stats_summary_var.set(
+                f"条目数: {stats.get('total_count', 0)} | 总大小: {total_size:.2f} MB | 已过期: {exp_count}"
+            )
 
             for item in self.tree.get_children():
                 self.tree.delete(item)
@@ -403,11 +393,14 @@ class LogPanel(ttk.Frame):
         'DEBUG': '#808080',
     }
 
-    def __init__(self, parent, log_handler: GuiLogHandler, **kwargs):
+    def __init__(self, parent, log_handler: GuiLogHandler, app_config: Optional[AppConfig] = None, **kwargs):
         super().__init__(parent, **kwargs)
         self.log_handler = log_handler
+        self.app_config = app_config
         self.records: List[Dict] = []
         self.auto_scroll = tk.BooleanVar(value=True)
+        self.token_status_var = tk.StringVar(value="Tokens: 0 | 输入: 0 | 输出: 0 | 调用: 0")
+        self._last_token_refresh = 0.0
         self._build_ui()
         self._start_polling()
 
@@ -427,6 +420,10 @@ class LogPanel(ttk.Frame):
                                      values=["ALL", "INFO", "WARNING", "ERROR"], width=10)
         filter_combo.pack(side=tk.LEFT, padx=(0, 10))
         filter_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_filter())
+
+        ttk.Label(toolbar, textvariable=self.token_status_var, foreground="darkblue").pack(
+            side=tk.LEFT, padx=(0, 10)
+        )
 
         ttk.Checkbutton(toolbar, text="自动滚动", variable=self.auto_scroll).pack(side=tk.LEFT, padx=(0, 10))
 
@@ -473,7 +470,33 @@ class LogPanel(ttk.Frame):
             self.records = self.records[-max_display:]
 
         self._render_visible()
+        self._refresh_token_stats()
         self.after(200, self._poll_logs)
+
+    def _refresh_token_stats(self):
+        now = time.time()
+        if now - self._last_token_refresh < 1.0:
+            return
+        self._last_token_refresh = now
+
+        try:
+            from src.utils.config import load_config
+            from src.utils.llm_telemetry import default_llm_telemetry_store, summarize_records
+
+            config = load_config()
+            deepseek_config = config.get("api", {}).get("deepseek", {})
+            store = default_llm_telemetry_store(deepseek_config)
+            summary = summarize_records(store.read_recent(limit=1000))
+            self.token_status_var.set(
+                "Tokens: {total:,} | 输入: {prompt:,} | 输出: {completion:,} | 调用: {calls}".format(
+                    total=summary.get("total_tokens", 0),
+                    prompt=summary.get("prompt_tokens", 0),
+                    completion=summary.get("completion_tokens", 0),
+                    calls=summary.get("call_count", 0),
+                )
+            )
+        except Exception:
+            self.token_status_var.set("Tokens: -- | 输入: -- | 输出: -- | 调用: --")
 
     def _render_visible(self):
         search_text = self.search_var.get().lower()
@@ -574,6 +597,216 @@ class LogPanel(ttk.Frame):
             messagebox.showerror("导出失败", f"导出日志时出错:\n{e}")
 
 
+class LLMTelemetryPanel(ttk.Frame):
+    """LLM call telemetry viewer."""
+
+    def __init__(self, parent, app_config: AppConfig, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.app_config = app_config
+        self.records: List[Dict] = []
+        self._record_by_item: Dict[str, Dict] = {}
+        self._last_signature = ""
+        self._build_ui()
+        self._poll()
+
+    def _build_ui(self):
+        summary = ttk.Frame(self)
+        summary.pack(fill=tk.X, padx=5, pady=(5, 0))
+
+        self.summary_vars = {
+            "calls": tk.StringVar(value="调用次数: 0"),
+            "tokens": tk.StringVar(value="总 Tokens: 0"),
+            "prompt": tk.StringVar(value="输入 Tokens: 0"),
+            "completion": tk.StringVar(value="输出 Tokens: 0"),
+            "rate": tk.StringVar(value="生成速率: 0 Tokens/s"),
+            "duration": tk.StringVar(value="总耗时: 0.0s"),
+        }
+        for var in self.summary_vars.values():
+            ttk.Label(summary, textvariable=var, foreground="darkblue").pack(side=tk.LEFT, padx=(0, 14))
+        ttk.Button(summary, text="清空", command=self.clear_records).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(summary, text="刷新", command=self.refresh).pack(side=tk.RIGHT, padx=2)
+
+        list_frame = ttk.Frame(self)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        columns = ("time", "stage", "model", "status", "prompt", "completion", "total", "rate", "duration")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
+        headings = {
+            "time": "时间",
+            "stage": "阶段",
+            "model": "模型",
+            "status": "状态",
+            "prompt": "输入 Tokens",
+            "completion": "输出 Tokens",
+            "total": "总 Tokens",
+            "rate": "Tokens/s",
+            "duration": "耗时(秒)",
+        }
+        widths = {
+            "time": 155,
+            "stage": 145,
+            "model": 130,
+            "status": 65,
+            "prompt": 80,
+            "completion": 95,
+            "total": 80,
+            "rate": 70,
+            "duration": 70,
+        }
+        for col in columns:
+            self.tree.heading(col, text=headings[col])
+            self.tree.column(col, width=widths[col], minwidth=50)
+        vsb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.bind("<Double-1>", self._open_record_window)
+
+    def _telemetry_store(self):
+        from src.utils.config import load_config
+        from src.utils.llm_telemetry import default_llm_telemetry_store
+
+        config = load_config()
+        return default_llm_telemetry_store(config.get("api", {}).get("deepseek", {}))
+
+    def _poll(self):
+        self.refresh()
+        self.after(1000, self._poll)
+
+    def refresh(self):
+        try:
+            from src.utils.llm_telemetry import summarize_records
+
+            self.records = self._telemetry_store().read_recent(limit=1000)
+            signature = "|".join(str(r.get("call_id", "")) for r in self.records[-200:])
+            if signature != self._last_signature:
+                self._last_signature = signature
+                self._render_records()
+
+            summary = summarize_records(self.records)
+            self.summary_vars["calls"].set(f"调用次数: {summary.get('call_count', 0)}")
+            self.summary_vars["tokens"].set(f"总 Tokens: {summary.get('total_tokens', 0):,}")
+            self.summary_vars["prompt"].set(f"输入 Tokens: {summary.get('prompt_tokens', 0):,}")
+            self.summary_vars["completion"].set(f"输出 Tokens: {summary.get('completion_tokens', 0):,}")
+            self.summary_vars["rate"].set(
+                f"生成速率: {summary.get('completion_tokens_per_second', 0.0):.2f} Tokens/s"
+            )
+            self.summary_vars["duration"].set(f"总耗时: {summary.get('duration_seconds', 0.0):.1f}s")
+        except Exception as e:
+            logger.warning(f"LLM 调用记录不可用: {e}")
+
+    def clear_records(self):
+        if not messagebox.askyesno("清空大模型调用记录", "确定要清空所有大模型调用记录吗？"):
+            return
+        try:
+            store = self._telemetry_store()
+            if store.log_path.exists():
+                store.log_path.write_text("", encoding="utf-8")
+            self.records = []
+            self._last_signature = ""
+            self._render_records()
+            self.summary_vars["calls"].set("调用次数: 0")
+            self.summary_vars["tokens"].set("总 Tokens: 0")
+            self.summary_vars["prompt"].set("输入 Tokens: 0")
+            self.summary_vars["completion"].set("输出 Tokens: 0")
+            self.summary_vars["rate"].set("生成速率: 0 Tokens/s")
+            self.summary_vars["duration"].set("总耗时: 0.0s")
+            logger.info("大模型调用记录已清空")
+        except Exception as e:
+            messagebox.showerror("清空失败", f"清空大模型调用记录时出错:\n{e}")
+
+    def _render_records(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self._record_by_item.clear()
+
+        for record in reversed(self.records):
+            tokens = record.get("tokens") or {}
+            values = (
+                str(record.get("timestamp", ""))[:19],
+                self._display_stage(record.get("stage", "")),
+                record.get("model", ""),
+                self._display_status(record.get("status", "")),
+                tokens.get("prompt_tokens", 0),
+                tokens.get("completion_tokens", 0),
+                tokens.get("total_tokens", 0),
+                record.get("token_rate_completion_per_second", 0.0),
+                record.get("duration_seconds", 0.0),
+            )
+            item = self.tree.insert("", tk.END, values=values)
+            self._record_by_item[item] = record
+
+    def _display_stage(self, stage: str) -> str:
+        labels = {
+            "view_analysis": "视图语义校正",
+            "modeling_generation": "建模指令生成",
+            "self_test": "自测",
+        }
+        return labels.get(str(stage), str(stage))
+
+    def _display_status(self, status: str) -> str:
+        labels = {
+            "ok": "成功",
+            "error": "失败",
+        }
+        return labels.get(str(status), str(status))
+
+    def _open_record_window(self, _event=None):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        record = self._record_by_item.get(selected[0])
+        if not record:
+            return
+        payload = {
+            "元信息": {
+                "call_id": record.get("call_id"),
+                "timestamp": record.get("timestamp"),
+                "stage": record.get("stage"),
+                "provider": record.get("provider"),
+                "model": record.get("model"),
+                "file_path": record.get("file_path"),
+                "status": record.get("status"),
+                "duration_seconds": record.get("duration_seconds"),
+                "tokens": record.get("tokens"),
+                "token_rate_completion_per_second": record.get("token_rate_completion_per_second"),
+                "error": record.get("error"),
+            },
+            "原始请求": record.get("request"),
+            "原始响应": record.get("response"),
+        }
+        detail_win = tk.Toplevel(self)
+        detail_win.title(
+            f"大模型调用详情 - {self._display_stage(record.get('stage', ''))} - {self._display_status(record.get('status', ''))}"
+        )
+        detail_win.geometry("900x650")
+
+        header = ttk.Frame(detail_win)
+        header.pack(fill=tk.X, padx=10, pady=(10, 5))
+        ttk.Label(
+            header,
+            text=f"模型: {record.get('model', '')} | 状态: {self._display_status(record.get('status', ''))} | 双击记录时间: {str(record.get('timestamp', ''))[:19]}",
+        ).pack(side=tk.LEFT)
+
+        text_frame = ttk.Frame(detail_win)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        text_widget = tk.Text(text_frame, wrap=tk.NONE, font=("Consolas", 9))
+        vsb = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text_widget.yview)
+        hsb = ttk.Scrollbar(text_frame, orient=tk.HORIZONTAL, command=text_widget.xview)
+        text_widget.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        text_widget.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        text_frame.grid_rowconfigure(0, weight=1)
+        text_frame.grid_columnconfigure(0, weight=1)
+        text_widget.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        text_widget.configure(state="disabled")
+
+
+class ProcessingCancelled(RuntimeError):
+    """Raised when the GUI user requests cooperative cancellation."""
+
+
 class ProcessingPanel(ttk.Frame):
     """处理面板 — 文件选择、参数配置、处理控制"""
 
@@ -587,6 +820,10 @@ class ProcessingPanel(ttk.Frame):
         self.preview_canvas = preview_canvas
         self.pipeline = None
         self._processing = False
+        self._paused = False
+        self._cancel_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()
         self._build_ui()
 
     def _build_ui(self):
@@ -608,12 +845,12 @@ class ProcessingPanel(ttk.Frame):
         ttk.Entry(row2, textvariable=self.output_dir_var, width=50).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(row2, text="浏览", command=self._browse_output).pack(side=tk.LEFT, padx=(5, 0))
 
-        # 参数配置
-        param_frame = ttk.LabelFrame(self, text="参数配置", padding=10)
+        # 参数配置与处理控制
+        param_frame = ttk.LabelFrame(self, text="参数配置 / 处理控制", padding=10)
         param_frame.pack(fill=tk.X, padx=10, pady=5)
 
         row3 = ttk.Frame(param_frame)
-        row3.pack(fill=tk.X, pady=(0, 5))
+        row3.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(row3, text="拉伸高度 (mm):").pack(side=tk.LEFT, padx=(0, 5))
         self.height_var = tk.DoubleVar(value=self.app_config.get('processing', 'default_height', default=10.0))
         ttk.Spinbox(row3, from_=0.5, to=200, increment=0.5, textvariable=self.height_var, width=8).pack(side=tk.LEFT)
@@ -622,6 +859,37 @@ class ProcessingPanel(ttk.Frame):
         self.mode_var = tk.StringVar(value="intelligent")
         ttk.Radiobutton(row3, text="智能模式", variable=self.mode_var, value="intelligent").pack(side=tk.LEFT)
         ttk.Radiobutton(row3, text="基础模式", variable=self.mode_var, value="basic").pack(side=tk.LEFT, padx=(10, 0))
+
+        control_row = ttk.Frame(param_frame)
+        control_row.pack(fill=tk.X)
+        control_row.grid_columnconfigure(3, weight=1, minsize=60)
+
+        self.process_btn = ttk.Button(control_row, text="开始处理", width=12, command=self._start_processing)
+        self.process_btn.grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
+
+        self.pause_btn = ttk.Button(control_row, text="暂停", width=8, command=self._toggle_pause, state="disabled")
+        self.pause_btn.grid(row=0, column=1, sticky=tk.W, padx=(0, 6))
+
+        self.cancel_btn = ttk.Button(control_row, text="取消", width=8, command=self._cancel_processing, state="disabled")
+        self.cancel_btn.grid(row=0, column=2, sticky=tk.W, padx=(0, 10))
+
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(control_row, variable=self.progress_var, maximum=100, length=120)
+        self.progress_bar.grid(row=0, column=3, sticky=tk.EW, padx=(0, 10))
+
+        self.progress_label = tk.StringVar(value="就绪")
+        ttk.Label(control_row, textvariable=self.progress_label, foreground="gray", width=12).grid(
+            row=0, column=4, sticky=tk.W
+        )
+
+        secondary_row = ttk.Frame(param_frame)
+        secondary_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(secondary_row, text="打开STEP模型", width=14, command=self.on_open_step).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
+        ttk.Button(secondary_row, text="打开输出目录", width=14, command=self.on_open_output).pack(
+            side=tk.RIGHT
+        )
 
         # 文件列表
         list_frame = ttk.LabelFrame(self, text="CAD 文件列表", padding=10)
@@ -641,6 +909,7 @@ class ProcessingPanel(ttk.Frame):
 
         columns = ("filename", "type", "path")
         self.file_tree = ttk.Treeview(content_row, columns=columns, show="headings", height=6)
+        self.file_tree.configure(height=6)
         self.file_tree.heading("filename", text="文件名")
         self.file_tree.heading("type", text="类型")
         self.file_tree.heading("path", text="路径")
@@ -655,29 +924,6 @@ class ProcessingPanel(ttk.Frame):
 
         self.file_tree.bind("<<TreeviewSelect>>", self._on_file_selected)
         self.file_tree.bind("<Double-1>", lambda _event: self._preview_selected())
-
-        # 操作按钮
-        action_frame = ttk.Frame(self)
-        action_frame.pack(fill=tk.X, padx=10, pady=(5, 10))
-
-        self.process_btn = ttk.Button(action_frame, text="开始处理", width=12, command=self._start_processing)
-        self.process_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        right_actions = ttk.Frame(action_frame)
-        right_actions.pack(side=tk.RIGHT)
-        ttk.Button(right_actions, text="打开STEP模型", width=14, command=self.on_open_step).pack(
-            side=tk.LEFT, padx=(4, 0)
-        )
-        ttk.Button(right_actions, text="打开输出目录", width=14, command=self.on_open_output).pack(
-            side=tk.LEFT, padx=(6, 0)
-        )
-
-        self.progress_var = tk.DoubleVar(value=0)
-        self.progress_bar = ttk.Progressbar(action_frame, variable=self.progress_var, maximum=100, length=160)
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-
-        self.progress_label = tk.StringVar(value="就绪")
-        ttk.Label(action_frame, textvariable=self.progress_label, foreground="gray").pack(side=tk.LEFT)
 
     def _browse_input(self):
         path = filedialog.askdirectory(title="选择输入目录", initialdir=self.input_dir_var.get())
@@ -733,20 +979,9 @@ class ProcessingPanel(ttk.Frame):
         """查找统一预览缓存目录中的 PNG；旧 output 位置仅作兼容读取。"""
         from src.utils.preview_cache import get_preview_cache_path
 
-        stem = Path(filepath).stem
         shared_preview = get_preview_cache_path(filepath)
         if shared_preview.exists() and shared_preview.stat().st_size >= 500:
             return str(shared_preview)
-
-        output_dir = Path(self.output_dir_var.get() or "examples/output")
-        candidates = [
-            output_dir / stem / f"{stem}_preview.png",
-            output_dir / stem / "sample_preview.png",
-            output_dir / f"{stem}_preview.png",
-        ]
-        for candidate in candidates:
-            if candidate.exists() and candidate.stat().st_size >= 500:
-                return str(candidate)
         return ""
 
     def _generate_and_show_preview(self, filepath: str):
@@ -818,6 +1053,45 @@ class ProcessingPanel(ttk.Frame):
                 "可以到输出目录中查看对应的 PNG 预览图。"
             )
 
+    def _toggle_pause(self):
+        if not self._processing:
+            return
+        if self._paused:
+            self._paused = False
+            self._pause_event.set()
+            self.pause_btn.configure(text="暂停")
+            self.progress_label.set("继续处理中...")
+            logger.info("处理已继续")
+        else:
+            self._paused = True
+            self._pause_event.clear()
+            self.pause_btn.configure(text="继续")
+            self.progress_label.set("已暂停")
+            logger.info("处理已暂停，当前阶段结束后会停在下一步")
+
+    def _cancel_processing(self):
+        if not self._processing:
+            return
+        if not messagebox.askyesno("取消处理", "确定要取消当前图纸处理任务吗？当前正在执行的外部调用会在返回后停止后续步骤。"):
+            return
+        self._cancel_event.set()
+        self._paused = False
+        self._pause_event.set()
+        self.pause_btn.configure(text="暂停", state="disabled")
+        self.cancel_btn.configure(state="disabled")
+        self.progress_label.set("正在取消...")
+        logger.warning("已请求取消处理，等待当前阶段结束")
+
+    def _check_control_state(self, stage: str = ""):
+        while not self._pause_event.is_set():
+            if self._cancel_event.is_set():
+                raise ProcessingCancelled("处理已取消")
+            time.sleep(0.1)
+        if self._cancel_event.is_set():
+            raise ProcessingCancelled("处理已取消")
+        if stage:
+            logger.debug(f"继续处理阶段: {stage}")
+
     def _start_processing(self):
         if self._processing:
             messagebox.showinfo(
@@ -839,7 +1113,12 @@ class ProcessingPanel(ttk.Frame):
         height = self.height_var.get()
 
         self._processing = True
+        self._paused = False
+        self._cancel_event.clear()
+        self._pause_event.set()
         self.process_btn.configure(state="disabled", text="处理中...")
+        self.pause_btn.configure(state="normal", text="暂停")
+        self.cancel_btn.configure(state="normal")
         self.progress_var.set(0)
         self.progress_label.set("准备中...")
         logger.info(f"开始处理: {Path(filepath).name} (模式: {mode}, 高度: {height}mm)")
@@ -850,6 +1129,7 @@ class ProcessingPanel(ttk.Frame):
     def _run_processing(self, filepath: str, mode: str, height: float):
         start_time = time.time()
         try:
+            self._check_control_state("start")
             config = self._load_config()
             from src.batch_processor import CADPipeline
 
@@ -861,19 +1141,24 @@ class ProcessingPanel(ttk.Frame):
 
             self._update_progress(10, "解析中...")
 
+            self._check_control_state("pipeline-ready")
+
             if mode != "basic":
                 if mode != "intelligent":
                     logger.warning(f"未知处理模式 {mode!r}，默认使用智能模式")
                 logger.info("使用智能分析模式（AI视图校正 + AI脚本建模）")
                 self.pipeline.processor.process_with_intelligent_analysis = self._wrap_intelligent(
                     self.pipeline.processor.process_with_intelligent_analysis)
+                self._check_control_state("before-intelligent-processing")
                 result = self.pipeline.process_file_intelligent(filepath, height)
             else:
                 logger.info("使用基础模式（不调用AI脚本建模）")
+                self._check_control_state("before-basic-processing")
                 result = self.pipeline.process_file(filepath, height, enable_analysis=False)
 
             self._update_progress(90, "完成，正在生成报告...")
 
+            self._check_control_state("processing-finished")
             elapsed = time.time() - start_time
             if result.success:
                 logger.info(f"处理成功 | 耗时: {elapsed:.1f}s | 实体数: {result.entity_count}")
@@ -892,6 +1177,10 @@ class ProcessingPanel(ttk.Frame):
                     "1. FreeCAD 是否可用。\n"
                     "2. 输出目录是否可写。\n"
                     "3. 图纸是否包含可建模的封闭轮廓。"))
+        except ProcessingCancelled:
+            elapsed = time.time() - start_time
+            logger.warning(f"处理已取消 | 耗时: {elapsed:.1f}s")
+            self.after(0, lambda: self.progress_label.set("已取消"))
         except Exception as e:
             elapsed = time.time() - start_time
             logger.error(f"处理异常 | 耗时: {elapsed:.1f}s | {e}")
@@ -903,7 +1192,11 @@ class ProcessingPanel(ttk.Frame):
                 "详细错误已写入下方“处理日志”，请复制日志用于排查。"))
         finally:
             self._processing = False
+            self._paused = False
+            self._pause_event.set()
             self.after(0, lambda: self.process_btn.configure(state="normal", text="开始处理"))
+            self.after(0, lambda: self.pause_btn.configure(state="disabled", text="暂停"))
+            self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
 
     def _wrap_intelligent(self, original_fn):
         def wrapped(file_path, output_structure, extrude_height):
@@ -992,10 +1285,15 @@ class CADApplication(tk.Tk):
 
     def _build_ui(self):
         main_paned = ttk.PanedWindow(self, orient=tk.VERTICAL)
+        self.main_paned = main_paned
         main_paned.pack(fill=tk.BOTH, expand=True)
 
-        top_frame = ttk.Frame(main_paned, height=550)
-        main_paned.add(top_frame, weight=2)
+        top_frame = ttk.Frame(main_paned)
+        main_paned.add(top_frame, weight=4)
+
+        bottom_frame = ttk.Frame(main_paned, height=320)
+        bottom_frame.pack_propagate(False)
+        main_paned.add(bottom_frame, weight=1)
 
         top_paned = ttk.PanedWindow(top_frame, orient=tk.HORIZONTAL)
         top_paned.pack(fill=tk.BOTH, expand=True)
@@ -1026,17 +1324,32 @@ class CADApplication(tk.Tk):
         )
         self.processing_panel.pack(fill=tk.BOTH, expand=True)
 
-        bottom_frame = ttk.Frame(main_paned, height=280)
-        main_paned.add(bottom_frame, weight=1)
-
         notebook = ttk.Notebook(bottom_frame)
         notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
 
-        self.log_panel = LogPanel(notebook, self.log_handler)
+        self.log_panel = LogPanel(notebook, self.log_handler, self.app_config)
         notebook.add(self.log_panel, text="处理日志")
+
+        self.llm_telemetry_panel = LLMTelemetryPanel(notebook, self.app_config)
+        notebook.add(self.llm_telemetry_panel, text="大模型调用")
 
         self.cache_panel = CacheManagerPanel(notebook, self.app_config)
         notebook.add(self.cache_panel, text="缓存管理")
+
+        self.after(100, self._set_initial_pane_sizes)
+        self.after(500, self._set_initial_pane_sizes)
+        self.after(1200, self._set_initial_pane_sizes)
+
+    def _set_initial_pane_sizes(self):
+        try:
+            height = self.main_paned.winfo_height()
+            if height > 0:
+                self.main_paned.sashpos(0, max(360, height - 320))
+        except Exception:
+            pass
+
+    def _apply_initial_pane_sizes(self):
+        return
 
     def _init_pipeline(self):
         try:

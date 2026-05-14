@@ -21,6 +21,7 @@ class DimensionExtractor:
     # 尺寸标注常见模式
     DIMENSION_PATTERNS = [
         r'(\d+\.?\d*)',
+        r'[∅⌀ØΦφ]\s*(\d+\.?\d*)',
         r'φ?(\d+\.?\d*)',
         r'R(\d+\.?\d*)',
         r'M(\d+\.?\d*)',
@@ -46,6 +47,7 @@ class DimensionExtractor:
 
         # 1. 提取文本和多行文本实体
         texts = [e for e in entities if e.get("type") in ["TEXT", "MTEXT"]]
+        texts.extend(self._collect_dimension_entity_texts(entities))
         lines = [e for e in entities if e.get("type") == "LINE"]
 
         # 2. 识别尺寸文本
@@ -70,6 +72,30 @@ class DimensionExtractor:
 
         logger.info(f"尺寸提取完成: 找到 {len(dimensions)} 个尺寸")
         return result
+
+    def _collect_dimension_entity_texts(self, entities: List[Dict]) -> List[Dict]:
+        texts: List[Dict] = []
+        for entity in entities:
+            if entity.get("type") != "DIMENSION":
+                continue
+            source_texts = entity.get("block_texts") or []
+            if not source_texts and entity.get("rendered_text"):
+                source_texts = [{
+                    "text": entity.get("rendered_text"),
+                    "position": entity.get("text_position", [0, 0, 0]),
+                }]
+            for text_info in source_texts:
+                text = text_info.get("text", "")
+                if not text:
+                    continue
+                texts.append({
+                    "type": "DIMENSION_TEXT",
+                    "text": text,
+                    "position": text_info.get("position", entity.get("text_position", [0, 0, 0])),
+                    "source": "DIMENSION",
+                    "dimension_entity": entity,
+                })
+        return texts
 
     def _identify_dimension_texts(self, texts: List[Dict]) -> List[Dict]:
         """识别可能是尺寸标注的文本"""
@@ -122,7 +148,7 @@ class DimensionExtractor:
 
     def _determine_dimension_type(self, text: str) -> str:
         """确定尺寸类型"""
-        if 'φ' in text or 'Φ' in text:
+        if any(symbol in text for symbol in ('φ', 'Φ', '∅', '⌀', 'Ø')):
             return "直径"
         elif 'R' in text or 'r' in text:
             return "半径"

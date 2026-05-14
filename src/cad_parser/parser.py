@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
 import ezdxf
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -247,11 +249,25 @@ class CADParser:
         try:
             dim_info["measurement"] = entity.dxf.measurement
         except Exception:
-            dim_info["measurement"] = 0.0
+            try:
+                dim_info["measurement"] = entity.get_measurement()
+            except Exception:
+                dim_info["measurement"] = 0.0
         try:
             dim_info["text"] = entity.dxf.text
         except Exception:
             pass
+        try:
+            dim_info["geometry_block"] = entity.dxf.geometry
+        except Exception:
+            pass
+        block_texts = self._extract_dimension_block_texts(entity)
+        if block_texts:
+            dim_info["block_texts"] = block_texts
+            dim_info["rendered_text"] = block_texts[0]["text"]
+            dim_info["text_position"] = block_texts[0]["position"]
+        elif dim_info.get("text") and dim_info.get("text") != "<>":
+            dim_info["rendered_text"] = dim_info["text"]
         try:
             dim_info["dimension_type"] = entity.dimtype
         except Exception:
@@ -266,6 +282,77 @@ class CADParser:
                 pass
         dim_info["definition_points"] = points
         return dim_info
+
+    def _extract_dimension_block_texts(self, entity) -> List[Dict[str, Any]]:
+        if self.doc is None:
+            return []
+        try:
+            block_name = entity.dxf.geometry
+        except Exception:
+            return []
+        if not block_name:
+            return []
+        try:
+            block = self.doc.blocks.get(block_name)
+        except Exception:
+            return []
+
+        texts: List[Dict[str, Any]] = []
+        for sub in block:
+            if sub.dxftype() not in ("TEXT", "MTEXT"):
+                continue
+            text = self._extract_text_content(sub)
+            if not text:
+                continue
+            try:
+                position = list(sub.dxf.insert)
+            except Exception:
+                position = [0, 0, 0]
+            text_info: Dict[str, Any] = {
+                "text": text,
+                "position": position,
+                "type": sub.dxftype(),
+            }
+            try:
+                text_info["height"] = float(
+                    getattr(sub.dxf, "height", getattr(sub.dxf, "char_height", 1.0))
+                )
+            except Exception:
+                pass
+            try:
+                text_info["rotation"] = float(sub.dxf.rotation)
+            except Exception:
+                try:
+                    direction = sub.dxf.text_direction
+                    text_info["rotation"] = math.degrees(math.atan2(direction[1], direction[0]))
+                except Exception:
+                    pass
+            texts.append(text_info)
+        return texts
+
+    def _extract_text_content(self, entity) -> str:
+        try:
+            if entity.dxftype() == "MTEXT" and hasattr(entity, "plain_text"):
+                text = entity.plain_text()
+            elif entity.dxftype() == "MTEXT":
+                text = entity.text
+            else:
+                text = entity.dxf.text
+        except Exception:
+            return ""
+        return self._clean_text_content(text)
+
+    def _clean_text_content(self, text: str) -> str:
+        if not text:
+            return ""
+        cleaned = str(text).replace("\\P", " ").replace("\n", " ")
+        cleaned = cleaned.replace("%%c", "⌀").replace("%%C", "⌀")
+        cleaned = re.sub(r"\\[A-Za-z]+[0-9.;,+-]*", "", cleaned)
+        cleaned = cleaned.replace("{", "").replace("}", "")
+        return " ".join(cleaned.split())
+
+    def _format_dimension_text_for_preview(self, text: str) -> str:
+        return str(text).replace("∅", "⌀").replace("Ø", "⌀").replace("Φ", "⌀")
 
     def _expand_block(self, insert_entity) -> List[Dict]:
         block_name = insert_entity.dxf.name
@@ -414,6 +501,7 @@ class CADParser:
             ctx = RenderContext(self.doc)
             out = MatplotlibBackend(ax)
             Frontend(ctx, out).draw_layout(self.doc.modelspace(), finalize=True)
+            self._draw_dimension_text_overlays(ax)
 
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             logger.info(f"可视化已保存到: {output_path}")
@@ -426,6 +514,30 @@ class CADParser:
             logger.error("需要安装matplotlib才能使用可视化功能")
         except Exception as e:
             logger.error(f"可视化失败: {e}")
+
+    def _draw_dimension_text_overlays(self, ax) -> None:
+        if self.doc is None:
+            return
+        for dim in self.doc.modelspace().query("DIMENSION"):
+            for text_info in self._extract_dimension_block_texts(dim):
+                text = self._format_dimension_text_for_preview(text_info.get("text", ""))
+                position = text_info.get("position") or [0, 0, 0]
+                if not text or len(position) < 2:
+                    continue
+                height = float(text_info.get("height") or 1.0)
+                fontsize = max(6.0, min(12.0, height * 6.0))
+                ax.text(
+                    position[0],
+                    position[1],
+                    text,
+                    fontsize=fontsize,
+                    rotation=text_info.get("rotation", 0.0),
+                    ha="center",
+                    va="center",
+                    color="#f2f2f2",
+                    fontfamily=["DejaVu Sans", "Microsoft YaHei", "SimHei"],
+                    zorder=1000,
+                )
 
 
 # 向后兼容性：保持 DXFParser 作为 CADParser 的别名

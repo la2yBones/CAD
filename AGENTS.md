@@ -1,321 +1,470 @@
 # AGENTS.md — CAD 图纸 3D 建模系统
 
-> 面向 AI 编码助手的项目技术档案，包含架构、约定、已知问题和改进方向。
+> 面向 AI 编码助手的项目技术档案。本文说明项目业务目标、模块角色、权限边界、交互流程、对接接口、配置约定和维护规范。
 
 ---
 
-## 一、项目概述
+## 1. 项目概述
 
-这是一个 **CAD 二维图纸智能分析与三维重建系统**（毕业设计项目）。输入 DXF/DWG 二维工程图，通过 AI 分析视图和尺寸，自动生成 STEP/STL 格式的 3D 模型。
+本项目是一个 **CAD 二维图纸智能分析与三维重建系统**。输入 DXF/DWG 工程图后，系统解析图元、识别工程视图和尺寸信息，并通过 FreeCAD 生成 STEP、STL、FCStd 等三维模型文件。
 
-- **语言**：Python 3.10+
-- **大模型**：DeepSeek V4 Pro（已从通义千问 Qwen 迁移）
-- **建模引擎**：FreeCAD Python API
-- **运行环境**：Windows（FreeCAD 必须在自带 Python 中运行）
+核心定位：
 
----
+- **基础模式**：不调用 AI，按单一闭合轮廓进行通用平面拉伸建模。
+- **智能模式**：调用 DeepSeek V4 Pro 进行视图语义校正、尺寸提取和 FreeCAD 脚本生成。
+- **保护策略**：检测到二视图/三视图且未获得可靠 AI 多视图建模脚本时，阻止普通平面拉伸，避免生成错误模型。
 
-## 二、技术栈
+运行环境：
 
-| 领域 | 技术 | 用途 |
-|------|------|------|
-| CAD 解析 | ezdxf + LibreDWG | 读取 DXF/DWG 文件，提取图元 |
-| 几何计算 | Shapely | 空间索引（STRtree）、几何分析 |
-| AI 分析 | DeepSeek V4 Pro (OpenAI SDK) | 视图识别、尺寸提取、建模脚本生成 |
-| 3D 建模 | FreeCAD Python API | 实体建模、STEP/STL 导出 |
-| 配置管理 | YAML | 统一配置文件 `config/config.yaml` |
-| 日志 | logging | 文件 + 控制台双输出 |
-| GUI | Tkinter + matplotlib | 图纸预览、参数调节、进度反馈 |
+| 项 | 当前约定 |
+|---|---|
+| 语言 | Python 3.10+ |
+| 主要系统 | Windows |
+| 大模型 | DeepSeek V4 Pro，通过 OpenAI SDK 调用 |
+| 建模引擎 | FreeCAD Python API |
+| DWG 转换 | LibreDWG `dwg2dxf.exe` |
+| GUI | Tkinter + matplotlib |
 
 ---
 
-## 三、处理流水线
+## 2. 统一术语
 
-```
-{dxf,dwg} ──▶ [cad_parser] ──▶ [geometry_analyzer] ──▶ [model_generator] ──▶ model.step
-                       │                                      │
-                       └──── [intelligent_analyzer] ◀─────────┘
-                              (view_analyzer → dimension_extractor → modeling_generator)
-```
-
-### 3.1 两种运行模式
-
-| 模式 | 触发方式 | 说明 |
-|------|----------|------|
-| **基础模式** | `cad_cli.py` 默认 | 图层规则拉伸，不需要 AI |
-| **智能模式** | `cad_cli.py --intelligent` 或 `--analysis` | AI 驱动视图分析 + 尺寸提取 + 脚本生成 |
+| 术语 | 含义 |
+|---|---|
+| CAD 解析 | 将 DXF/DWG 文件转换为标准化 `geometry_data` |
+| 基础模式 | 不调用 AI 的通用 FreeCAD 建模流程 |
+| 智能模式 | 使用 DeepSeek、智能分析管道和 AI 脚本优先建模的流程 |
+| 智能分析 | 视图识别、尺寸提取、LLM 视图校正、本地关系分析和建模指令生成 |
+| 预览缓存 | CAD 预览 PNG 缓存，默认 `.cache/previews` |
+| 分析缓存 | 智能分析结果缓存，默认 `.cache/analysis` |
+| LLM 遥测 | 大模型调用耗时、token 和状态记录，默认 `.cache/llm_telemetry/llm_calls.jsonl` |
+| 通用建模器 | `FreeCADModeler`，用于基础闭合轮廓建模 |
+| AI 脚本运行器 | `AIScriptRunner`，用于执行 AI 生成的 FreeCAD 脚本 |
 
 ---
 
-## 四、目录结构
+## 3. 代理角色总览
 
+这里的“代理”指系统中承担独立职责、可被 CLI/GUI/批处理管道调用的模块角色。
+
+| 角色 | 入口 | 状态 | 核心职责 |
+|---|---|---|---|
+| CLI 入口代理 | `cad_cli.py` | 启用 | 参数解析、模式选择、单文件/目录处理 |
+| GUI 应用代理 | `gui_example.py` | 启用 | 文件选择、预览、处理、日志、缓存和 AI 调用监控 |
+| 文件管理代理 | `src/batch_processor/file_manager.py` | 启用 | 扫描 CAD 文件、验证输入、创建输出结构 |
+| 批处理管道代理 | `src/batch_processor/pipeline.py` | 启用 | 单文件、多文件、目录级处理编排 |
+| 单文件处理代理 | `src/batch_processor/processor.py` | 启用 | 解析、分析、建模、导出、多视图保护 |
+| CAD 解析代理 | `src/cad_parser/parser.py` | 启用 | DXF/DWG 解析、块展开、JSON 导出、PNG 预览 |
+| 本地视图分析代理 | `src/intelligent_analyzer/view_analyzer.py` | 启用 | 本地规则和聚类视图初判 |
+| LLM 视图校正代理 | `src/intelligent_analyzer/llm_view_analyzer.py` | 启用 | DeepSeek 视图语义校正和校验回退 |
+| 视图结果校验代理 | `src/intelligent_analyzer/view_schema.py` | 启用 | JSON Schema、业务规则和可疑内容校验 |
+| 尺寸提取代理 | `src/intelligent_analyzer/dimension_extractor.py` | 启用 | DIMENSION/TEXT/MTEXT 尺寸提取和分类 |
+| 智能分析总控代理 | `src/intelligent_analyzer/pipeline.py` | 启用 | 串联视图、尺寸、关系、建模指令和缓存 |
+| 建模指令生成代理 | `src/intelligent_analyzer/modeling_generator.py` | 启用 | DeepSeek 生成 FreeCAD 建模指令和脚本 |
+| FreeCAD 桥接代理 | `src/model_generator/freecad_bridge.py` | 启用 | direct/subprocess 模式检测和脚本执行 |
+| 通用建模代理 | `src/model_generator/generator.py` | 启用 | 基础轮廓建模和 STEP/STL/FCStd 导出 |
+| AI 脚本运行代理 | `src/model_generator/ai_script_runner.py` | 启用 | AI FreeCAD 脚本执行和产物收集 |
+| 分析缓存代理 | `src/utils/cache.py` | 启用 | 智能分析缓存读写、失效和统计 |
+| 预览缓存代理 | `src/utils/preview_cache.py` | 启用 | CAD 预览图稳定路径生成 |
+| LLM 遥测代理 | `src/utils/llm_telemetry.py` | 启用 | LLM 调用记录和统计汇总 |
+| 配置代理 | `src/utils/config.py` | 启用 | YAML、`.env`、环境变量解析 |
+| 日志代理 | `src/utils/logging.py` | 启用 | 日志初始化和敏感信息脱敏 |
+| 旧几何分析代理 | `src/geometry_analyzer/analyzer.py` | 废弃兼容 | 保留兼容入口，新代码使用智能分析总控代理 |
+
+---
+
+## 4. 核心交互流程
+
+### 4.1 基础模式
+
+```text
+CLI/GUI
+  -> CADPipeline
+  -> CADFileManager.resolve_file_path()
+  -> CADProcessor.process_file(..., enable_analysis=False)
+  -> CADParser.parse()
+  -> CADParser.export_json()
+  -> CADParser.visualize()
+  -> CADProcessor._analyze_view_context()
+  -> FreeCADModeler.generate()
+  -> FreeCADModeler.export()
+  -> CADProcessResult
 ```
-E:\Code\CAD\
-├── cad_cli.py                    # 统一命令行入口（已合并 A4）
-├── process_my_cad.py             # 单文件处理入口
-├── gui_example.py                # Tkinter GUI 入口
-├── run_ai_script.py              # AI 脚本独立运行器
-│
-├── config/
-│   ├── config.yaml               # 实际配置（含 API Key，不入版本控制）
-│   └── config.example.yaml       # 配置模板
-│
-├── src/
-│   ├── cad_parser/               # ① CAD 文件解析
-│   │   └── parser.py             #    DXF 解析（ezdxf）+ DWG 转换（LibreDWG）
-│   │
-│   ├── geometry_analyzer/        # ② 几何分析
-│   │   └── analyzer.py           #    STRtree 空间索引、几何关系分析
-│   │
-│   ├── intelligent_analyzer/     # ③ AI 智能分析
-│   │   ├── pipeline.py           #    智能分析主流水线
-│   │   ├── view_analyzer.py      #    视图分离（主/俯/侧视图）
-│   │   ├── dimension_extractor.py#    尺寸标注提取
-│   │   └── modeling_generator.py #    建模指令生成（调用 DeepSeek）
-│   │
-│   ├── model_generator/          # ④ 模型生成
-│   │   ├── generator.py          #    模型生成协调器
-│   │   ├── freecad_bridge.py     #    FreeCAD 子进程桥接
-│   │   └── ai_script_runner.py   #    AI 脚本安全运行器
-│   │
-│   ├── batch_processor/          # ⑤ 批量处理
-│   │   ├── pipeline.py           #    批量流水线
-│   │   ├── processor.py          #    单文件处理器
-│   │   └── file_manager.py       #    文件扫描与验证
-│   │
-│   └── utils/                    # ⑥ 工具层
-│       ├── config.py             #    配置加载（环境变量优先）
-│       ├── result.py             #    Result[T] 错误处理
-│       ├── cache.py              #    分析结果缓存（.cache 目录）
-│       └── logging.py            #    日志配置
-│
-├── examples/
-│   ├── cad_files/                # 示例 CAD 文件
-│   ├── output/                   # 输出产物目录
-│   └── scripts/                  # 测试与示例脚本
-│       ├── quickstart.py
-│       ├── test_api.py
-│       ├── test_config.py
-│       ├── test_dwg_conversion.py
-│       └── create_sample_dxf.py
-│
-├── tests/
-│   └── unit/
-│       └── test_parser.py        # 解析器单元测试
-│
-└── docs/                         # 文档
-    ├── QUICKSTART_REFERENCE.md
-    └── guides/
-        ├── getting_started.md
-        ├── gui_guide.md
-        └── conda_setup.md
+
+基础模式不需要 API Key。若检测到二视图/三视图工程图，且入口没有可靠 AI 多视图建模脚本，处理器会返回失败结果并说明原因。
+
+### 4.2 智能模式
+
+```text
+CLI/GUI
+  -> CADPipeline.process_file_intelligent()
+  -> CADProcessor.process_with_intelligent_analysis()
+  -> CADParser.parse()
+  -> IntelligentEngineeringAnalyzer.analyze_full()
+      -> EngineeringViewAnalyzer.analyze_views()
+      -> DimensionExtractor.extract_dimensions()
+      -> LLMViewAnalyzer.refine_view_analysis()
+      -> ViewAnalysisValidator.validate()
+      -> IntelligentEngineeringAnalyzer._analyze_local_fallback()
+      -> FreeCADInstructionGenerator.generate()
+  -> AIScriptRunner.run_script()
+  -> FreeCADBridge.execute_script()
+  -> CADProcessResult
+```
+
+智能模式需要有效 `DEEPSEEK_API_KEY`。LLM 视图校正失败时回退本地规则；建模指令生成失败时生成基础降级脚本。多视图场景下，降级脚本不会被当成可靠多视图建模结果直接执行。
+
+### 4.3 仅分析模式
+
+```text
+cad_cli.py --analysis-only
+  -> CADParser.parse()
+  -> IntelligentEngineeringAnalyzer.analyze_full()
+  -> IntelligentEngineeringAnalyzer.save_results()
+  -> <base>_full.json / <base>_report.txt / <base>_freecad.py
+```
+
+仅分析模式不生成 3D 模型，适合调试 DeepSeek 输出、查看视图校正和建模脚本。
+
+### 4.4 GUI 监控流程
+
+```text
+CADApplication
+  -> ProcessingPanel
+  -> LogPanel
+  -> CacheManagerPanel
+  -> LLMTelemetryPanel
+```
+
+GUI 负责交互和展示，不复制核心业务逻辑。处理逻辑必须继续通过 `CADPipeline` 和 `CADProcessor` 调用。
+
+---
+
+## 5. 角色权限范围
+
+### 5.1 CAD 解析代理
+
+允许：
+
+- 读取 DXF 文件。
+- 调用 LibreDWG 将 DWG 转换为 DXF。
+- 展开 INSERT 块引用。
+- 导出几何 JSON。
+- 生成预览 PNG。
+
+禁止：
+
+- 调用 DeepSeek。
+- 执行 FreeCAD 建模。
+- 根据业务模式决定是否允许多视图拉伸。
+
+对接接口：
+
+```python
+parser = CADParser(file_path, config.get("dxf_parser", {}))
+geometry_data = parser.parse()
+parser.export_json(output_path)
+parser.visualize(preview_path)
+```
+
+### 5.2 智能分析总控代理
+
+允许：
+
+- 组织本地视图分析、尺寸提取、LLM 视图校正、本地关系分析和建模指令生成。
+- 读写分析缓存。
+- 保存智能分析产物。
+- 记录 LLM 遥测摘要。
+
+禁止：
+
+- 直接导出 STEP/STL/FCStd。
+- 直接操作 GUI。
+- 绕过视图结果校验执行 LLM 输出。
+
+对接接口：
+
+```python
+analyzer = IntelligentEngineeringAnalyzer(api_key, api_config)
+result = analyzer.analyze_full(geometry_data, extrude_height, file_path=file_path)
+analyzer.save_results(result, output_dir, base_name)
+```
+
+### 5.3 LLM 视图校正代理
+
+允许：
+
+- 将本地规则结果、几何摘要和尺寸摘要发送给 DeepSeek。
+- 解析 DeepSeek 返回的 JSON。
+- 在校验失败或调用失败时回退本地规则结果。
+- 可选读取预览图片并以多模态输入形式传递。
+
+禁止：
+
+- 输出完整思维链。
+- 接受包含 `exec(`、`subprocess`、密钥文本等可疑内容的 LLM 视图结果。
+- 直接生成 FreeCAD 脚本。
+
+对接接口：
+
+```python
+view_result = LLMViewAnalyzer(api_key, api_config).refine_view_analysis(
+    geometry_data=geometry_data,
+    rule_result=rule_view_result,
+    dimension_data=dimension_result,
+    file_path=file_path,
+)
+```
+
+### 5.4 建模指令生成代理
+
+允许：
+
+- 将几何数据、视图分析和尺寸结果发送给 DeepSeek。
+- 生成 `analysis_summary`、`modeling_strategy`、`freecad_script`、`instructions`、`key_dimensions` 和 `warnings`。
+- 根据 `llm_performance_mode` 控制 thinking 开关。
+- 在失败时生成基础降级脚本。
+
+禁止：
+
+- 自行执行生成的脚本。
+- 直接删除或覆盖用户文件。
+- 将降级脚本伪装为可靠多视图建模脚本。
+
+### 5.5 单文件处理代理
+
+允许：
+
+- 组合 CAD 解析、智能分析、通用建模和 AI 脚本执行。
+- 根据视图分析决定是否阻止普通拉伸。
+- 写入标准输出结构。
+- 返回 `CADProcessResult`。
+
+禁止：
+
+- 修改配置文件中的密钥。
+- 在未确认可靠脚本时处理多视图普通拉伸。
+- 绕过 `CADFileManager` 自行创建不一致的输出目录结构。
+
+### 5.6 FreeCAD 桥接代理
+
+允许：
+
+- 检测 direct/subprocess/unavailable 模式。
+- 在 FreeCAD Python 中执行脚本。
+- 解析桥接脚本的 `BRIDGE_*` 标记输出。
+- 导出或收集 STEP/FCStd 产物。
+
+禁止：
+
+- 依赖系统 Python 直接 `import FreeCAD` 作为唯一方案。
+- 在脚本中任意写入输出目录外的产物。
+- 吞掉 FreeCAD 子进程错误。
+
+### 5.7 缓存与遥测代理
+
+允许：
+
+- `AnalysisCache` 管理 `.cache/analysis` 下的 JSON 缓存。
+- `preview_cache` 生成稳定预览路径。
+- `LLMTelemetryStore` 记录 LLM 调用信息。
+- GUI 或工具按明确文件路径删除缓存条目。
+
+禁止：
+
+- 使用递归批量删除命令清理缓存。
+- 将缓存目录作为源码提交。
+- 在遥测中写入完整密钥。
+
+---
+
+## 6. 对接接口速查
+
+### 6.1 CLI
+
+```powershell
+python cad_cli.py --list
+python cad_cli.py --file examples/cad_files/sample.dxf --height 10
+python cad_cli.py --file examples/cad_files/sample.dxf --analysis
+python cad_cli.py --file examples/cad_files/sample.dxf --intelligent
+python cad_cli.py --file examples/cad_files/sample.dxf --analysis-only
+python cad_cli.py --dir examples/cad_files --output-dir examples/output
+```
+
+### 6.2 批处理 API
+
+```python
+from src.batch_processor import CADPipeline
+from src.utils import load_config
+
+config = load_config()
+pipeline = CADPipeline(config=config, input_dir="examples/cad_files", output_dir="examples/output")
+
+result = pipeline.process_file("sample.dxf", extrude_height=10.0, enable_analysis=False)
+smart = pipeline.process_file_intelligent("sample.dxf", extrude_height=10.0)
+batch = pipeline.process_directory(extrude_height=10.0, enable_analysis=False)
+summary = pipeline.get_summary(batch)
+```
+
+### 6.3 缓存工具
+
+```powershell
+python tools/cache_tool.py stats
+python tools/cache_tool.py clear-expired
+python tools/cache_tool.py invalidate --file examples/cad_files/sample.dxf
+python tools/cache_tool.py clear
+```
+
+### 6.4 导出诊断
+
+```powershell
+python tools/diagnose_export.py
 ```
 
 ---
 
-## 五、核心模块详解
+## 7. 配置系统
 
-### 5.1 cad_parser — CAD 文件解析
+### 7.1 配置优先级
 
-**入口**：[`parser.py`](src/cad_parser/parser.py)
-
-- DXF 文件：直接用 ezdxf 解析
-- DWG 文件：调用 LibreDWG 的 `dwg2dxf.exe` 转为 DXF 后解析
-- DWG 转换路径从 `config.yaml` → `dxf_parser.libredwg_path` 读取
-- 返回 `Result[Dict[str, Any]]`
-
-### 5.2 geometry_analyzer — 几何分析
-
-**入口**：[`analyzer.py`](src/geometry_analyzer/analyzer.py)
-
-- 使用 Shapely STRtree 进行 O(n log n) 空间索引
-- 分析图元间的碰撞、包含、邻接关系
-- 返回 `Result[Dict[str, Any]]`
-
-### 5.3 intelligent_analyzer — AI 智能分析
-
-**入口**：[`pipeline.py`](src/intelligent_analyzer/pipeline.py)
-
-- 三步流水线：视图分析 → 尺寸提取 → 建模指令生成
-- 通过 OpenAI SDK 调用 DeepSeek V4 Pro API
-- 思考模式通过 `extra_body={"thinking": {"type": "enabled", "reasoning_effort": "max"}}` 启用
-- 返回 `Result[Dict[str, Any]]`
-
-### 5.4 model_generator — 模型生成
-
-**入口**：[`generator.py`](src/model_generator/generator.py)
-
-- [freecad_bridge.py](src/model_generator/freecad_bridge.py)：通过子进程调用 FreeCAD 内置 Python 执行脚本
-- [ai_script_runner.py](src/model_generator/ai_script_runner.py)：安全执行 AI 生成的建模脚本
-- FreeCAD 路径从 `config.yaml` → `freecad.bin_path` 读取
-- 支持直接模式（项目 Python = FreeCAD Python）和子进程模式
-- 输出：STEP、STL、FCStd
-
-### 5.5 batch_processor — 批量处理
-
-**入口**：[`pipeline.py`](src/batch_processor/pipeline.py)
-
-- 扫描目录 → 验证文件 → 逐个处理 → 汇总报告
-- `CADProcessResult` dataclass 承载每个文件的处理结果
-
-### 5.6 utils — 工具层
-
-| 文件 | 核心职责 |
-|------|----------|
-| [`config.py`](src/utils/config.py) | 配置加载：环境变量 → config.yaml → 自动发现 |
-| [`result.py`](src/utils/result.py) | Rust 风挌 `Result[T]` 泛型类 |
-| [`cache.py`](src/utils/cache.py) | 分析结果缓存（`AnalysisCache`），非 `Result[T]` 风格 |
-| [`logging.py`](src/utils/logging.py) | `setup_logging()` 统一日志配置 |
-
----
-
-## 六、配置系统
-
-### 6.1 配置优先级
-
-```
-环境变量 (CAD_PROJECT_ROOT, CAD_CONFIG_PATH)
-    ↑
-config/config.yaml
-    ↑
-代码内默认值
+```text
+操作系统环境变量
+  > 项目根目录 .env
+  > config/config.yaml 或 config/config.example.yaml 字面值
 ```
 
-### 6.2 API 配置（DeepSeek V4 Pro）
+`load_config()` 会递归解析 `${VAR}` 占位符。`config/config.yaml` 不存在时，会回退到 `config/config.example.yaml`。
+
+### 7.2 关键环境变量
+
+```env
+DEEPSEEK_API_KEY=your-deepseek-api-key-here
+LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
+FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
+CAD_PREVIEW_CACHE_DIR=.cache/previews
+```
+
+### 7.3 DeepSeek 配置
 
 ```yaml
 api:
   deepseek:
-    api_key: "sk-xxx"
+    api_key: "${DEEPSEEK_API_KEY}"
     base_url: "https://api.deepseek.com"
     model: "deepseek-v4-pro"
-    max_tokens: 4096
-    max_prompt_tokens: 12000
+    llm_performance_mode: "fast"
+    llm_telemetry_dir: ".cache/llm_telemetry"
     thinking: true
-    reasoning_effort: "max"  # high(默认) / max(最大思考强度)
+    reasoning_effort: "max"
 ```
 
-### 6.3 外部工具路径
+说明：
 
-```yaml
-dxf_parser:
-  libredwg_path: "D:\\Code\\libredwg-0.13.4.8160-win64"
-
-freecad:
-  bin_path: "D:\\FreeCAD 1.0\\bin"
-```
+- `fast`、`latency`、`balanced` 模式会关闭 thinking。
+- 需要深度建模时可使用 deep 类模式并启用 thinking。
+- 不在文档、日志或配置模板中写真实 API Key。
 
 ---
 
-## 七、错误处理约定
+## 8. 当前停用与兼容模块
 
-### 7.1 Result[T] 模式
+| 模块 | 状态 | 处理方式 |
+|---|---|---|
+| `src/geometry_analyzer/GeometryAnalyzer` | 废弃兼容 | 新代码使用 `IntelligentEngineeringAnalyzer`；旧入口只作为兼容层 |
+| `DXFParser` | 兼容别名 | 新代码使用 `CADParser` |
+| 根目录旧示例脚本 | 已迁移 | 示例脚本放入 `examples/scripts/` |
+| 根目录旧工具脚本 | 已迁移 | 工具脚本放入 `tools/` |
 
-项目采用 **Rust 风格 Result[T]** 统一错误处理，不允许抛出原始异常：
+维护要求：
 
-```python
-from src.utils import Result
+- 不为废弃模块新增业务功能。
+- 修改公共导入时保留兼容别名，除非同步更新所有调用方和文档。
+- 删除失效入口前先确认 `rg` 搜索无引用。
 
-def my_function() -> Result[Dict]:
-    try:
-        data = do_something()
-        return Result.Ok(data)
-    except Exception as e:
-        return Result.Err(f"操作失败: {e}")
+---
+
+## 9. 安全与权限约束
+
+### 9.1 文件删除约束
+
+禁止批量删除文件或目录。
+
+不要使用：
+
+- `del /s`
+- `rd /s`
+- `rmdir /s`
+- `Remove-Item -Recurse`
+- `rm -rf`
+
+需要删除文件时，只能一次删除一个明确路径的文件。
+
+正确示例：
+
+```powershell
+Remove-Item -LiteralPath "C:\path\to\file.txt"
 ```
 
-核心 API：
-- `Result.Ok(value)` — 成功
-- `Result.Err(error_str)` — 失败
-- `result.is_ok` / `result.is_err` — 状态检查
-- `result.unwrap()` — 取值（失败时抛 RuntimeError）
-- `result.unwrap_or(default)` — 取值或默认值
-- `result.map(fn)` — 成功时映射
-- `result.and_then(fn)` — 链式调用
+如果需要批量删除文件，应停止操作，并询问用户，让用户手动删除。
 
-### 7.2 已知不足
+### 9.2 密钥与隐私
 
-- **无错误码体系**：所有错误统一为字符串，无法分类处理
-- **缺少结构化上下文**：无时间戳、无 traceback 保留、无 HTTP 状态码
-- **`except Exception` 过于宽泛**：API 速率限制、连接错误等未区分
-- **cache.py 不一致**：`get()` 返回 `Optional`，`set()` 返回 `bool`，未采用 `Result[T]`
+- `.env` 不应提交。
+- 配置模板只允许 `${DEEPSEEK_API_KEY}` 等占位符。
+- 日志脱敏是兜底措施，不能主动打印完整配置、请求头或密钥。
+- 缓存、输出模型、日志和 LLM 遥测可能包含图纸结构信息，不应作为源码提交。
 
----
+### 9.3 AI 脚本执行
 
-## 八、已知问题与改进方向
-
-### 8.1 硬编码路径残留
-
-| 严重度 | 位置 | 内容 |
-|--------|------|------|
-| 高 | `run_with_freecad.bat:L24-L27` | 四个 FreeCAD 安装绝对路径 |
-| 中 | `cad_cli.py:L113-L116` | argparse 默认值 `"examples/cad_files"` 等 |
-| 中 | `gui_example.py`（6 处） | 同上 |
-| 中 | 若干入口脚本 | 固定的相对路径字符串 |
-
-### 8.2 FreeCAD 运行限制
-
-- FreeCAD 必须在自带的 Python 中运行（有独立的包管理器）
-- 项目中 `import FreeCAD` 是 stub import，仅用于类型提示
-- 实际建模通过子进程调用 FreeCAD 的 Python 执行
-
-### 8.3 安全注意事项
-
-- `exec()` 执行 AI 生成代码时无沙箱，存在风险
-- API Key 存储在 `config/config.yaml` 中，需确保不提交到版本控制
-
-### 8.4 性能优化空间
-
-- 几何分析已优化至 O(n log n)（STRtree），这是正确的
-- AI 分析有缓存机制，避免重复调用
+- AI 生成脚本仍通过执行器运行，尚未实现强沙箱。
+- 只能在可信环境中运行 AI 脚本。
+- 后续安全增强方向是 API 白名单、输出目录限制和进程级隔离。
 
 ---
 
-## 九、常用命令
+## 10. 开发与测试约定
 
-```bash
-# 基础模式 — 处理单个 CAD 文件
-python cad_cli.py examples/cad_files/sample.dxf
+### 10.1 编码约定
 
-# 智能模式 — AI 分析 + 建模
-python cad_cli.py examples/cad_files/sample.dxf --intelligent
+1. Python 文件第一行使用 `# -*- coding: utf-8 -*-`。
+2. 路径、模型、超时、缓存目录和外部工具位置必须配置驱动。
+3. 新增依赖时同步更新 `requirements.txt` 和 `pyproject.toml`。
+4. 新增配置项时同步更新 `config/config.example.yaml` 和配置文档。
+5. 日志失败用 `logger.error`，降级用 `logger.warning`，需要 traceback 时记录完整堆栈。
+6. 核心边界优先返回 `Result[T]` 或明确结果对象。
 
-# 仅分析（不建模）
-python cad_cli.py examples/cad_files/sample.dxf --analysis-only
+### 10.2 测试命令
 
-# 指定输出目录
-python cad_cli.py examples/cad_files --mode batch --output-dir output/my_project
+```powershell
+D:\anaconda3\envs\cad_study\python.exe -m pytest tests\unit -q
+```
 
-# 运行 GUI
-python gui_example.py
+常见手工验证：
 
-# 测试 API 连接
-python examples/scripts/test_api.py
+```powershell
+python cad_cli.py --list
+python cad_cli.py --file examples/cad_files/sample.dxf --height 10
+python tools/cache_tool.py stats
+python tools/diagnose_export.py
 ```
 
 ---
 
-## 十、编码约定
+## 11. 文档索引
 
-1. **注释规范**：代码中需要写注释，说明关键逻辑、参数含义、返回值等
-2. **Result[T] 强制**：所有核心模块函数返回 `Result[T]`，不抛异常
-3. **配置驱动**：路径、API 参数等从 `config.yaml` 读取，不用硬编码
-4. **路径优先级**：环境变量 → config.yaml → 自动发现
-5. **日志规范**：`logger.error` 用于最终失败，`logger.warning` 用于降级，`logger.exception` 用于记录完整 traceback
-6. **Python 文件头**：`# -*- coding: utf-8 -*-` 在第一行
+| 文档 | 说明 |
+|---|---|
+| `README.md` | 项目总览和快速入口 |
+| `CHANGELOG.md` | 版本变更记录 |
+| `docs/requirements.md` | 需求规格说明书 |
+| `docs/architecture.md` | 技术架构文档 |
+| `docs/api/index.md` | API 与模块参考 |
+| `docs/deployment.md` | 部署运维手册 |
+| `docs/development.md` | 开发规范文档 |
+| `docs/guides/getting_started.md` | 快速开始 |
+| `docs/guides/configuration.md` | 配置与密钥管理 |
+| `docs/guides/gui_guide.md` | GUI 使用指南 |
+| `docs/modules/BATCH_MODULE_README.md` | 批处理模块说明 |
+| `docs/modules/CACHE_README.md` | 缓存系统说明 |
+| `docs/modules/INTELLIGENT_ANALYZER_README.md` | 智能分析模块说明 |
 
----
-
-## 十一、依赖
-
-核心依赖（见 `requirements.txt`）：
-- `ezdxf` — DXF 文件解析
-- `shapely` — 计算几何
-- `openai` — DeepSeek API 调用
-- `pyyaml` — 配置文件解析
-- `matplotlib` — 图纸预览
-- `numpy` — 数值计算
-
-外部工具依赖：
-- **LibreDWG** — DWG 转 DXF（`dwg2dxf.exe`）
-- **FreeCAD** — 3D 建模引擎

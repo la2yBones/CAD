@@ -10,6 +10,7 @@ from typing import Optional
 
 
 DEFAULT_PREVIEW_CACHE_DIR = Path(".cache") / "previews"
+PREVIEW_RENDER_VERSION = "dimension_text_overlay_v2"
 
 
 def get_preview_cache_dir(configured_dir: Optional[str] = None) -> Path:
@@ -26,10 +27,10 @@ def get_preview_cache_path(file_path: str, cache_dir: Optional[str] = None) -> P
     try:
         resolved = path.resolve()
         stat = resolved.stat()
-        key_source = f"{resolved}|{stat.st_mtime_ns}|{stat.st_size}"
+        key_source = f"{PREVIEW_RENDER_VERSION}|{resolved}|{stat.st_mtime_ns}|{stat.st_size}"
     except OSError:
         resolved = path
-        key_source = str(path)
+        key_source = f"{PREVIEW_RENDER_VERSION}|{path}"
 
     digest = hashlib.sha1(key_source.encode("utf-8", errors="ignore")).hexdigest()[:12]
     safe_stem = path.stem.replace("/", "_").replace("\\", "_")

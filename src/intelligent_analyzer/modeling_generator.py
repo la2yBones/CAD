@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 from openai import OpenAI
+from src.utils.llm_telemetry import default_llm_telemetry_store
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ class FreeCADInstructionGenerator:
             base_url=self.config.get("base_url", "https://api.deepseek.com")
         )
         self.model = self.config.get("model", "deepseek-v4-pro")
+        self.telemetry_store = default_llm_telemetry_store(self.config)
 
         max_prompt_tokens = self.config.get("max_prompt_tokens", 12000)
         self.MAX_PROMPT_CHARS = max_prompt_tokens * 4
@@ -64,7 +66,7 @@ class FreeCADInstructionGenerator:
             if use_thinking:
                 extra_body = {"thinking": {"type": "enabled", "reasoning_effort": self.config.get("reasoning_effort", "max")}}
 
-            response = self.client.chat.completions.create(
+            response = self._create_chat_completion(
                 model=self.model,
                 messages=[
                     {
@@ -124,6 +126,22 @@ JSON必须包含以下字段：
                 "key_dimensions": [],
                 "warnings": ["使用降级建模方法"]
             }
+
+    def _create_chat_completion(self, **request_payload):
+        call_span = self.telemetry_store.start_call(
+            stage="modeling_generation",
+            model=str(request_payload.get("model") or self.model),
+            provider="deepseek",
+            request=request_payload,
+            file_path=None,
+        )
+        try:
+            response = self.client.chat.completions.create(**request_payload)
+            call_span.finish(response=response)
+            return response
+        except Exception as call_error:
+            call_span.finish(error=call_error)
+            raise
 
     MAX_ENTITIES_IN_PROMPT = 20
     MAX_ENTITY_JSON_CHARS = 500

@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from src.utils.llm_telemetry import default_llm_telemetry_store
+
 from .view_schema import (
     VIEW_ANALYSIS_SCHEMA,
     ViewAnalysisValidator,
@@ -43,6 +45,7 @@ class LLMViewAnalyzer:
         self.confidence_threshold = float(self.config.get("view_confidence_threshold", 0.60))
         self.validator = ViewAnalysisValidator(self.confidence_threshold)
         self.client = OpenAI(api_key=api_key, base_url=self.base_url)
+        self.telemetry_store = default_llm_telemetry_store(self.config)
 
     def refine_view_analysis(
         self,
@@ -78,12 +81,25 @@ class LLMViewAnalyzer:
             messages = self._build_messages(prompt, preview_path, media_inputs)
 
             logger.info("开始LLM视图语义校正")
-            response = self.client.chat.completions.create(
+            request_payload = {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": int(self.config.get("view_max_tokens", 4096)),
+                "temperature": float(self.config.get("view_temperature", 0.1)),
+            }
+            call_span = self.telemetry_store.start_call(
+                stage="view_analysis",
                 model=self.model,
-                messages=messages,
-                max_tokens=int(self.config.get("view_max_tokens", 4096)),
-                temperature=float(self.config.get("view_temperature", 0.1)),
+                provider="deepseek",
+                request=request_payload,
+                file_path=file_path,
             )
+            try:
+                response = self.client.chat.completions.create(**request_payload)
+                call_span.finish(response=response)
+            except Exception as call_error:
+                call_span.finish(error=call_error)
+                raise
 
             content = response.choices[0].message.content or ""
             logger.info(f"LLM视图校正响应长度: {len(content)}")

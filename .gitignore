@@ -32,6 +32,20 @@ env/
 *.swo
 *~
 
+# Node / frontend caches
+node_modules/
+.next/
+.nuxt/
+.vite/
+.parcel-cache/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+package.json
+
 # 配置文件（包含密钥）
 config/config.yaml
 
@@ -47,15 +61,39 @@ logs/
 # 输出文件
 examples/output/
 output/
+dist/
 
 # 缓存
 .cache/
 *.cache
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+
+# CAD / engineering drawing source files
+*.dwg
+*.dxf
+*.dwt
+*.dws
+*.dgn
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.bmp
+*.gif
+*.svg
 
 # 生成的模型文件
 *.step
+*.STEP
 *.stl
+*.STL
 *.FCStd
+*.FCBak
 
 # 测试和覆盖率
 .pytest_cache/

@@ -75,6 +75,42 @@ class AnalysisCache:
         subdir = cache_key[:2]
         return self.cache_dir / subdir / f"{cache_key}.json"
 
+    def _prune_empty_parent_dirs(self, start_dir: Path) -> None:
+        """清理缓存根目录下的空分片目录。"""
+        try:
+            cache_root = self.cache_dir.resolve()
+            current = start_dir.resolve()
+        except Exception:
+            return
+
+        while current != cache_root and cache_root in current.parents:
+            try:
+                current.rmdir()
+                logger.debug(f"已清理空缓存目录: {current}")
+            except OSError:
+                break
+            current = current.parent
+
+    def delete_entry(self, cache_path: str) -> bool:
+        """删除一个明确的缓存文件，并清理它留下的空目录。"""
+        path = Path(cache_path)
+        try:
+            cache_root = self.cache_dir.resolve()
+            resolved = path.resolve()
+            if cache_root != resolved.parent and cache_root not in resolved.parents:
+                logger.warning(f"拒绝删除缓存目录外的文件: {cache_path}")
+                return False
+            if not resolved.exists() or not resolved.is_file():
+                return False
+            parent = resolved.parent
+            resolved.unlink()
+            self._prune_empty_parent_dirs(parent)
+            logger.info(f"缓存已删除: {resolved}")
+            return True
+        except Exception as e:
+            logger.warning(f"删除缓存条目失败: {cache_path}: {e}")
+            return False
+
     def get(self, file_path: str, extrude_height: float,
             analysis_params: Optional[Dict] = None) -> Optional[Dict]:
         """
@@ -177,8 +213,7 @@ class AnalysisCache:
             if extrude_height is not None:
                 cache_key = self._generate_cache_key(file_path, extrude_height, analysis_params)
                 cache_path = self._get_cache_path(cache_key)
-                if cache_path.exists():
-                    cache_path.unlink()
+                if self.delete_entry(str(cache_path)):
                     removed_count += 1
                     logger.info(f"缓存已删除: {file_path}")
             else:
@@ -189,8 +224,8 @@ class AnalysisCache:
                         with open(cache_file, 'r', encoding='utf-8') as f:
                             data = json.load(f)
                             if data.get('_source_file') == file_path_str:
-                                cache_file.unlink()
-                                removed_count += 1
+                                if self.delete_entry(str(cache_file)):
+                                    removed_count += 1
                     except:
                         pass
 
@@ -219,13 +254,13 @@ class AnalysisCache:
                     ttl = data.get('_cache_ttl', self.default_ttl)
 
                     if current_time - timestamp > ttl:
-                        cache_file.unlink()
-                        removed_count += 1
+                        if self.delete_entry(str(cache_file)):
+                            removed_count += 1
                         logger.debug(f"删除过期缓存: {cache_file}")
             except:
                 # 删除损坏的缓存文件
-                cache_file.unlink()
-                removed_count += 1
+                if self.delete_entry(str(cache_file)):
+                    removed_count += 1
 
         if removed_count > 0:
             logger.info(f"清理完成，删除了 {removed_count} 个过期缓存")
@@ -242,13 +277,67 @@ class AnalysisCache:
 
         for cache_file in self.cache_dir.rglob("*.json"):
             try:
-                cache_file.unlink()
-                removed_count += 1
+                if self.delete_entry(str(cache_file)):
+                    removed_count += 1
             except:
                 pass
 
         logger.info(f"已清空所有缓存，删除了 {removed_count} 个文件")
         return removed_count
+
+    def list_entries(self) -> list:
+        """
+        列出缓存条目，供GUI缓存管理面板展示。
+
+        Returns:
+            缓存条目列表。每个条目包含源文件、拉伸高度、大小、时间戳、是否过期等信息。
+        """
+        entries = []
+        current_time = datetime.now().timestamp()
+
+        for cache_file in self.cache_dir.rglob("*.json"):
+            try:
+                stat = cache_file.stat()
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                timestamp = data.get('_cache_timestamp') or stat.st_mtime
+                ttl = data.get('_cache_ttl', self.default_ttl)
+                source_file = data.get('_source_file', '')
+                extrude_height = data.get('_extrude_height', 0.0)
+
+                try:
+                    extrude_height = float(extrude_height)
+                except (TypeError, ValueError):
+                    extrude_height = 0.0
+
+                entries.append({
+                    'cache_key': data.get('_cache_key', cache_file.stem),
+                    'cache_path': str(cache_file),
+                    'source_file': source_file,
+                    'extrude_height': extrude_height,
+                    'size_bytes': stat.st_size,
+                    'timestamp': timestamp,
+                    'ttl': ttl,
+                    'expired': current_time - float(timestamp or 0) > float(ttl or self.default_ttl),
+                })
+            except Exception as e:
+                logger.warning(f"读取缓存条目失败: {cache_file}: {e}")
+                stat = cache_file.stat() if cache_file.exists() else None
+                entries.append({
+                    'cache_key': cache_file.stem,
+                    'cache_path': str(cache_file),
+                    'source_file': '',
+                    'extrude_height': 0.0,
+                    'size_bytes': stat.st_size if stat else 0,
+                    'timestamp': stat.st_mtime if stat else 0,
+                    'ttl': self.default_ttl,
+                    'expired': True,
+                    'error': str(e),
+                })
+
+        entries.sort(key=lambda item: item.get('timestamp') or 0, reverse=True)
+        return entries
 
     def get_stats(self) -> Dict[str, Any]:
         """

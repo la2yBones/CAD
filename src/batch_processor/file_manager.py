@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import logging
 
+from src.utils.preview_cache import get_preview_cache_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -169,7 +171,7 @@ class CADFileManager:
             'geometry': output_subdir / f"{base_name}_geometry.json",
             'model_step': output_subdir / f"{base_name}.step",
             'model_stl': output_subdir / f"{base_name}.stl",
-            'visualization': output_subdir / f"{base_name}_preview.png",
+            'visualization': get_preview_cache_path(str(input_path)),
             'log': output_subdir / f"{base_name}_process.log"
         }
 

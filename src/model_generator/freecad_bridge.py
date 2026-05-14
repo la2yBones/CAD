@@ -108,6 +108,8 @@ class FreeCADBridge:
         if not self.freecad_available:
             return {"success": False, "error": "FreeCAD not available"}
 
+        output_dir = str(Path(output_dir).resolve())
+
         if self.mode == "direct":
             return self._execute_direct(script_content, output_dir)
         return self._execute_subprocess(script_content, output_dir, timeout)
@@ -186,7 +188,12 @@ class FreeCADBridge:
                 errors="replace",
                 timeout=timeout,
                 cwd=output_dir or tempfile.gettempdir(),
-                env={**os.environ, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "1"},
+                env={
+                    **os.environ,
+                    "PYTHONUNBUFFERED": "1",
+                    "PYTHONIOENCODING": "utf-8",
+                    "OMP_NUM_THREADS": "1",
+                },
             )
 
             combined_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
@@ -242,17 +249,53 @@ try:
     step_path = str(OUTPUT_DIR / "model.step")
     fcstd_path = str(OUTPUT_DIR / "model.FCStd")
 
+    def _valid_shape(shape):
+        try:
+            return shape is not None and shape.isValid() and shape.Volume > 0
+        except Exception:
+            return False
+
+    def _select_result_shape():
+        preferred_vars = ["final_shape", "result_shape", "solid", "body", "part", "model"]
+        for name in preferred_vars:
+            val = globals().get(name)
+            if _valid_shape(val):
+                print(f"BRIDGE_SELECTED:VAR:{{name}}", flush=True)
+                return val
+
+        candidates = []
+        if doc:
+            for obj in doc.Objects:
+                if hasattr(obj, "Shape") and _valid_shape(obj.Shape):
+                    name = str(getattr(obj, "Name", "")).lower()
+                    label = str(getattr(obj, "Label", "")).lower()
+                    score = 0
+                    if any(token in name or token in label for token in ["final", "result", "model", "body", "part", "plate", "flange"]):
+                        score += 1000000000
+                    try:
+                        score += float(obj.Shape.Volume)
+                    except Exception:
+                        pass
+                    candidates.append((score, obj))
+
+        if candidates:
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            obj = candidates[0][1]
+            print(f"BRIDGE_SELECTED:OBJ:{{obj.Name}}", flush=True)
+            return obj.Shape
+
+        return None
+
     exported = False
     if doc:
-        for obj in doc.Objects:
-            if hasattr(obj, "Shape") and obj.Shape.isValid() and obj.Shape.Volume > 0:
-                try:
-                    obj.Shape.exportStep(step_path)
-                    print(f"BRIDGE_EXPORT:STEP:{{step_path}}", flush=True)
-                    exported = True
-                    break
-                except Exception:
-                    pass
+        result_shape = _select_result_shape()
+        if result_shape:
+            try:
+                result_shape.exportStep(step_path)
+                print(f"BRIDGE_EXPORT:STEP:{{step_path}}", flush=True)
+                exported = True
+            except Exception as export_error:
+                print(f"BRIDGE_WARNING:STEP_EXPORT_FAILED:{{export_error}}", flush=True)
 
         try:
             doc.saveAs(fcstd_path)

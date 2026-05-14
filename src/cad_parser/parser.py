@@ -403,10 +403,8 @@ class CADParser:
             from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 
             if output_path is None:
-                out_dir = self.output_dir
-                out_dir.mkdir(parents=True, exist_ok=True)
-                base_name = Path(self.file_path).stem
-                output_path = str(out_dir / f"{base_name}_preview.png")
+                from src.utils.preview_cache import get_preview_cache_path
+                output_path = str(get_preview_cache_path(str(self.file_path), str(self.output_dir)))
 
             for layer in self.doc.layers:
                 layer.on()

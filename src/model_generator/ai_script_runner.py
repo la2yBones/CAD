@@ -8,6 +8,7 @@ import sys
 import os
 import tempfile
 import logging
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -63,15 +64,37 @@ class AIScriptRunner:
 
     def _run_via_bridge(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         logger.info("executing AI script via subprocess bridge")
-        output_dir = str(Path(output_path).parent) if output_path else tempfile.mkdtemp(prefix="ai_model_")
+        requested_step = Path(output_path).resolve() if output_path else None
+        output_dir = str(requested_step.parent) if requested_step else tempfile.mkdtemp(prefix="ai_model_")
 
         result = self.bridge.execute_script(script_content, output_dir)
 
         if result.get("success"):
+            step_path = result.get("step_path")
+            fcstd_path = result.get("fcstd_path")
+
+            if requested_step and step_path and Path(step_path).exists():
+                try:
+                    requested_step.parent.mkdir(parents=True, exist_ok=True)
+                    if Path(step_path).resolve() != requested_step:
+                        shutil.copy2(step_path, requested_step)
+                    step_path = str(requested_step)
+                except Exception as e:
+                    logger.warning(f"复制STEP到目标路径失败: {e}")
+
+            if requested_step and fcstd_path and Path(fcstd_path).exists():
+                try:
+                    requested_fcstd = requested_step.with_suffix(".FCStd")
+                    if Path(fcstd_path).resolve() != requested_fcstd:
+                        shutil.copy2(fcstd_path, requested_fcstd)
+                    fcstd_path = str(requested_fcstd)
+                except Exception as e:
+                    logger.warning(f"复制FCStd到目标路径失败: {e}")
+
             return {
                 "success": True,
-                "step_path": result.get("step_path"),
-                "fcstd_path": result.get("fcstd_path"),
+                "step_path": step_path,
+                "fcstd_path": fcstd_path,
                 "sandbox_mode": True,
             }
 

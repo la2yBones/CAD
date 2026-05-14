@@ -178,6 +178,7 @@ class CacheManagerPanel(ttk.Frame):
         super().__init__(parent, **kwargs)
         self.app_config = app_config
         self._cache = None
+        self._entry_by_item = {}
         self._build_ui()
         self._refresh_lock = threading.Lock()
 
@@ -289,6 +290,7 @@ class CacheManagerPanel(ttk.Frame):
 
             for item in self.tree.get_children():
                 self.tree.delete(item)
+            self._entry_by_item.clear()
 
             for entry in entries:
                 src = entry.get('source_file', '')
@@ -300,7 +302,8 @@ class CacheManagerPanel(ttk.Frame):
                 ts = datetime.fromtimestamp(entry.get('timestamp', 0)).strftime('%Y-%m-%d %H:%M')
                 status = "已过期" if entry.get('expired') else "有效"
                 tags = ("expired",) if entry.get('expired') else ("active",)
-                self.tree.insert("", tk.END, values=(src, height, size_str, ts, status), tags=tags)
+                item_id = self.tree.insert("", tk.END, values=(src, height, size_str, ts, status), tags=tags)
+                self._entry_by_item[item_id] = entry
 
             self.tree.tag_configure("expired", foreground="red")
             self.tree.tag_configure("active", foreground="green")
@@ -320,16 +323,18 @@ class CacheManagerPanel(ttk.Frame):
 
         count = 0
         for item_id in selected:
-            values = self.tree.item(item_id, "values")
-            if values and len(values) >= 5:
-                src_file = values[0]
-                if src_file.startswith("..."):
-                    src_file = None
+            entry = self._entry_by_item.get(item_id, {})
+            cache_path = entry.get('cache_path')
+            if cache_path:
+                try:
+                    if cache.delete_entry(cache_path):
+                        count += 1
+                except Exception as e:
+                    logger.warning(f"删除缓存文件失败: {cache_path}: {e}")
+            else:
+                src_file = entry.get('source_file')
                 if src_file:
                     count += cache.invalidate(src_file)
-                else:
-                    entries = self.tree.item(item_id, "tags")
-                    count += 1
         try:
             cache.clear_expired()
         except Exception:
@@ -373,7 +378,17 @@ class CacheManagerPanel(ttk.Frame):
             return
         values = self.tree.item(selected[0], "values")
         if values and len(values) >= 5:
-            detail = f"源文件: {values[0]}\n拉伸高度: {values[1]}\n大小: {values[2]}\n时间: {values[3]}\n状态: {values[4]}"
+            entry = self._entry_by_item.get(selected[0], {})
+            source_file = entry.get('source_file') or values[0]
+            cache_path = entry.get('cache_path', '')
+            detail = (
+                f"源文件: {source_file}\n"
+                f"缓存文件: {cache_path}\n"
+                f"拉伸高度: {values[1]}\n"
+                f"大小: {values[2]}\n"
+                f"时间: {values[3]}\n"
+                f"状态: {values[4]}"
+            )
             messagebox.showinfo("缓存详情", detail)
 
 
@@ -715,8 +730,14 @@ class ProcessingPanel(ttk.Frame):
         self._generate_and_show_preview(filepath)
 
     def _find_preview(self, filepath: str) -> str:
-        """查找最后推送版本使用的 PNG 预览缓存。"""
+        """查找统一预览缓存目录中的 PNG；旧 output 位置仅作兼容读取。"""
+        from src.utils.preview_cache import get_preview_cache_path
+
         stem = Path(filepath).stem
+        shared_preview = get_preview_cache_path(filepath)
+        if shared_preview.exists() and shared_preview.stat().st_size >= 500:
+            return str(shared_preview)
+
         output_dir = Path(self.output_dir_var.get() or "examples/output")
         candidates = [
             output_dir / stem / f"{stem}_preview.png",
@@ -733,10 +754,11 @@ class ProcessingPanel(ttk.Frame):
         try:
             from src.cad_parser import CADParser
             from src.utils import load_config
+            from src.utils.preview_cache import get_preview_cache_path
 
             config = load_config()
             dxf_config = dict(config.get("dxf_parser", {}))
-            dxf_config["output_dir"] = self.output_dir_var.get() or "examples/output"
+            dxf_config["output_dir"] = str(get_preview_cache_path(filepath).parent)
 
             logger.info(f"正在生成预览: {Path(filepath).name} ...")
             parser = CADParser(filepath, dxf_config)
@@ -756,13 +778,11 @@ class ProcessingPanel(ttk.Frame):
                 return
 
             stem = Path(filepath).stem
-            preview_dir = Path(self.output_dir_var.get() or "examples/output") / stem
-            preview_dir.mkdir(parents=True, exist_ok=True)
-            preview_path = preview_dir / f"{stem}_preview.png"
+            preview_path = get_preview_cache_path(filepath)
 
             parser.visualize(str(preview_path))
             self._show_preview_image(str(preview_path), stem)
-            logger.info(f"预览已更新: {Path(filepath).name}")
+            logger.info(f"预览已更新: {Path(filepath).name} -> {preview_path}")
         except Exception as e:
             logger.error(f"预览失败: {e}")
             messagebox.showerror(

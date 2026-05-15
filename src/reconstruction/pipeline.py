@@ -25,6 +25,7 @@ class SemanticReconstructionPipeline:
         dimension_data: Dict[str, Any],
         local_relationships: Optional[Dict[str, Any]],
         extrude_height: float,
+        file_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         enriched_geometry = dict(geometry_data)
         if local_relationships:
@@ -36,7 +37,12 @@ class SemanticReconstructionPipeline:
             dimension_data=dimension_data,
             local_relationships=local_relationships,
         )
-        part_semantics = self.semantic_generator.generate(reconstruction_context)
+        summary_context = self.context_builder.build_summary(reconstruction_context)
+        part_semantics = self.semantic_generator.generate(
+            reconstruction_context,
+            retry_context=summary_context,
+            file_path=file_path,
+        )
 
         if not self._is_semantic_confidence_sufficient(part_semantics):
             modeling_result = self._build_blocked_modeling_result(part_semantics)
@@ -48,6 +54,7 @@ class SemanticReconstructionPipeline:
                 extrude_height,
                 reconstruction_context=reconstruction_context,
                 part_semantics=part_semantics,
+                file_path=file_path,
             )
 
         return {

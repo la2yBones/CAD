@@ -167,7 +167,8 @@ JSON 必须包含以下字段：
                  dimension_data: Optional[Dict] = None,
                  extrude_height: float = 10.0,
                  reconstruction_context: Optional[Dict[str, Any]] = None,
-                 part_semantics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 part_semantics: Optional[Dict[str, Any]] = None,
+                 file_path: Optional[str] = None) -> Dict[str, Any]:
         """
         生成FreeCAD建模指令
 
@@ -204,6 +205,7 @@ JSON 必须包含以下字段：
                 extra_body = {"thinking": {"type": "enabled", "reasoning_effort": self.config.get("reasoning_effort", "max")}}
 
             response = self._create_chat_completion(
+                file_path=file_path,
                 model=self.model,
                 messages=[
                     {
@@ -250,13 +252,13 @@ JSON 必须包含以下字段：
                 "warnings": ["使用降级建模方法"]
             }
 
-    def _create_chat_completion(self, **request_payload):
+    def _create_chat_completion(self, file_path: Optional[str] = None, **request_payload):
         call_span = self.telemetry_store.start_call(
             stage="modeling_generation",
             model=str(request_payload.get("model") or self.model),
             provider="deepseek",
             request=request_payload,
-            file_path=None,
+            file_path=file_path,
         )
         try:
             response = self.client.chat.completions.create(**request_payload)

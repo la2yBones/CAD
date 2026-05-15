@@ -10,6 +10,7 @@ api:
     model: "deepseek-v4-pro"
     max_tokens: 4096
     max_prompt_tokens: 12000
+    semantic_max_tokens: 30000  # 语义生成阶段输出上限（默认 30000）
     thinking: true
     reasoning_effort: "max"
 

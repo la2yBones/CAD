@@ -114,8 +114,12 @@ class LLMCallSpan:
         self.call_id = str(uuid.uuid4())
         self.started_at = time.perf_counter()
         self.started_iso = datetime.now(timezone.utc).isoformat()
+        self._finished_record: Optional[Dict[str, Any]] = None
 
     def finish(self, response: Any = None, error: Optional[BaseException] = None) -> Dict[str, Any]:
+        if self._finished_record is not None:
+            return self._finished_record
+
         duration = max(time.perf_counter() - self.started_at, 0.000001)
         response_dict = _to_plain_data(response)
         usage = _extract_usage(response_dict, response)
@@ -138,6 +142,7 @@ class LLMCallSpan:
             "error": str(error) if error else None,
         }
         self.store.append(record)
+        self._finished_record = record
         return record
 
 

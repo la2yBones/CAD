@@ -427,6 +427,18 @@ class LogPanel(ttk.Frame):
         ttk.Button(toolbar, text="导出 .csv", command=lambda: self._export_log('csv')).pack(side=tk.RIGHT, padx=2)
         ttk.Button(toolbar, text="清空", command=self._clear_log).pack(side=tk.RIGHT, padx=2)
 
+        # 日志统计行放在日志区块内部，避免被窗口底部边缘挤压
+        status_frame = ttk.Frame(self)
+        status_frame.pack(fill=tk.X, padx=5, pady=(4, 0))
+        self.status_var = tk.StringVar(value="就绪 | 日志: 0 条")
+        ttk.Label(
+            status_frame,
+            textvariable=self.status_var,
+            relief=tk.SUNKEN,
+            anchor=tk.W,
+            padding=(5, 2),
+        ).pack(fill=tk.X)
+
         # 日志列表
         list_frame = ttk.Frame(self)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -436,23 +448,22 @@ class LogPanel(ttk.Frame):
         self.tree.heading("timestamp", text="时间")
         self.tree.heading("level", text="级别")
         self.tree.heading("message", text="消息")
-        self.tree.column("timestamp", width=80, minwidth=60)
-        self.tree.column("level", width=65, minwidth=50)
-        self.tree.column("message", width=600)
+        self.tree.column("timestamp", width=80, minwidth=60, stretch=False)
+        self.tree.column("level", width=65, minwidth=50, stretch=False)
+        self.tree.column("message", width=1200, minwidth=600, stretch=False)
 
+        list_frame.grid_rowconfigure(0, weight=1)
+        list_frame.grid_columnconfigure(0, weight=1)
         vsb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
 
         for level, color in self.LEVEL_COLORS.items():
             self.tree.tag_configure(level, foreground=color)
         self.tree.tag_configure("hidden", foreground="#CCCCCC")
-
-        # 状态栏
-        self.status_var = tk.StringVar(value="就绪 | 日志: 0 条")
-        ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W,
-                  padding=(5, 2)).pack(fill=tk.X, side=tk.BOTTOM)
 
     def _start_polling(self):
         self._poll_logs()
@@ -621,14 +632,16 @@ class LLMTelemetryPanel(ttk.Frame):
             ttk.Label(summary, textvariable=var, foreground="darkblue").pack(side=tk.LEFT, padx=(0, 14))
         ttk.Button(summary, text="清空", command=self.clear_records).pack(side=tk.RIGHT, padx=2)
         ttk.Button(summary, text="刷新", command=self.refresh).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(summary, text="删除选中", command=self.delete_selected_records).pack(side=tk.RIGHT, padx=2)
 
         list_frame = ttk.Frame(self)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        columns = ("time", "stage", "model", "status", "prompt", "completion", "total", "rate", "duration")
+        columns = ("time", "drawing", "stage", "model", "status", "prompt", "completion", "total", "rate", "duration")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
         headings = {
             "time": "时间",
+            "drawing": "图纸名称",
             "stage": "阶段",
             "model": "模型",
             "status": "状态",
@@ -640,6 +653,7 @@ class LLMTelemetryPanel(ttk.Frame):
         }
         widths = {
             "time": 155,
+            "drawing": 150,
             "stage": 145,
             "model": 130,
             "status": 65,
@@ -657,6 +671,7 @@ class LLMTelemetryPanel(ttk.Frame):
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<Double-1>", self._open_record_window)
+        self.tree.bind("<Delete>", lambda _event: self.delete_selected_records())
 
     def _telemetry_store(self):
         from src.utils.config import load_config
@@ -711,6 +726,65 @@ class LLMTelemetryPanel(ttk.Frame):
         except Exception as e:
             messagebox.showerror("清空失败", f"清空大模型调用记录时出错:\n{e}")
 
+    def _selected_records(self) -> List[Dict]:
+        return [
+            self._record_by_item[item]
+            for item in self.tree.selection()
+            if item in self._record_by_item
+        ]
+
+    def delete_selected_records(self):
+        selected_records = self._selected_records()
+        if not selected_records:
+            messagebox.showinfo("请选择记录", "请先选择一条或多条大模型调用记录。")
+            return
+
+        if not messagebox.askyesno(
+            "删除选中记录",
+            f"确定要删除选中的 {len(selected_records)} 条大模型调用记录吗？"
+        ):
+            return
+
+        selected_call_ids = {
+            str(record.get("call_id"))
+            for record in selected_records
+            if record.get("call_id")
+        }
+        if not selected_call_ids:
+            messagebox.showwarning("无法删除", "选中记录缺少 call_id，无法安全定位。")
+            return
+
+        try:
+            store = self._telemetry_store()
+            if not store.log_path.exists():
+                return
+
+            kept_lines = []
+            removed_count = 0
+            for line in store.log_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    kept_lines.append(line)
+                    continue
+
+                if str(record.get("call_id")) in selected_call_ids:
+                    removed_count += 1
+                    continue
+                kept_lines.append(line)
+
+            content = "\n".join(kept_lines)
+            store.log_path.write_text((content + "\n") if content else "", encoding="utf-8")
+            self.records = [r for r in self.records if str(r.get("call_id")) not in selected_call_ids]
+            self._last_signature = ""
+            self._render_records()
+            self.refresh()
+            logger.info(f"已删除 {removed_count} 条大模型调用记录")
+        except Exception as e:
+            messagebox.showerror("删除失败", f"删除大模型调用记录时出错:\n{e}")
+
     def _render_records(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -719,7 +793,8 @@ class LLMTelemetryPanel(ttk.Frame):
         for record in reversed(self.records):
             tokens = record.get("tokens") or {}
             values = (
-                str(record.get("timestamp", ""))[:19],
+                self._display_timestamp(record.get("timestamp", "")),
+                self._display_drawing_name(record),
                 self._display_stage(record.get("stage", "")),
                 record.get("model", ""),
                 self._display_status(record.get("status", "")),
@@ -732,9 +807,29 @@ class LLMTelemetryPanel(ttk.Frame):
             item = self.tree.insert("", tk.END, values=values)
             self._record_by_item[item] = record
 
+    def _display_timestamp(self, timestamp: Any) -> str:
+        raw = str(timestamp or "")
+        if not raw:
+            return ""
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return raw[:19]
+
+    def _display_drawing_name(self, record: Dict[str, Any]) -> str:
+        file_path = record.get("file_path")
+        if file_path:
+            try:
+                return Path(str(file_path)).stem
+            except Exception:
+                return str(file_path)
+        return ""
+
     def _display_stage(self, stage: str) -> str:
         labels = {
             "view_analysis": "视图语义校正",
+            "semantic_reconstruction": "零件语义重建",
             "modeling_generation": "建模指令生成",
             "self_test": "自测",
         }
@@ -765,7 +860,7 @@ class LLMTelemetryPanel(ttk.Frame):
         header.pack(fill=tk.X, padx=10, pady=(10, 5))
         ttk.Label(
             header,
-            text=f"\u6a21\u578b: {record.get('model', '')} | \u72b6\u6001: {self._display_status(record.get('status', ''))} | \u53cc\u51fb\u8bb0\u5f55\u65f6\u95f4: {str(record.get('timestamp', ''))[:19]}",
+            text=f"\u6a21\u578b: {record.get('model', '')} | \u72b6\u6001: {self._display_status(record.get('status', ''))} | \u8c03\u7528\u65f6\u95f4: {self._display_timestamp(record.get('timestamp', ''))}",
         ).pack(side=tk.LEFT)
 
         text_frame = ttk.Frame(detail_win)
@@ -785,8 +880,11 @@ class LLMTelemetryPanel(ttk.Frame):
     def _format_record_detail(self, record: Dict[str, Any]) -> str:
         metadata = {
             "call_id": record.get("call_id"),
-            "timestamp": record.get("timestamp"),
-            "stage": record.get("stage"),
+            "timestamp": self._display_timestamp(record.get("timestamp")),
+            "timestamp_raw": record.get("timestamp"),
+            "drawing_name": self._display_drawing_name(record),
+            "stage": self._display_stage(record.get("stage", "")),
+            "stage_key": record.get("stage"),
             "provider": record.get("provider"),
             "model": record.get("model"),
             "file_path": record.get("file_path"),
@@ -1019,9 +1117,20 @@ class ProcessingPanel(ttk.Frame):
         input_dir = Path(self.input_dir_var.get())
         if not input_dir.exists():
             return
-        for ext in ("*.dxf", "*.DXF", "*.dwg", "*.DWG"):
-            for f in sorted(input_dir.glob(ext)):
-                self.file_tree.insert("", tk.END, values=(f.name, f.suffix.upper(), str(f)))
+
+        seen_paths = set()
+        cad_files = []
+        for f in input_dir.iterdir():
+            if not f.is_file() or f.suffix.lower() not in {".dxf", ".dwg"}:
+                continue
+            file_key = str(f.resolve()).lower()
+            if file_key in seen_paths:
+                continue
+            seen_paths.add(file_key)
+            cad_files.append(f)
+
+        for f in sorted(cad_files, key=lambda path: path.name.lower()):
+            self.file_tree.insert("", tk.END, values=(f.name, f.suffix.upper(), str(f)))
 
     def _on_file_selected(self, event):
         pass

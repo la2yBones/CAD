@@ -119,6 +119,7 @@ class IntelligentEngineeringAnalyzer:
             dimension_data=dimension_result,
             local_relationships=local_analysis,
             extrude_height=extrude_height,
+            file_path=file_path,
         )
 
         result = {

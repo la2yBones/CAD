@@ -96,6 +96,7 @@ class TestAIModeling(unittest.TestCase):
                 "evidence": [],
                 "candidate_interpretations": [],
                 "coordinate_system": {},
+                "dimension_source": "annotation",
                 "base_features": [],
                 "additive_features": [],
                 "subtractive_features": [],
@@ -117,6 +118,7 @@ class TestAIModeling(unittest.TestCase):
                 "evidence": [],
                 "candidate_interpretations": [],
                 "coordinate_system": {},
+                "dimension_source": "annotation",
                 "base_features": [],
                 "additive_features": [],
                 "subtractive_features": [],
@@ -128,6 +130,32 @@ class TestAIModeling(unittest.TestCase):
 
         self.assertFalse(valid)
         self.assertIn("confidence 必须介于 0 到 1 之间", errors)
+
+    def test_part_semantics_validator_rejects_mixed_annotation_dimensions(self):
+        valid, errors = PartSemanticsValidator().validate(
+            {
+                "part_type": "bolt",
+                "confidence": 0.9,
+                "summary": "",
+                "evidence": [],
+                "candidate_interpretations": [],
+                "coordinate_system": {},
+                "dimension_source": "annotation",
+                "base_features": [],
+                "additive_features": [],
+                "subtractive_features": [],
+                "key_dimensions": [
+                    {"name": "annotated_length", "value": 30.0, "unit": "mm"},
+                    {"name": "measured_diameter", "value": 48.5, "unit": "mm"},
+                ],
+                "uncertainties": [],
+                "warnings": [],
+            },
+            {"dimensions": [{"text": "30", "value": 30.0}]},
+        )
+
+        self.assertFalse(valid)
+        self.assertTrue(any("key_dimensions 只能使用标注值" in error for error in errors))
 
     def test_low_semantic_confidence_blocks_modeling(self):
         analyzer = IntelligentEngineeringAnalyzer.__new__(IntelligentEngineeringAnalyzer)

@@ -470,3 +470,17 @@ python tools/diagnose_export.py
 | `docs/modules/BATCH_MODULE_README.md` | 批处理模块说明 |
 | `docs/modules/CACHE_README.md` | 缓存系统说明 |
 | `docs/modules/INTELLIGENT_ANALYZER_README.md` | 智能分析模块说明 |
+
+## Agent skills
+
+### Issue tracker
+
+本仓库的问题与 PRD 通过 GitHub Issues 管理。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+本仓库使用默认的分诊标签词表。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+本仓库采用单上下文布局。详见 `docs/agents/domain.md`。

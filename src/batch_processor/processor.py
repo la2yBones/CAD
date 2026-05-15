@@ -429,73 +429,61 @@ class CADProcessor:
                     )
                         
                 except Exception as e:
-                    logger.warning(f"智能分析失败: {e}")
+                    result.error_message = f"智能分析失败，未进入建模阶段: {e}"
+                    logger.warning(result.error_message)
                     logger.warning(traceback.format_exc())
+                    return result
+            else:
+                result.error_message = "智能模式需要有效的 DeepSeek API Key，未进入建模阶段"
+                logger.warning(result.error_message)
+                return result
 
-            if is_multiview and has_ai_script and self._is_fallback_modeling_result(modeling_instructions):
-                result.error_message = self._build_multiview_block_message(
-                    view_analysis,
-                    reason="AI 未能生成可靠的多视图建模脚本，当前脚本属于基础拉伸降级方案"
+            if has_ai_script and self._is_fallback_modeling_result(modeling_instructions):
+                result.error_message = (
+                    "AI 未能生成可靠的建模脚本，当前结果属于基础拉伸降级方案；"
+                    "智能模式不会调用通用建模器兜底"
                 )
                 logger.warning(result.error_message)
                 return result
 
-            # 3. 生成3D模型 - 优先使用AI脚本
-            if has_ai_script and ai_script_content:
-                logger.info("优先使用AI生成的脚本进行建模")
-                try:
-                    from src.model_generator.ai_script_runner import AIScriptRunner
-                    runner = AIScriptRunner(self.config)
-                    
-                    step_path = None
-                    if 'model_step' in output_structure:
-                        step_path = str(output_structure['model_step'])
-                    
-                    run_result = runner.run_script(ai_script_content, step_path)
-                    
-                    if run_result.get('success'):
-                        if run_result.get('step_path'):
-                            result.output_paths['model_step'] = run_result['step_path']
-                        if run_result.get('fcstd_path'):
-                            result.output_paths['model_fcstd'] = run_result['fcstd_path']
-                        logger.info("AI脚本建模成功")
-                    else:
-                        logger.warning("AI脚本执行失败，回退到通用建模器")
-                        has_ai_script = False
-                        
-                except Exception as e:
-                    logger.warning(f"执行AI脚本出错: {e}")
-                    has_ai_script = False
+            if not has_ai_script or not ai_script_content:
+                result.error_message = (
+                    "未获得可执行的 AI FreeCAD 建模脚本；"
+                    "智能模式不会调用通用建模器兜底"
+                )
+                logger.warning(result.error_message)
+                return result
 
-            # 如果没有AI脚本，使用通用建模器
-            if not has_ai_script:
-                if is_multiview:
-                    result.error_message = self._build_multiview_block_message(
-                        view_analysis,
-                        reason="未获得可执行的 AI 多视图建模脚本"
+            # 3. 智能模式只执行 AI 生成的 FreeCAD 脚本，不调用通用建模器兜底
+            logger.info("使用 AI 生成的 FreeCAD 脚本进行智能建模")
+            try:
+                from src.model_generator.ai_script_runner import AIScriptRunner
+                runner = AIScriptRunner(self.config)
+
+                step_path = None
+                if 'model_step' in output_structure:
+                    step_path = str(output_structure['model_step'])
+
+                run_result = runner.run_script(ai_script_content, step_path)
+
+                if run_result.get('success'):
+                    if run_result.get('step_path'):
+                        result.output_paths['model_step'] = run_result['step_path']
+                    if run_result.get('fcstd_path'):
+                        result.output_paths['model_fcstd'] = run_result['fcstd_path']
+                    logger.info("AI脚本建模成功")
+                else:
+                    result.error_message = (
+                        f"AI脚本执行失败，智能模式不会调用通用建模器兜底: "
+                        f"{run_result.get('error', '未知错误')}"
                     )
                     logger.warning(result.error_message)
                     return result
 
-                logger.info("使用通用建模器")
-                modeler_config = {}
-                if "freecad" in self.config:
-                    modeler_config.update(self.config.get("freecad", {}))
-                modeler_config["default_extrude_height"] = extrude_height
-
-                modeler = self._get_modeler()(modeler_config)
-                modeler.generate(geometry_data, {})
-
-                if 'model_step' in output_structure:
-                    export_path = str(output_structure['model_step'])
-                    export_success = modeler.export(export_path, "STEP")
-                    if export_success and Path(export_path).exists():
-                        result.output_paths['model_step'] = export_path
-                        logger.info(f"STEP模型已确认保存: {export_path}")
-                    else:
-                        logger.warning(f"STEP模型可能未正确保存: {export_path}")
-
-                modeler.close()
+            except Exception as e:
+                result.error_message = f"执行AI脚本出错，智能模式不会调用通用建模器兜底: {e}"
+                logger.warning(result.error_message)
+                return result
 
             result.success = True
             logger.info(f"智能分析处理完成: {Path(file_path).name}")

@@ -91,7 +91,7 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
 
 | 类型 | 默认路径 | 说明 |
 |---|---|---|
-| 分析缓存 | `.cache/analysis` | 以文件属性、拉伸高度和分析参数生成 SHA-256 键 |
+| 分析缓存 | `.cache/analysis` | 以文件属性和分析参数生成 SHA-256 键 |
 | 预览缓存 | `.cache/previews` | 可通过 `CAD_PREVIEW_CACHE_DIR` 覆盖 |
 | LLM 遥测 | `.cache/llm_telemetry/llm_calls.jsonl` | 记录调用阶段、耗时、token 和响应摘要 |
 

@@ -106,7 +106,7 @@ class AppConfig:
             'base_dir': 'examples/output',
         },
         'processing': {
-            'default_height': 10.0,
+            'basic_default_height': 10.0,
             'intelligent_mode': True,
         },
         'log': {
@@ -206,15 +206,13 @@ class CacheManagerPanel(ttk.Frame):
         self.stats_summary_var = tk.StringVar(value="条目数: -- | 总大小: -- | 已过期: --")
         ttk.Label(header_frame, textvariable=self.stats_summary_var, foreground="darkblue").pack(side=tk.RIGHT)
 
-        columns = ("source_file", "extrude_height", "size", "timestamp", "status")
+        columns = ("source_file", "size", "timestamp", "status")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
         self.tree.heading("source_file", text="源文件")
-        self.tree.heading("extrude_height", text="拉伸高度")
         self.tree.heading("size", text="大小")
         self.tree.heading("timestamp", text="时间")
         self.tree.heading("status", text="状态")
         self.tree.column("source_file", width=200)
-        self.tree.column("extrude_height", width=70)
         self.tree.column("size", width=80)
         self.tree.column("timestamp", width=140)
         self.tree.column("status", width=60)
@@ -286,13 +284,12 @@ class CacheManagerPanel(ttk.Frame):
                 src = entry.get('source_file', '')
                 if len(src) > 50:
                     src = "..." + src[-47]
-                height = f"{entry.get('extrude_height', 0):.1f}"
                 size_kb = entry.get('size_bytes', 0) / 1024
                 size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
                 ts = datetime.fromtimestamp(entry.get('timestamp', 0)).strftime('%Y-%m-%d %H:%M')
                 status = "已过期" if entry.get('expired') else "有效"
                 tags = ("expired",) if entry.get('expired') else ("active",)
-                item_id = self.tree.insert("", tk.END, values=(src, height, size_str, ts, status), tags=tags)
+                item_id = self.tree.insert("", tk.END, values=(src, size_str, ts, status), tags=tags)
                 self._entry_by_item[item_id] = entry
 
             self.tree.tag_configure("expired", foreground="red")
@@ -367,17 +364,16 @@ class CacheManagerPanel(ttk.Frame):
         if not selected:
             return
         values = self.tree.item(selected[0], "values")
-        if values and len(values) >= 5:
+        if values and len(values) >= 4:
             entry = self._entry_by_item.get(selected[0], {})
             source_file = entry.get('source_file') or values[0]
             cache_path = entry.get('cache_path', '')
             detail = (
                 f"源文件: {source_file}\n"
                 f"缓存文件: {cache_path}\n"
-                f"拉伸高度: {values[1]}\n"
-                f"大小: {values[2]}\n"
-                f"时间: {values[3]}\n"
-                f"状态: {values[4]}"
+                f"大小: {values[1]}\n"
+                f"时间: {values[2]}\n"
+                f"状态: {values[3]}"
             )
             messagebox.showinfo("缓存详情", detail)
 
@@ -758,26 +754,10 @@ class LLMTelemetryPanel(ttk.Frame):
         record = self._record_by_item.get(selected[0])
         if not record:
             return
-        payload = {
-            "元信息": {
-                "call_id": record.get("call_id"),
-                "timestamp": record.get("timestamp"),
-                "stage": record.get("stage"),
-                "provider": record.get("provider"),
-                "model": record.get("model"),
-                "file_path": record.get("file_path"),
-                "status": record.get("status"),
-                "duration_seconds": record.get("duration_seconds"),
-                "tokens": record.get("tokens"),
-                "token_rate_completion_per_second": record.get("token_rate_completion_per_second"),
-                "error": record.get("error"),
-            },
-            "原始请求": record.get("request"),
-            "原始响应": record.get("response"),
-        }
+
         detail_win = tk.Toplevel(self)
         detail_win.title(
-            f"大模型调用详情 - {self._display_stage(record.get('stage', ''))} - {self._display_status(record.get('status', ''))}"
+            f"\u5927\u6a21\u578b\u8c03\u7528\u8be6\u60c5 - {self._display_stage(record.get('stage', ''))} - {self._display_status(record.get('status', ''))}"
         )
         detail_win.geometry("900x650")
 
@@ -785,7 +765,7 @@ class LLMTelemetryPanel(ttk.Frame):
         header.pack(fill=tk.X, padx=10, pady=(10, 5))
         ttk.Label(
             header,
-            text=f"模型: {record.get('model', '')} | 状态: {self._display_status(record.get('status', ''))} | 双击记录时间: {str(record.get('timestamp', ''))[:19]}",
+            text=f"\u6a21\u578b: {record.get('model', '')} | \u72b6\u6001: {self._display_status(record.get('status', ''))} | \u53cc\u51fb\u8bb0\u5f55\u65f6\u95f4: {str(record.get('timestamp', ''))[:19]}",
         ).pack(side=tk.LEFT)
 
         text_frame = ttk.Frame(detail_win)
@@ -799,8 +779,94 @@ class LLMTelemetryPanel(ttk.Frame):
         hsb.grid(row=1, column=0, sticky="ew")
         text_frame.grid_rowconfigure(0, weight=1)
         text_frame.grid_columnconfigure(0, weight=1)
-        text_widget.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        text_widget.insert(tk.END, self._format_record_detail(record))
         text_widget.configure(state="disabled")
+
+    def _format_record_detail(self, record: Dict[str, Any]) -> str:
+        metadata = {
+            "call_id": record.get("call_id"),
+            "timestamp": record.get("timestamp"),
+            "stage": record.get("stage"),
+            "provider": record.get("provider"),
+            "model": record.get("model"),
+            "file_path": record.get("file_path"),
+            "status": record.get("status"),
+            "duration_seconds": record.get("duration_seconds"),
+            "tokens": record.get("tokens"),
+            "token_rate_completion_per_second": record.get("token_rate_completion_per_second"),
+            "error": record.get("error"),
+        }
+        sections = [
+            "\u3010\u5143\u4fe1\u606f\u3011",
+            json.dumps(metadata, ensure_ascii=False, indent=2, default=str),
+            "",
+            "\u3010\u539f\u59cb\u8bf7\u6c42\u3011",
+            self._format_request_detail(record.get("request")),
+            "",
+            "\u3010\u539f\u59cb\u54cd\u5e94\u3011",
+            self._format_response_detail(record.get("response")),
+        ]
+        return "\n".join(sections)
+
+    def _format_request_detail(self, request: Any) -> str:
+        if not isinstance(request, dict):
+            return json.dumps(request, ensure_ascii=False, indent=2, default=str)
+
+        sections: List[str] = []
+        request_meta = {key: value for key, value in request.items() if key != "messages"}
+        if request_meta:
+            sections.extend([
+                "\u8bf7\u6c42\u53c2\u6570\uff1a",
+                json.dumps(request_meta, ensure_ascii=False, indent=2, default=str),
+                "",
+            ])
+
+        messages = request.get("messages")
+        if not isinstance(messages, list):
+            sections.append(json.dumps(request, ensure_ascii=False, indent=2, default=str))
+            return "\n".join(sections)
+
+        for index, message in enumerate(messages, start=1):
+            if not isinstance(message, dict):
+                sections.extend([f"\u6d88\u606f {index}\uff1a", str(message), ""])
+                continue
+            role = message.get("role", "unknown")
+            content = message.get("content", "")
+            sections.append(f"\u6d88\u606f {index} [{role}]\uff1a")
+            sections.append(self._format_message_content(content))
+            sections.append("")
+        return "\n".join(sections).rstrip()
+
+    def _format_response_detail(self, response: Any) -> str:
+        if not isinstance(response, dict):
+            return json.dumps(response, ensure_ascii=False, indent=2, default=str)
+
+        sections: List[str] = []
+        choices = response.get("choices")
+        if isinstance(choices, list):
+            for index, choice in enumerate(choices, start=1):
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message") or {}
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if content:
+                    sections.extend([f"\u56de\u590d {index}\uff1a", self._format_message_content(content), ""])
+                reasoning_content = message.get("reasoning_content")
+                if reasoning_content:
+                    sections.extend([f"\u63a8\u7406\u5185\u5bb9 {index}\uff1a", self._format_message_content(reasoning_content), ""])
+
+        sections.extend([
+            "\u54cd\u5e94\u5bf9\u8c61\uff1a",
+            json.dumps(response, ensure_ascii=False, indent=2, default=str),
+        ])
+        return "\n".join(sections).rstrip()
+
+    def _format_message_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        return json.dumps(content, ensure_ascii=False, indent=2, default=str)
 
 
 class ProcessingCancelled(RuntimeError):
@@ -851,14 +917,25 @@ class ProcessingPanel(ttk.Frame):
 
         row3 = ttk.Frame(param_frame)
         row3.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(row3, text="拉伸高度 (mm):").pack(side=tk.LEFT, padx=(0, 5))
-        self.height_var = tk.DoubleVar(value=self.app_config.get('processing', 'default_height', default=10.0))
-        ttk.Spinbox(row3, from_=0.5, to=200, increment=0.5, textvariable=self.height_var, width=8).pack(side=tk.LEFT)
+        self.height_label = ttk.Label(row3, text="基础模式拉伸高度 (mm):")
+        self.height_label.pack(side=tk.LEFT, padx=(0, 5))
+        self.height_var = tk.DoubleVar(value=self.app_config.get('processing', 'basic_default_height', default=10.0))
+        self.height_spinbox = ttk.Spinbox(
+            row3,
+            from_=0.5,
+            to=200,
+            increment=0.5,
+            textvariable=self.height_var,
+            width=8,
+        )
+        self.height_spinbox.pack(side=tk.LEFT)
 
         ttk.Label(row3, text="处理模式:").pack(side=tk.LEFT, padx=(20, 5))
         self.mode_var = tk.StringVar(value="intelligent")
         ttk.Radiobutton(row3, text="智能模式", variable=self.mode_var, value="intelligent").pack(side=tk.LEFT)
         ttk.Radiobutton(row3, text="基础模式", variable=self.mode_var, value="basic").pack(side=tk.LEFT, padx=(10, 0))
+        self.mode_var.trace_add("write", self._sync_height_controls)
+        self._sync_height_controls()
 
         control_row = ttk.Frame(param_frame)
         control_row.pack(fill=tk.X)
@@ -1121,7 +1198,10 @@ class ProcessingPanel(ttk.Frame):
         self.cancel_btn.configure(state="normal")
         self.progress_var.set(0)
         self.progress_label.set("准备中...")
-        logger.info(f"开始处理: {Path(filepath).name} (模式: {mode}, 高度: {height}mm)")
+        if mode == "basic":
+            logger.info(f"开始处理: {Path(filepath).name} (模式: {mode}, 拉伸高度: {height}mm)")
+        else:
+            logger.info(f"开始处理: {Path(filepath).name} (模式: {mode})")
 
         thread = threading.Thread(target=self._run_processing, args=(filepath, mode, height), daemon=True)
         thread.start()
@@ -1150,7 +1230,7 @@ class ProcessingPanel(ttk.Frame):
                 self.pipeline.processor.process_with_intelligent_analysis = self._wrap_intelligent(
                     self.pipeline.processor.process_with_intelligent_analysis)
                 self._check_control_state("before-intelligent-processing")
-                result = self.pipeline.process_file_intelligent(filepath, height)
+                result = self.pipeline.process_file_intelligent(filepath)
             else:
                 logger.info("使用基础模式（不调用AI脚本建模）")
                 self._check_control_state("before-basic-processing")
@@ -1205,6 +1285,15 @@ class ProcessingPanel(ttk.Frame):
             self._update_progress(70, "建模中...")
             return result
         return wrapped
+
+    def _sync_height_controls(self, *_args):
+        visible = self.mode_var.get() == "basic"
+        if visible:
+            self.height_label.pack(side=tk.LEFT, padx=(0, 5))
+            self.height_spinbox.pack(side=tk.LEFT)
+        else:
+            self.height_label.pack_forget()
+            self.height_spinbox.pack_forget()
 
     def _load_config(self) -> Dict:
         config = {}

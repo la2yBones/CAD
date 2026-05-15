@@ -39,14 +39,14 @@ class AnalysisCache:
 
         logger.info(f"缓存系统初始化完成: {self.cache_dir.absolute()}, TTL: {default_ttl}s")
 
-    def _generate_cache_key(self, file_path: str, extrude_height: float,
+    def _generate_cache_key(self, file_path: str, extrude_height: Optional[float] = None,
                            analysis_params: Optional[Dict] = None) -> str:
         """
         生成唯一缓存键
 
         Args:
             file_path: 图纸文件路径
-            extrude_height: 拉伸高度
+            extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数字典
 
         Returns:
@@ -59,7 +59,6 @@ class AnalysisCache:
             'file_path': str(file_path),
             'file_size': file_stat.st_size,
             'file_mtime': file_stat.st_mtime,
-            'extrude_height': extrude_height,
             'analysis_params': analysis_params or {}
         }
 
@@ -111,14 +110,14 @@ class AnalysisCache:
             logger.warning(f"删除缓存条目失败: {cache_path}: {e}")
             return False
 
-    def get(self, file_path: str, extrude_height: float,
+    def get(self, file_path: str, extrude_height: Optional[float] = None,
             analysis_params: Optional[Dict] = None) -> Optional[Dict]:
         """
         从缓存读取分析结果
 
         Args:
             file_path: 图纸文件路径
-            extrude_height: 拉伸高度
+            extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数
 
         Returns:
@@ -155,7 +154,7 @@ class AnalysisCache:
             logger.warning(f"读取缓存失败: {e}")
             return None
 
-    def set(self, file_path: str, extrude_height: float,
+    def set(self, file_path: str, extrude_height: Optional[float],
             result_data: Dict[str, Any], ttl: Optional[int] = None,
             analysis_params: Optional[Dict] = None) -> bool:
         """
@@ -163,7 +162,7 @@ class AnalysisCache:
 
         Args:
             file_path: 图纸文件路径
-            extrude_height: 拉伸高度
+            extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             result_data: 结果数据
             ttl: 过期时间（秒）
             analysis_params: 分析参数
@@ -182,8 +181,6 @@ class AnalysisCache:
             cache_data['_cache_ttl'] = ttl
             cache_data['_cache_key'] = cache_key
             cache_data['_source_file'] = str(file_path)
-            cache_data['_extrude_height'] = extrude_height
-
             with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
 
@@ -201,7 +198,7 @@ class AnalysisCache:
 
         Args:
             file_path: 图纸文件路径
-            extrude_height: 拉伸高度
+            extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数
 
         Returns:
@@ -210,24 +207,17 @@ class AnalysisCache:
         try:
             removed_count = 0
 
-            if extrude_height is not None:
-                cache_key = self._generate_cache_key(file_path, extrude_height, analysis_params)
-                cache_path = self._get_cache_path(cache_key)
-                if self.delete_entry(str(cache_path)):
-                    removed_count += 1
-                    logger.info(f"缓存已删除: {file_path}")
-            else:
-                # 删除该文件相关的所有缓存
-                file_path_str = str(file_path)
-                for cache_file in self.cache_dir.rglob("*.json"):
-                    try:
-                        with open(cache_file, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                            if data.get('_source_file') == file_path_str:
-                                if self.delete_entry(str(cache_file)):
-                                    removed_count += 1
-                    except:
-                        pass
+            # 删除该文件相关的所有缓存
+            file_path_str = str(file_path)
+            for cache_file in self.cache_dir.rglob("*.json"):
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        if data.get('_source_file') == file_path_str:
+                            if self.delete_entry(str(cache_file)):
+                                removed_count += 1
+                except:
+                    pass
 
             logger.info(f"删除 {removed_count} 个缓存项")
             return removed_count
@@ -290,7 +280,7 @@ class AnalysisCache:
         列出缓存条目，供GUI缓存管理面板展示。
 
         Returns:
-            缓存条目列表。每个条目包含源文件、拉伸高度、大小、时间戳、是否过期等信息。
+            缓存条目列表。每个条目包含源文件、大小、时间戳、是否过期等信息。
         """
         entries = []
         current_time = datetime.now().timestamp()
@@ -304,18 +294,10 @@ class AnalysisCache:
                 timestamp = data.get('_cache_timestamp') or stat.st_mtime
                 ttl = data.get('_cache_ttl', self.default_ttl)
                 source_file = data.get('_source_file', '')
-                extrude_height = data.get('_extrude_height', 0.0)
-
-                try:
-                    extrude_height = float(extrude_height)
-                except (TypeError, ValueError):
-                    extrude_height = 0.0
-
                 entries.append({
                     'cache_key': data.get('_cache_key', cache_file.stem),
                     'cache_path': str(cache_file),
                     'source_file': source_file,
-                    'extrude_height': extrude_height,
                     'size_bytes': stat.st_size,
                     'timestamp': timestamp,
                     'ttl': ttl,
@@ -328,7 +310,6 @@ class AnalysisCache:
                     'cache_key': cache_file.stem,
                     'cache_path': str(cache_file),
                     'source_file': '',
-                    'extrude_height': 0.0,
                     'size_bytes': stat.st_size if stat else 0,
                     'timestamp': stat.st_mtime if stat else 0,
                     'ttl': self.default_ttl,

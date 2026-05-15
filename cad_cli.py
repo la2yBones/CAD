@@ -30,7 +30,7 @@ from src.batch_processor import CADPipeline, CADProcessor
 logger = logging.getLogger(__name__)
 
 
-def _run_intelligent_analysis_only(file_path, config, extrude_height, output_dir):
+def _run_intelligent_analysis_only(file_path, config, output_dir):
     """仅运行智能分析，不生成3D模型"""
     from src.cad_parser import CADParser
     from src.intelligent_analyzer import IntelligentEngineeringAnalyzer
@@ -52,9 +52,7 @@ def _run_intelligent_analysis_only(file_path, config, extrude_height, output_dir
         cache_dir=config.get("cache_dir", ".cache/analysis"),
         cache_ttl=config.get("cache_ttl", 3600 * 24 * 7)
     )
-    analysis_result = analyzer.analyze_full(
-        geometry_data, extrude_height, file_path=str(file_path)
-    )
+    analysis_result = analyzer.analyze_full(geometry_data, file_path=str(file_path))
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -150,9 +148,8 @@ def _process_single_file(args, config):
 
     if args.analysis_only:
         logger.info("模式: 仅智能分析（不生成模型）")
-        logger.info(f"拉伸高度: {args.height}mm")
         result = _run_intelligent_analysis_only(
-            args.file, config, args.height, args.output_dir
+            args.file, config, args.output_dir
         )
         if result:
             logger.info(f"\n✓ 分析完成! 实体数: {result['entity_count']}")
@@ -164,7 +161,8 @@ def _process_single_file(args, config):
     mode_label = ("智能分析 (视图识别+尺寸提取+AI脚本)" if args.intelligent
                   else ("基础AI分析" if args.analysis else "纯几何建模"))
     logger.info(f"模式: {mode_label}")
-    logger.info(f"拉伸高度: {args.height}mm")
+    if not args.intelligent:
+        logger.info(f"拉伸高度: {args.height}mm")
 
     pipeline = CADPipeline(
         config=config,
@@ -173,10 +171,7 @@ def _process_single_file(args, config):
     )
 
     if args.intelligent:
-        result = pipeline.process_file_intelligent(
-            args.file,
-            extrude_height=args.height
-        )
+        result = pipeline.process_file_intelligent(args.file)
     elif args.analysis:
         result = pipeline.process_file(
             args.file,

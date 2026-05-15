@@ -6,6 +6,7 @@ AI生成的FreeCAD脚本执行器
 """
 import sys
 import os
+import re
 import tempfile
 import logging
 import shutil
@@ -57,21 +58,50 @@ class AIScriptRunner:
         if not self.bridge or not self.bridge.freecad_available:
             return {"success": False, "error": "FreeCAD not available"}
 
+        script_content = self._normalize_generated_script(script_content)
+
         if self.bridge.mode == "subprocess":
             return self._run_via_bridge(script_content, output_path)
 
         return self._run_direct(script_content, output_path)
 
+    def _normalize_generated_script(self, script_content: str) -> str:
+        """Repair common AI geometry mistakes before sending code to FreeCAD."""
+        pattern = re.compile(
+            r"^(?P<prefix>\s*\w+\s*=\s*Part\.(?:LineSegment|ArcOfCircle)\(.*\))\s*$",
+            re.MULTILINE,
+        )
+
+        def add_to_shape(match: re.Match[str]) -> str:
+            line = match.group("prefix")
+            if line.endswith(".toShape()"):
+                return line
+            return f"{line}.toShape()"
+
+        return pattern.sub(add_to_shape, script_content)
+
     def _run_via_bridge(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         logger.info("executing AI script via subprocess bridge")
         requested_step = Path(output_path).resolve() if output_path else None
-        output_dir = str(requested_step.parent) if requested_step else tempfile.mkdtemp(prefix="ai_model_")
+        if requested_step:
+            with tempfile.TemporaryDirectory(prefix="ai_model_") as temp_output_dir:
+                result = self.bridge.execute_script(script_content, temp_output_dir)
+                return self._normalize_bridge_outputs(result, requested_step)
 
+        output_dir = tempfile.mkdtemp(prefix="ai_model_")
         result = self.bridge.execute_script(script_content, output_dir)
+        return self._normalize_bridge_outputs(result, requested_step)
+
+    def _normalize_bridge_outputs(
+        self,
+        result: Dict[str, Any],
+        requested_step: Optional[Path],
+    ) -> Dict[str, Any]:
 
         if result.get("success"):
             step_path = result.get("step_path")
             fcstd_path = result.get("fcstd_path")
+            copy_errors = []
 
             if requested_step and step_path and Path(step_path).exists():
                 try:
@@ -81,6 +111,7 @@ class AIScriptRunner:
                     step_path = str(requested_step)
                 except Exception as e:
                     logger.warning(f"复制STEP到目标路径失败: {e}")
+                    copy_errors.append(f"copy STEP failed: {e}")
 
             if requested_step and fcstd_path and Path(fcstd_path).exists():
                 try:
@@ -90,6 +121,16 @@ class AIScriptRunner:
                     fcstd_path = str(requested_fcstd)
                 except Exception as e:
                     logger.warning(f"复制FCStd到目标路径失败: {e}")
+                    copy_errors.append(f"copy FCStd failed: {e}")
+
+            if requested_step and copy_errors:
+                return {
+                    "success": False,
+                    "error": "; ".join(copy_errors),
+                    "step_path": step_path,
+                    "fcstd_path": fcstd_path,
+                    "sandbox_mode": True,
+                }
 
             return {
                 "success": True,

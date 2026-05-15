@@ -287,6 +287,7 @@ try:
         return None
 
     exported = False
+    result_shape = None
     if doc:
         result_shape = _select_result_shape()
         if result_shape:
@@ -306,6 +307,10 @@ try:
     if not exported and doc:
         doc.saveAs(fcstd_path)
         print(f"BRIDGE_EXPORT:FCStd:{{fcstd_path}}", flush=True)
+
+    if not result_shape:
+        print("BRIDGE_ERROR:NO_VALID_SHAPE", flush=True)
+        sys.exit(1)
 
     print("BRIDGE_SUCCESS", flush=True)
     sys.exit(0)

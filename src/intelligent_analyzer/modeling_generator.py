@@ -63,8 +63,16 @@ class FreeCADInstructionGenerator:
 - 采用极简建模策略。
 - 优先使用基础原语构造：盒体、圆柱、圆锥。
 - 对复杂组合体，先创建基础原语，再分步融合或切割。
+- 对二视图/三视图，先把各视图解释为同一零件的正交投影，再开始建模；不得把右视图或俯视图当成附加在主视图旁边的新实体。
+- 主视图表达宽高，右视图通常表达深度；右视图的水平尺寸应优先解释为零件深度，不得直接解释为“向右延伸的凸台长度”。
+- 只有在至少两个视图或明确尺寸共同支持时，才可新增凸台、槽、台阶等三维特征；单一视图里的线段不得直接推断成额外凸台或开槽。
+- 主视图中出现同心圆时，必须结合侧视图隐藏线/尺寸判断其含义；不得默认把所有同心圆都切成贯通孔。若证据不足，应优先生成单一通孔并在 warnings 中说明可能存在沉孔或台阶孔。
 - 单个步骤中连续 .fuse() 或 .cut() 不得超过 2 次；若需要更多布尔操作，必须拆分为多个中间变量和多个 try/except 步骤。
 - 若需自定义截面，仅允许用直线或圆弧构造 Part.Wire，再通过 Part.Face 和 Shape.extrude() 生成实体。
+- 使用 Part.LineSegment 或 Part.ArcOfCircle 构造线框时，传入 Part.Wire 的每一项必须是 Shape；应先调用 `.toShape()`，例如 `edge = Part.LineSegment(...).toShape()`。
+- 中间变量若在后续步骤复用，必须在 try/except 外先给出默认值，避免前一步失败后后续引用未定义变量。
+- 若轮廓点写成 `(x, y, 0)`，则轮廓位于 XY 平面，拉伸方向必须沿 Z 轴；若需要沿 Y 轴拉伸，则轮廓点必须写成 `(x, 0, z)`，确保拉伸方向垂直于轮廓平面。
+- 对板件、法兰、底座这类正视图轮廓，默认优先在 XY 平面构造轮廓，再按深度沿 Z 轴拉伸，除非图纸语义明确要求其他坐标系。
 - 不得使用高级拓扑修改、网格建模、草图约束或不在白名单内的 API。
 - 每个建模步骤必须用 try/except 包裹。
 - except 中不得静默忽略错误，必须将错误信息追加到 runtime_warnings 列表。
@@ -274,22 +282,20 @@ JSON 必须包含以下字段：
             "请分析以下工程图纸数据并生成FreeCAD建模脚本：\n",
             "=== 几何实体数据 ===\n",
             entities_summary,
-            f"\n默认拉伸高度: {extrude_height} mm\n"
         ]
 
-        if view_analysis:
-            view_json = json.dumps(view_analysis, ensure_ascii=False, indent=2)
-            if len(view_json) > 3000:
-                view_json = view_json[:3000] + "\n... (视图分析内容已截断)"
-            prompt_parts.append("\n=== 视图分析 ===\n")
-            prompt_parts.append(view_json)
+        modeling_context = self._build_modeling_context(
+            geometry_data,
+            view_analysis,
+            dimension_data,
+        )
+        prompt_parts.append("\n=== 建模上下文 ===\n")
+        prompt_parts.append(json.dumps(modeling_context, ensure_ascii=False, indent=2))
 
-        if dimension_data:
-            dim_json = json.dumps(dimension_data, ensure_ascii=False, indent=2)
-            if len(dim_json) > 3000:
-                dim_json = dim_json[:3000] + "\n... (尺寸标注内容已截断)"
-            prompt_parts.append("\n=== 尺寸标注 ===\n")
-            prompt_parts.append(dim_json)
+        reconstruction_hints = self._build_multiview_reconstruction_hints(view_analysis)
+        if reconstruction_hints:
+            prompt_parts.append("\n=== 多视图重建提示 ===\n")
+            prompt_parts.extend(f"- {hint}" for hint in reconstruction_hints)
 
         prompt = "\n".join(prompt_parts)
 
@@ -320,6 +326,115 @@ JSON 必须包含以下字段：
             summary += f"... 还有 {len(entities) - self.MAX_ENTITIES_IN_PROMPT} 个实体\n"
 
         return summary
+
+    def _build_modeling_context(
+        self,
+        geometry_data: Dict[str, Any],
+        view_analysis: Optional[Dict[str, Any]],
+        dimension_data: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        views = (view_analysis or {}).get("views", []) or []
+        dimensions = (dimension_data or {}).get("dimensions", []) or []
+        local_relationships = geometry_data.get("_local_relationships") or {}
+
+        return {
+            "drawing_type": (view_analysis or {}).get("drawing_type"),
+            "view_reason_summary": (view_analysis or {}).get("reason_summary", ""),
+            "views": [self._compact_view_for_modeling(view) for view in views],
+            "dimensions": [self._compact_dimension_for_modeling(dim) for dim in dimensions],
+            "local_relationships": {
+                "summary": local_relationships.get("summary"),
+                "entity_pairs": local_relationships.get("entity_pairs", []),
+            },
+        }
+
+    def _compact_view_for_modeling(self, view: Dict[str, Any]) -> Dict[str, Any]:
+        entities = view.get("entities", []) or []
+        return {
+            "name": view.get("name"),
+            "type": view.get("type"),
+            "bbox": view.get("bbox"),
+            "centroid": view.get("centroid"),
+            "entity_count": view.get("entity_count", len(entities)),
+            "layers": view.get("layers", []),
+            "type_count": self._count_entity_types(entities),
+            "entities": [self._compact_entity_for_modeling(entity) for entity in entities],
+        }
+
+    @staticmethod
+    def _count_entity_types(entities: List[Dict[str, Any]]) -> Dict[str, int]:
+        result: Dict[str, int] = {}
+        for entity in entities:
+            entity_type = str(entity.get("type", "unknown"))
+            result[entity_type] = result.get(entity_type, 0) + 1
+        return result
+
+    @staticmethod
+    def _compact_entity_for_modeling(entity: Dict[str, Any]) -> Dict[str, Any]:
+        keep_keys = (
+            "type",
+            "layer",
+            "start",
+            "end",
+            "center",
+            "radius",
+            "vertices",
+            "closed",
+            "start_angle",
+            "end_angle",
+        )
+        return {key: entity.get(key) for key in keep_keys if key in entity}
+
+    @staticmethod
+    def _compact_dimension_for_modeling(dimension: Dict[str, Any]) -> Dict[str, Any]:
+        keep_keys = ("text", "value", "type", "position")
+        return {key: dimension.get(key) for key in keep_keys if key in dimension}
+
+    def _build_multiview_reconstruction_hints(
+        self,
+        view_analysis: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        if not view_analysis:
+            return []
+
+        views = view_analysis.get("views", []) or []
+        hints: List[str] = []
+        main_view = next((view for view in views if view.get("name") == "main"), None)
+        side_views = [view for view in views if view.get("name") in ("right", "left")]
+
+        if main_view and side_views:
+            circles = [
+                entity for entity in main_view.get("entities", [])
+                if entity.get("type") == "CIRCLE"
+            ]
+            if self._has_concentric_circles(circles):
+                hidden_lines = [
+                    entity
+                    for side_view in side_views
+                    for entity in side_view.get("entities", [])
+                    if entity.get("type") == "LINE" and "隐藏" in str(entity.get("layer", ""))
+                ]
+                if hidden_lines:
+                    hints.append(
+                        "主视图存在同心圆且侧视图存在隐藏线时，优先判断为外圆凸台/轴肩配合内圆通孔；"
+                        "不要把所有同心圆都解释为贯通孔。"
+                    )
+
+        return hints
+
+    @staticmethod
+    def _has_concentric_circles(circles: List[Dict[str, Any]], tolerance: float = 1e-3) -> bool:
+        for i, first in enumerate(circles):
+            c1 = first.get("center") or []
+            if len(c1) < 2:
+                continue
+            for second in circles[i + 1:]:
+                c2 = second.get("center") or []
+                if len(c2) < 2:
+                    continue
+                if abs(c1[0] - c2[0]) <= tolerance and abs(c1[1] - c2[1]) <= tolerance:
+                    return True
+        return False
 
     def _generate_fallback_script(self, geometry_data: Dict[str, Any],
                                   extrude_height: float) -> str:

@@ -4,11 +4,11 @@
 
 ## 概述
 
-`AnalysisCache` 为智能分析结果提供文件级缓存，避免同一图纸、同一拉伸高度和同一分析参数重复调用 DeepSeek。
+`AnalysisCache` 为智能分析结果提供文件级缓存，避免同一图纸和同一分析参数重复调用 DeepSeek。
 
 ## 缓存键
 
-缓存键基于文件路径、文件大小、文件修改时间、拉伸高度和分析参数生成 SHA-256。
+缓存键基于文件路径、文件大小、文件修改时间和分析参数生成 SHA-256。
 
 ## 默认路径
 
@@ -35,10 +35,10 @@ python tools/cache_tool.py clear
 from src.utils.cache import AnalysisCache
 
 cache = AnalysisCache(cache_dir=".cache/analysis", default_ttl=3600 * 24 * 7)
-cached = cache.get("examples/cad_files/sample.dxf", extrude_height=10.0)
+cached = cache.get("examples/cad_files/sample.dxf")
 if cached is None:
     result = {"view_analysis": {}, "modeling_instructions": {}}
-    cache.set("examples/cad_files/sample.dxf", 10.0, result)
+    cache.set("examples/cad_files/sample.dxf", None, result)
 ```
 
 ## GUI 集成
@@ -57,6 +57,6 @@ cache:
 ## 注意事项
 
 - 修改图纸内容或文件修改时间后，缓存键会变化。
-- 修改拉伸高度或分析版本后，缓存键会变化。
+- 修改分析版本后，缓存键会变化。
 - 过期缓存不会被读取，可通过工具或 GUI 清理。
 - 缓存文件可能包含图纸结构信息和 AI 输出，分享前需检查内容。

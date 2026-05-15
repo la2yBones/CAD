@@ -90,7 +90,7 @@ GUI 支持：
 
 - 扫描 `examples/cad_files`
 - 预览 DXF/DWG 图纸
-- 设置拉伸高度
+- 在基础模式下设置拉伸高度
 - 基础模式或智能模式处理
 - 输出 STEP/STL/FCStd 和预览 PNG
 

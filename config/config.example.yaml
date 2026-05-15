@@ -54,7 +54,7 @@ freecad:
 
 # 3D建模配置
 modeling:
-  default_extrude_height: 10.0
+  default_extrude_height: 10.0  # 仅基础模式使用
   default_units: "mm"
   export_formats:
     - "STEP"

@@ -24,7 +24,7 @@ class IntelligentEngineeringAnalyzer:
     集成所有分析功能的完整管道
     """
 
-    ANALYSIS_VERSION = "llm_view_classifier_v1"
+    ANALYSIS_VERSION = "llm_view_classifier_v5_profile_plane_guard"
 
     def __init__(self, api_key: str, config: Optional[Dict] = None,
                  enable_cache: bool = True,

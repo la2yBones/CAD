@@ -69,7 +69,7 @@ class CADProcessor:
     def _get_modeler(self):
         """获取或创建模型生成器"""
         if self._modeler is None:
-            from src.model_generator import FreeCADModeler
+            from src.legacy.basic_modeling import FreeCADModeler
             self._modeler = FreeCADModeler
         return self._modeler
 
@@ -200,6 +200,8 @@ class CADProcessor:
 
     def _is_fallback_modeling_result(self, modeling_result: Dict[str, Any]) -> bool:
         """Detect the local fallback script generated when AI modeling failed."""
+        if modeling_result.get("blocked_by_semantic_confidence"):
+            return True
         summary = str(modeling_result.get("analysis_summary", ""))
         strategy = str(modeling_result.get("modeling_strategy", ""))
         warnings = " ".join(str(item) for item in modeling_result.get("warnings", []) or [])

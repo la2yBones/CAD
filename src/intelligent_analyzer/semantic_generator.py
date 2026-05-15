@@ -2,6 +2,6 @@
 # -*- coding: utf-8 -*-
 """Compatibility import; actual shim exports live in src.compat."""
 
-from src.compat.model_generator import FreeCADModeler
+from src.compat.intelligent_analyzer import PartSemanticGenerator
 
-__all__ = ["FreeCADModeler"]
+__all__ = ["PartSemanticGenerator"]

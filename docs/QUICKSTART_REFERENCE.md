@@ -37,7 +37,8 @@ e:\Code\CAD\
 │   └── config.example.yaml  # 配置模板
 ├── src/
 │   ├── cad_parser/          # CAD解析模块（通用，支持扩展）
-│   ├── geometry_analyzer/   # 几何分析模块
+│   ├── reconstruction/      # 新语义重建内核
+│   ├── legacy/              # 旧兼容模块
 │   ├── model_generator/     # 建模生成模块
 │   └── utils/               # 工具函数
 ├── examples/

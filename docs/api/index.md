@@ -126,6 +126,16 @@ pipeline = BatchPipeline(load_config())
 result = pipeline.process_file("examples/cad_files/sample.dxf", "examples/output", 10.0)
 ```
 
+新代码优先使用语义明确的入口：
+
+```python
+smart = pipeline.process_file_intelligent("sample.dxf")
+basic = pipeline.process_file_basic("sample.dxf")
+legacy = pipeline.process_file_legacy_analysis("sample.dxf")
+```
+
+`process_file(..., enable_analysis=True/False)` 仍保留为兼容接口。
+
 ## 智能分析
 
 ### `src.intelligent_analyzer.IntelligentEngineeringAnalyzer`
@@ -134,7 +144,10 @@ result = pipeline.process_file("examples/cad_files/sample.dxf", "examples/output
 
 - `ViewAnalyzer`：识别主视图、俯视图、侧视图等工程视图
 - `DimensionExtractor`：从文本和标注附近几何中提取尺寸
-- `ModelingGenerator`：生成建模指令和 FreeCAD 脚本
+- `SemanticReconstructionPipeline`：承接重建主链
+- `ReconstructionContextBuilder`：整理统一重建上下文
+- `PartSemanticGenerator`：先生成结构化零件语义、候选解释、证据和置信度
+- `FreeCADInstructionGenerator`：基于语义生成建模指令和 FreeCAD 脚本
 
 智能模式需要 `DEEPSEEK_API_KEY` 配置可用。当前本地规则和聚类逻辑仍是视图/尺寸分析的重要组成部分。
 
@@ -154,7 +167,7 @@ result = pipeline.process_file("examples/cad_files/sample.dxf", "examples/output
 FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 ```
 
-### `src.model_generator.ModelGenerator`
+### `src.legacy.basic_modeling.FreeCADModeler`
 
 职责：
 

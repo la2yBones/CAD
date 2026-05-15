@@ -917,7 +917,7 @@ class ProcessingPanel(ttk.Frame):
 
         row3 = ttk.Frame(param_frame)
         row3.pack(fill=tk.X, pady=(0, 8))
-        self.height_label = ttk.Label(row3, text="基础模式拉伸高度 (mm):")
+        self.height_label = ttk.Label(row3, text="兼容基础模式拉伸高度 (mm):")
         self.height_label.pack(side=tk.LEFT, padx=(0, 5))
         self.height_var = tk.DoubleVar(value=self.app_config.get('processing', 'basic_default_height', default=10.0))
         self.height_spinbox = ttk.Spinbox(
@@ -933,7 +933,7 @@ class ProcessingPanel(ttk.Frame):
         ttk.Label(row3, text="处理模式:").pack(side=tk.LEFT, padx=(20, 5))
         self.mode_var = tk.StringVar(value="intelligent")
         ttk.Radiobutton(row3, text="智能模式", variable=self.mode_var, value="intelligent").pack(side=tk.LEFT)
-        ttk.Radiobutton(row3, text="基础模式", variable=self.mode_var, value="basic").pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(row3, text="兼容基础模式", variable=self.mode_var, value="basic").pack(side=tk.LEFT, padx=(10, 0))
         self.mode_var.trace_add("write", self._sync_height_controls)
         self._sync_height_controls()
 
@@ -1232,7 +1232,7 @@ class ProcessingPanel(ttk.Frame):
                 self._check_control_state("before-intelligent-processing")
                 result = self.pipeline.process_file_intelligent(filepath)
             else:
-                logger.info("使用基础模式（不调用AI脚本建模）")
+                logger.info("使用兼容基础模式（legacy/basic，不调用 AI 脚本建模）")
                 self._check_control_state("before-basic-processing")
                 result = self.pipeline.process_file(filepath, height, enable_analysis=False)
 

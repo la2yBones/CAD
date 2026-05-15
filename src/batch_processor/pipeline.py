@@ -94,6 +94,18 @@ class CADPipeline:
             enable_analysis
         )
 
+    def process_file_basic(self, filename: str, extrude_height: float = 10.0) -> CADProcessResult:
+        """Compatibility helper for legacy/basic planar extrusion."""
+        return self.process_file(filename, extrude_height, enable_analysis=False)
+
+    def process_file_legacy_analysis(
+        self,
+        filename: str,
+        extrude_height: float = 10.0,
+    ) -> CADProcessResult:
+        """Compatibility helper for legacy/basic modeling with old AI relationship analysis."""
+        return self.process_file(filename, extrude_height, enable_analysis=True)
+
     def process_multiple_files(self, filenames: List[str],
                                extrude_height: float = 10.0,
                                enable_analysis: bool = True,
@@ -154,6 +166,48 @@ class CADPipeline:
             extrude_height,
             enable_analysis,
             progress_callback
+        )
+
+    def process_multiple_files_intelligent(
+        self,
+        filenames: List[str],
+        extrude_height: float = 10.0,
+        progress_callback: Optional[Callable] = None,
+    ) -> Dict[str, CADProcessResult]:
+        """Process multiple files through the intelligent reconstruction path."""
+        results = {}
+        total = len(filenames)
+
+        for idx, filename in enumerate(filenames):
+            logger.info(f"[{idx + 1}/{total}] 智能处理: {filename}")
+            result = self.process_file_intelligent(filename, extrude_height)
+            results[filename] = result
+
+            if progress_callback:
+                progress_callback(idx + 1, total, result)
+
+        return results
+
+    def process_directory_intelligent(
+        self,
+        input_dir: Optional[str] = None,
+        extrude_height: float = 10.0,
+        progress_callback: Optional[Callable] = None,
+    ) -> Dict[str, CADProcessResult]:
+        """Process a directory through the intelligent reconstruction path."""
+        files = self.list_available_files(input_dir)
+        if not files:
+            logger.warning("没有找到可处理的CAD文件")
+            return {}
+
+        filenames = [f["name"] for f in files]
+        if input_dir:
+            self.set_input_dir(input_dir)
+
+        return self.process_multiple_files_intelligent(
+            filenames,
+            extrude_height,
+            progress_callback,
         )
 
     def get_summary(self, results: Dict[str, CADProcessResult]) -> Dict:

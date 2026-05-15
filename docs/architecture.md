@@ -8,7 +8,7 @@ DXF/DWG
   ▼
 CADParser ──► geometry_data ──► CADProcessor/CADPipeline
   │                                      │
-  ├─ preview_cache PNG                   ├─ 基础模式: FreeCADModeler
+  ├─ preview_cache PNG                   ├─ 兼容基础模式: legacy/basic FreeCADModeler
   │                                      │
   └─ DWG: LibreDWG 转换                  └─ 智能模式: IntelligentEngineeringAnalyzer
                                              │
@@ -16,7 +16,10 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
                                              ├─ DimensionExtractor 尺寸提取
                                              ├─ LLMViewAnalyzer DeepSeek 视图校正
                                              ├─ Shapely STRtree 本地关系分析
-                                             └─ FreeCADInstructionGenerator AI 脚本生成
+                                             └─ src/reconstruction 语义重建内核
+                                                ├─ ReconstructionContextBuilder 重建上下文
+                                                ├─ PartSemanticGenerator 结构化零件语义
+                                                └─ FreeCADInstructionGenerator AI 脚本生成
                                                        │
                                                        ▼
                                              AIScriptRunner / FreeCADBridge
@@ -30,9 +33,12 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
 | 模块 | 主要文件 | 职责 |
 |---|---|---|
 | CAD 解析 | `src/cad_parser/parser.py` | DXF/DWG 解析、块展开、实体标准化、PNG 预览 |
-| 几何分析 | `src/geometry_analyzer/analyzer.py` | Shapely 空间索引和实体关系分析 |
-| 智能分析 | `src/intelligent_analyzer/` | 视图识别、尺寸提取、LLM 校正、建模指令生成 |
-| 模型生成 | `src/model_generator/` | FreeCAD direct/subprocess 建模和 AI 脚本执行 |
+| 旧几何分析 | `src/legacy/geometry_analyzer/analyzer.py` | 已废弃兼容层，保留旧入口 |
+| 兼容导出 | `src/compat/` | 集中承接旧 import 路径，避免兼容 shim 分散在主路径 |
+| 语义重建 | `src/reconstruction/` | 重建上下文、零件语义、脚本生成和语义重建主链 |
+| 智能分析 | `src/intelligent_analyzer/` | 视图识别、尺寸提取、LLM 校正和分析编排 |
+| 兼容基础建模 | `src/legacy/basic_modeling/` | `FreeCADModeler` 单轮廓平面拉伸旧路径 |
+| 模型执行 | `src/model_generator/` | AI 脚本运行和 FreeCAD direct/subprocess 桥接 |
 | 批处理 | `src/batch_processor/` | 文件扫描、输出结构、处理编排、结果汇总 |
 | 工具层 | `src/utils/` | 配置、日志、Result、缓存、预览路径、LLM 遥测 |
 | GUI | `gui_example.py` | 桌面界面、缓存管理、AI 调用监控和日志面板 |
@@ -87,7 +93,28 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
 4. 复杂实体数超过阈值时跳过全量本地关系分析，避免耗时失控。
 5. 建模脚本生成失败时生成基础降级脚本；多视图降级脚本不会被直接用于普通拉伸。
 
-## 6. 缓存与遥测
+## 6. legacy/basic 的保留边界
+
+`legacy/basic` 当前保留，是为了继续支持三类场景：
+
+1. 无 API Key 的单轮廓平面拉伸演示。
+2. 旧调用方仍依赖 `FreeCADModeler` 的兼容入口。
+3. 智能重建链路调试时，需要一个可对照的低能力基线。
+
+它的限制同样明确：
+
+- 只适合单视图、单闭合轮廓、可直接拉伸的零件。
+- 不应承担二视图/三视图工程图的真实重建。
+- 不再作为默认产品路径，也不再继续承接新的业务能力。
+- `--legacy-analysis` 只表示“旧 AI 几何关系分析 + legacy/basic 建模”，不是当前智能重建主线；`--analysis` 仅作为旧别名保留。
+
+退场条件：
+
+- 外部调用方不再直接依赖 `FreeCADModeler`。
+- 智能重建在无 AI 或失败场景下具备更安全的替代策略。
+- 文档、CLI、GUI 和测试都不再把 basic 当作主路径。
+
+## 7. 缓存与遥测
 
 | 类型 | 默认路径 | 说明 |
 |---|---|---|
@@ -95,7 +122,7 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
 | 预览缓存 | `.cache/previews` | 可通过 `CAD_PREVIEW_CACHE_DIR` 覆盖 |
 | LLM 遥测 | `.cache/llm_telemetry/llm_calls.jsonl` | 记录调用阶段、耗时、token 和响应摘要 |
 
-## 7. 安全边界
+## 8. 安全边界
 
 - `.env`、缓存、模型输出和日志文件不应作为源码提交。
 - 日志脱敏只覆盖常见密钥形态，不替代最小化日志策略。

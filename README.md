@@ -26,13 +26,13 @@
 E:\Code\CAD
 ├── cad_cli.py                    # CLI 入口
 ├── gui_example.py                # Tkinter GUI 入口
-├── process_my_cad.py             # 单文件处理示例
-├── run_ai_script.py              # AI/FreeCAD 脚本运行器
+├── run_with_freecad.bat          # FreeCAD Python 启动辅助
 ├── config/
 │   ├── config.yaml               # 本地配置，使用 ${VAR} 占位符
 │   └── config.example.yaml       # 配置模板
 ├── docs/
 │   ├── api/index.md              # API 与模块说明
+│   ├── archive/                  # 旧版根目录文档和脚本归档
 │   └── guides/
 │       ├── configuration.md      # 配置与密钥管理
 │       ├── getting_started.md    # 快速开始
@@ -40,12 +40,17 @@ E:\Code\CAD
 │       └── conda_setup.md        # Conda 环境说明
 ├── src/
 │   ├── cad_parser/               # CAD 解析与预览
-│   ├── geometry_analyzer/        # 几何分析
-│   ├── intelligent_analyzer/     # 视图识别、尺寸提取、建模指令生成
-│   ├── model_generator/          # FreeCAD 建模和脚本执行
+│   ├── compat/                   # 旧 import 路径集中兼容层
+│   ├── legacy/                   # 旧组件归档与兼容实现
+│   ├── reconstruction/           # 语义重建主链
+│   ├── intelligent_analyzer/     # 视图识别、尺寸提取和分析编排
+│   ├── model_generator/          # AI 脚本运行和 FreeCAD 桥接
 │   ├── batch_processor/          # 文件扫描、单文件处理、批处理
 │   └── utils/                    # 配置、日志、Result、缓存
+├── tools/                        # 维护中的工具脚本
+├── examples/scripts/             # 维护中的示例脚本
 ├── tests/unit/                   # 单元测试
+├── tests/manual/                 # 手工验证脚本
 ├── examples/cad_files/           # 示例 DXF/DWG
 └── examples/output/              # 运行输出，已加入忽略规则
 ```
@@ -89,7 +94,7 @@ D:\anaconda3\envs\cad_study\python.exe gui_example.py
 ```powershell
 D:\anaconda3\envs\cad_study\python.exe cad_cli.py --list
 D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf
-D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf --intelligent
+D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf --basic
 ```
 
 ## 核心流程

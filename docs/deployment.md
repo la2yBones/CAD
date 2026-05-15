@@ -31,7 +31,7 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 
 | 配置 | 作用 | 必需场景 |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | `--analysis`、`--intelligent`、`--analysis-only` |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 默认智能重建、`--legacy-analysis`、`--intelligent`、`--analysis-only` |
 | `LIBREDWG_PATH` | LibreDWG 目录，需包含 `dwg2dxf.exe` | 处理 DWG |
 | `FREECAD_BIN_PATH` | FreeCAD `bin` 目录 | 建模导出 |
 | `CAD_PREVIEW_CACHE_DIR` | 预览图缓存目录 | 可选 |

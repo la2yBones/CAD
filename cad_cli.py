@@ -74,17 +74,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 处理模式:
-  默认模式      纯几何建模（不调用API）
-  --analysis    基础AI分析模式（AI几何关系分析 + 通用建模器）
-  --intelligent 智能分析模式（AI视图识别 + 尺寸提取 + AI脚本建模）
+  默认模式      智能重建模式（AI视图识别 + 尺寸提取 + AI脚本建模）
+  --basic       兼容基础模式（legacy/basic，单轮廓平面拉伸）
+  --legacy-analysis
+               兼容分析模式（legacy/basic 建模 + AI几何关系分析；--analysis 是旧别名）
+  --intelligent 显式智能重建模式（与默认行为一致）
   --analysis-only 仅AI分析模式（生成分析报告和FreeCAD脚本，不建3D模型）
 
 示例:
   python cad_cli.py --file sample.dxf
-  python cad_cli.py --file sample.dxf --height 10 --analysis
+  python cad_cli.py --file sample.dxf --height 10 --legacy-analysis
   python cad_cli.py --file sample.dxf --intelligent
   python cad_cli.py --file sample.dxf --analysis-only
-  python cad_cli.py --dir examples/cad_files --out my_output
+  python cad_cli.py --dir examples/cad_files --output-dir my_output
   python cad_cli.py --list
         """
     )
@@ -95,8 +97,12 @@ def main():
     group.add_argument("--list", "-l", action="store_true", help="列出可用的CAD文件")
 
     analysis_group = parser.add_mutually_exclusive_group()
-    analysis_group.add_argument("--analysis", "-a", action="store_true",
-                                help="启用基础AI几何关系分析（DeepSeek API）")
+    analysis_group.add_argument("--basic", "-B", action="store_true",
+                                help="使用兼容基础模式（legacy/basic 单轮廓平面拉伸）")
+    analysis_group.add_argument("--legacy-analysis", "--analysis", "-a",
+                                dest="legacy_analysis",
+                                action="store_true",
+                                help="使用兼容分析模式（legacy/basic 建模 + AI几何关系分析；--analysis 为旧别名）")
     analysis_group.add_argument("--intelligent", "-I", action="store_true",
                                 help="启用智能分析（视图识别+尺寸提取+AI脚本建模）")
     analysis_group.add_argument("--analysis-only", "-A", action="store_true",
@@ -158,8 +164,9 @@ def _process_single_file(args, config):
             sys.exit(1)
         return
 
-    mode_label = ("智能分析 (视图识别+尺寸提取+AI脚本)" if args.intelligent
-                  else ("基础AI分析" if args.analysis else "纯几何建模"))
+    mode_label = ("兼容基础模式 (legacy/basic)" if args.basic
+                  else ("兼容分析模式 (legacy/basic)" if args.legacy_analysis
+                        else "智能重建模式 (默认)"))
     logger.info(f"模式: {mode_label}")
     if not args.intelligent:
         logger.info(f"拉伸高度: {args.height}mm")
@@ -170,20 +177,12 @@ def _process_single_file(args, config):
         output_dir=args.output_dir
     )
 
-    if args.intelligent:
+    if args.basic:
+        result = pipeline.process_file_basic(args.file, extrude_height=args.height)
+    elif args.intelligent or not args.legacy_analysis:
         result = pipeline.process_file_intelligent(args.file)
-    elif args.analysis:
-        result = pipeline.process_file(
-            args.file,
-            extrude_height=args.height,
-            enable_analysis=True
-        )
-    else:
-        result = pipeline.process_file(
-            args.file,
-            extrude_height=args.height,
-            enable_analysis=False
-        )
+    elif args.legacy_analysis:
+        result = pipeline.process_file_legacy_analysis(args.file, extrude_height=args.height)
 
     if result.success:
         logger.info("\n✓ 处理成功!")
@@ -208,12 +207,26 @@ def _process_directory(args, config):
     def progress(current, total, result):
         logger.info(f"[{current}/{total}] {'✓' if result.success else '✗'} {Path(result.input_file).name}")
 
-    results = pipeline.process_directory(
-        input_dir=args.dir,
-        extrude_height=args.height,
-        enable_analysis=args.analysis,
-        progress_callback=progress
-    )
+    if args.basic:
+        results = pipeline.process_directory(
+            input_dir=args.dir,
+            extrude_height=args.height,
+            enable_analysis=False,
+            progress_callback=progress
+        )
+    elif args.legacy_analysis:
+        results = pipeline.process_directory(
+            input_dir=args.dir,
+            extrude_height=args.height,
+            enable_analysis=True,
+            progress_callback=progress
+        )
+    else:
+        results = pipeline.process_directory_intelligent(
+            input_dir=args.dir,
+            extrude_height=args.height,
+            progress_callback=progress
+        )
 
     pipeline.print_summary(results)
 

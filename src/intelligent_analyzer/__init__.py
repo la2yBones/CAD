@@ -6,13 +6,21 @@
 from .view_analyzer import EngineeringViewAnalyzer
 from .llm_view_analyzer import LLMViewAnalyzer
 from .dimension_extractor import DimensionExtractor
-from .modeling_generator import FreeCADInstructionGenerator
+from src.reconstruction import (
+    ReconstructionContextBuilder,
+    PartSemanticGenerator,
+    FreeCADInstructionGenerator,
+    SemanticReconstructionPipeline,
+)
 from .pipeline import IntelligentEngineeringAnalyzer
 
 __all__ = [
     "EngineeringViewAnalyzer",
     "LLMViewAnalyzer",
     "DimensionExtractor",
+    "ReconstructionContextBuilder",
+    "PartSemanticGenerator",
     "FreeCADInstructionGenerator",
+    "SemanticReconstructionPipeline",
     "IntelligentEngineeringAnalyzer"
 ]

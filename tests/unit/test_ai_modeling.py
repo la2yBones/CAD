@@ -5,6 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.intelligent_analyzer.modeling_generator import FreeCADInstructionGenerator
+from src.intelligent_analyzer.reconstruction_context import ReconstructionContextBuilder
+from src.intelligent_analyzer.semantic_schema import PartSemanticsValidator
+from src.intelligent_analyzer.pipeline import IntelligentEngineeringAnalyzer
 from src.model_generator.freecad_bridge import FreeCADBridge
 from src.model_generator.ai_script_runner import AIScriptRunner
 
@@ -19,34 +22,8 @@ class TestAIModeling(unittest.TestCase):
         self.assertIn("传入 Part.Wire 的每一项必须是 Shape", prompt)
         self.assertIn("若轮廓点写成 `(x, y, 0)`", prompt)
 
-    def test_multiview_prompt_adds_concentric_circle_hint(self):
-        generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
-        hints = generator._build_multiview_reconstruction_hints(
-            {
-                "views": [
-                    {
-                        "name": "main",
-                        "entities": [
-                            {"type": "CIRCLE", "center": [0.0, 0.0], "radius": 32.0},
-                            {"type": "CIRCLE", "center": [0.0, 0.0], "radius": 16.0},
-                        ],
-                    },
-                    {
-                        "name": "right",
-                        "entities": [
-                            {"type": "LINE", "layer": "隐藏线", "start": [0, 1], "end": [2, 1]},
-                        ],
-                    },
-                ]
-            }
-        )
-
-        self.assertEqual(1, len(hints))
-        self.assertIn("外圆凸台", hints[0])
-
-    def test_modeling_context_preserves_views_dimensions_and_relationships(self):
-        generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
-        context = generator._build_modeling_context(
+    def test_reconstruction_context_preserves_views_dimensions_and_relationships(self):
+        context = ReconstructionContextBuilder().build(
             {
                 "_local_relationships": {
                     "summary": "2 entities",
@@ -75,11 +52,88 @@ class TestAIModeling(unittest.TestCase):
             },
         )
 
-        self.assertEqual("two_view", context["drawing_type"])
-        self.assertEqual("main", context["views"][0]["name"])
-        self.assertEqual({"CIRCLE": 1}, context["views"][0]["type_count"])
+        self.assertEqual("two_view", context["view_analysis"]["drawing_type"])
+        self.assertEqual("main", context["view_analysis"]["views"][0]["name"])
+        self.assertEqual({"CIRCLE": 1}, context["view_analysis"]["views"][0]["entity_type_count"])
         self.assertEqual("10", context["dimensions"][0]["text"])
-        self.assertEqual("包含", context["local_relationships"]["entity_pairs"][0]["relationship"])
+        self.assertEqual("包含", context["local_geometry"]["entity_pairs"][0]["relationship"])
+
+    def test_prompt_uses_supplied_reconstruction_context(self):
+        generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
+        generator.MAX_PROMPT_CHARS = 10000
+        prompt = generator._build_prompt(
+            {"entities": []},
+            None,
+            None,
+            10.0,
+            reconstruction_context={"context_version": "custom_v1", "marker": "keep-me"},
+        )
+
+        self.assertIn('"context_version": "custom_v1"', prompt)
+        self.assertIn('"marker": "keep-me"', prompt)
+
+    def test_prompt_includes_part_semantics(self):
+        generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
+        generator.MAX_PROMPT_CHARS = 10000
+        prompt = generator._build_prompt(
+            {"entities": []},
+            None,
+            None,
+            10.0,
+            reconstruction_context={"context_version": "custom_v1"},
+            part_semantics={"part_type": "bracket"},
+        )
+
+        self.assertIn("=== 零件语义 ===", prompt)
+        self.assertIn('"part_type": "bracket"', prompt)
+
+    def test_part_semantics_validator_requires_core_fields(self):
+        valid, errors = PartSemanticsValidator().validate(
+            {
+                "part_type": "plate",
+                "confidence": 0.9,
+                "summary": "",
+                "evidence": [],
+                "candidate_interpretations": [],
+                "coordinate_system": {},
+                "base_features": [],
+                "additive_features": [],
+                "subtractive_features": [],
+                "key_dimensions": [],
+                "uncertainties": [],
+                "warnings": [],
+            }
+        )
+
+        self.assertTrue(valid)
+        self.assertEqual([], errors)
+
+    def test_part_semantics_validator_rejects_invalid_confidence(self):
+        valid, errors = PartSemanticsValidator().validate(
+            {
+                "part_type": "plate",
+                "confidence": 1.5,
+                "summary": "",
+                "evidence": [],
+                "candidate_interpretations": [],
+                "coordinate_system": {},
+                "base_features": [],
+                "additive_features": [],
+                "subtractive_features": [],
+                "key_dimensions": [],
+                "uncertainties": [],
+                "warnings": [],
+            }
+        )
+
+        self.assertFalse(valid)
+        self.assertIn("confidence must be between 0 and 1", errors)
+
+    def test_low_semantic_confidence_blocks_modeling(self):
+        analyzer = IntelligentEngineeringAnalyzer.__new__(IntelligentEngineeringAnalyzer)
+        analyzer.config = {"semantic_min_confidence": 0.7}
+        self.assertFalse(analyzer._is_semantic_confidence_sufficient({"confidence": 0.4}))
+        self.assertTrue(analyzer._is_semantic_confidence_sufficient({"confidence": 0.8}))
 
     def test_bridge_outputs_are_normalized_to_requested_paths(self):
         runner = AIScriptRunner.__new__(AIScriptRunner)

@@ -30,7 +30,7 @@ src/batch_processor/
 ```powershell
 python cad_cli.py --list
 python cad_cli.py --file examples/cad_files/sample.dxf --height 10
-python cad_cli.py --file examples/cad_files/sample.dxf --analysis
+python cad_cli.py --file examples/cad_files/sample.dxf --legacy-analysis
 python cad_cli.py --file examples/cad_files/sample.dxf --intelligent
 python cad_cli.py --dir examples/cad_files --output-dir examples/output
 ```
@@ -44,7 +44,8 @@ from src.utils import load_config
 config = load_config()
 pipeline = CADPipeline(config=config, input_dir="examples/cad_files", output_dir="examples/output")
 
-basic = pipeline.process_file("sample.dxf", extrude_height=10.0, enable_analysis=False)
+basic = pipeline.process_file_basic("sample.dxf", extrude_height=10.0)
+legacy_analysis = pipeline.process_file_legacy_analysis("sample.dxf", extrude_height=10.0)
 smart = pipeline.process_file_intelligent("sample.dxf", extrude_height=10.0)
 results = pipeline.process_directory(extrude_height=10.0, enable_analysis=False)
 summary = pipeline.get_summary(results)

@@ -11,7 +11,7 @@ from pathlib import Path
 from .view_analyzer import EngineeringViewAnalyzer
 from .llm_view_analyzer import LLMViewAnalyzer
 from .dimension_extractor import DimensionExtractor
-from .modeling_generator import FreeCADInstructionGenerator
+from src.reconstruction import SemanticReconstructionPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class IntelligentEngineeringAnalyzer:
     集成所有分析功能的完整管道
     """
 
-    ANALYSIS_VERSION = "llm_view_classifier_v5_profile_plane_guard"
+    ANALYSIS_VERSION = "llm_view_classifier_v7_semantic_gate"
 
     def __init__(self, api_key: str, config: Optional[Dict] = None,
                  enable_cache: bool = True,
@@ -46,7 +46,7 @@ class IntelligentEngineeringAnalyzer:
         self.view_analyzer = EngineeringViewAnalyzer(config)
         self.llm_view_analyzer = LLMViewAnalyzer(api_key, config)
         self.dimension_extractor = DimensionExtractor(config)
-        self.modeling_generator = FreeCADInstructionGenerator(api_key, config)
+        self.reconstruction_pipeline = SemanticReconstructionPipeline(api_key, config)
 
         self.enable_cache = enable_cache
         self.cache = None
@@ -111,16 +111,14 @@ class IntelligentEngineeringAnalyzer:
         logger.info("步骤4: 本地几何关系分析...")
         local_analysis = self._analyze_local_fallback(geometry_data)
 
-        # 5. 生成建模指令 (AI, 传入校正后的视图分析)
-        logger.info("步骤5: 生成FreeCAD建模指令...")
-        enriched_geometry = dict(geometry_data)
-        if local_analysis:
-            enriched_geometry["_local_relationships"] = local_analysis
-        modeling_result = self.modeling_generator.generate(
-            enriched_geometry if local_analysis else geometry_data,
-            view_result,
-            dimension_result,
-            extrude_height
+        # 5. 构建重建上下文
+        logger.info("stage 5: entering semantic reconstruction core...")
+        reconstruction_result = self.reconstruction_pipeline.run(
+            geometry_data=geometry_data,
+            view_analysis=view_result,
+            dimension_data=dimension_result,
+            local_relationships=local_analysis,
+            extrude_height=extrude_height,
         )
 
         result = {
@@ -128,7 +126,7 @@ class IntelligentEngineeringAnalyzer:
             "rule_view_analysis": rule_view_result,
             "dimension_extraction": dimension_result,
             "local_relationships": local_analysis,
-            "modeling_instructions": modeling_result
+            **reconstruction_result,
         }
 
         logger.info("=== 智能分析完成 ===")
@@ -143,6 +141,14 @@ class IntelligentEngineeringAnalyzer:
             )
 
         return result
+
+    def _is_semantic_confidence_sufficient(self, part_semantics: Dict[str, Any]) -> bool:
+        """Compatibility shim; semantic gating now belongs to reconstruction."""
+        if hasattr(self, "reconstruction_pipeline"):
+            return self.reconstruction_pipeline._is_semantic_confidence_sufficient(part_semantics)
+        confidence = float(part_semantics.get("confidence") or 0.0)
+        threshold = float(self.config.get("semantic_min_confidence", 0.70))
+        return confidence >= threshold
 
     def save_results(self, analysis_result: Dict[str, Any],
                      output_dir: str, base_name: str = "analysis") -> None:

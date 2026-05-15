@@ -6,6 +6,7 @@ CAD解析器单元测试
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock
 
 project_root = Path(__file__).parent.parent.parent
 import sys
@@ -65,6 +66,18 @@ class TestCADParser(unittest.TestCase):
             result = DimensionExtractor().extract_dimensions(geometry)
             self.assertEqual(1, result["total"])
             self.assertEqual(12.0, result["dimensions"][0]["value"])
+
+    def test_dimension_overlay_auto_threshold(self):
+        """Auto overlay should only target tiny dimension text."""
+        parser = CADParser("dummy.dxf")
+        ax = Mock()
+        ax.get_xlim.return_value = (0.0, 400.0)
+        ax.get_ylim.return_value = (0.0, 200.0)
+
+        self.assertTrue(parser._is_dimension_overlay_enabled("auto"))
+        self.assertTrue(parser._is_auto_dimension_overlay("auto"))
+        self.assertFalse(parser._is_dimension_overlay_enabled(False))
+        self.assertEqual(3.2, parser._auto_dimension_overlay_max_height(ax))
 
 
 if __name__ == "__main__":

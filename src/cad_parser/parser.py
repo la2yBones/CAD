@@ -501,7 +501,12 @@ class CADParser:
             ctx = RenderContext(self.doc)
             out = MatplotlibBackend(ax)
             Frontend(ctx, out).draw_layout(self.doc.modelspace(), finalize=True)
-            self._draw_dimension_text_overlays(ax)
+            overlay_mode = self.config.get("overlay_dimension_text", "auto")
+            if self._is_dimension_overlay_enabled(overlay_mode):
+                min_height = None
+                if self._is_auto_dimension_overlay(overlay_mode):
+                    min_height = self._auto_dimension_overlay_max_height(ax)
+                self._draw_dimension_text_overlays(ax, max_text_height=min_height)
 
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             logger.info(f"可视化已保存到: {output_path}")
@@ -515,7 +520,28 @@ class CADParser:
         except Exception as e:
             logger.error(f"可视化失败: {e}")
 
-    def _draw_dimension_text_overlays(self, ax) -> None:
+    def _is_dimension_overlay_enabled(self, mode: Any) -> bool:
+        if isinstance(mode, str):
+            return mode.strip().lower() in ("auto", "smart", "missing", "true", "yes", "on", "1")
+        return bool(mode)
+
+    def _is_auto_dimension_overlay(self, mode: Any) -> bool:
+        if isinstance(mode, str):
+            return mode.strip().lower() in ("", "auto", "smart", "missing")
+        return False
+
+    def _auto_dimension_overlay_max_height(self, ax) -> float:
+        try:
+            x0, x1 = ax.get_xlim()
+            y0, y1 = ax.get_ylim()
+            span = max(abs(x1 - x0), abs(y1 - y0), 1.0)
+        except Exception:
+            span = 1.0
+        ratio = float(self.config.get("dimension_text_auto_overlay_ratio", 0.008))
+        min_height = float(self.config.get("dimension_text_auto_overlay_min_height", 1.5))
+        return max(min_height, span * ratio)
+
+    def _draw_dimension_text_overlays(self, ax, max_text_height: Optional[float] = None) -> None:
         if self.doc is None:
             return
         for dim in self.doc.modelspace().query("DIMENSION"):
@@ -525,6 +551,8 @@ class CADParser:
                 if not text or len(position) < 2:
                     continue
                 height = float(text_info.get("height") or 1.0)
+                if max_text_height is not None and height > max_text_height:
+                    continue
                 fontsize = max(6.0, min(12.0, height * 6.0))
                 ax.text(
                     position[0],

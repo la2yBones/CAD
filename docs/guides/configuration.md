@@ -53,6 +53,9 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 | `api.deepseek.model` | YAML | 模型名称，默认 `deepseek-v4-pro` | 智能模式必需 |
 | `dxf_parser.libredwg_path` | `${LIBREDWG_PATH}` | DWG 转 DXF 工具路径 | 处理 DWG 必需 |
 | `dxf_parser.output_dir` | YAML | CAD 预览图默认输出目录 | 可选 |
+| `dxf_parser.overlay_dimension_text` | YAML，默认 `auto` | DIMENSION 匿名块文字补绘策略，支持 `auto`、`true`、`false` | 可选 |
+| `dxf_parser.dimension_text_auto_overlay_ratio` | YAML，默认 `0.008` | `auto` 模式下按图幅跨度计算补绘阈值 | 可选 |
+| `dxf_parser.dimension_text_auto_overlay_min_height` | YAML，默认 `1.5` | `auto` 模式下最小补绘阈值 | 可选 |
 | `freecad.bin_path` | `${FREECAD_BIN_PATH}` | FreeCAD `bin` 目录 | 建模推荐配置 |
 | `modeling.export_formats` | YAML | 导出格式 | 可选 |
 | `cache.cache_dir` | YAML | 分析缓存目录 | 可选 |

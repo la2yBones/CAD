@@ -36,6 +36,13 @@ dxf_parser:
     - "INSERT"
   libredwg_path: "${LIBREDWG_PATH}"  # LibreDWG路径，从 .env 读取
   output_dir: "examples/output"  # 可视化图片默认输出目录
+  # DIMENSION 文字补绘策略：
+  #   auto: 仅补绘相对图幅过小、原生预览中容易不可见的尺寸文字
+  #   true: 强制补绘所有 DIMENSION 匿名块文字
+  #   false: 禁用补绘
+  overlay_dimension_text: "auto"
+  dimension_text_auto_overlay_ratio: 0.008
+  dimension_text_auto_overlay_min_height: 1.5
 
 # FreeCAD路径配置
 # 系统会自动检测运行环境，选择合适的调用方式：

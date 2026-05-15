@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LLM call telemetry storage and helpers."""
+"""LLM 调用遥测存储和辅助工具。"""
 from __future__ import annotations
 
 import json

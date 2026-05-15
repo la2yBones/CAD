@@ -31,7 +31,7 @@ class CADParser:
         """
         解析DXF文件
 
-        Returns:
+        ??:
             包含版本、单位和实体数据的字典
         """
         if not self.file_path.exists():
@@ -67,24 +67,43 @@ class CADParser:
             logger.error(f"DWG转换失败: {e}")
             raise
     
+    def _find_dwg2dxf(self):
+        """查找 dwg2dxf.exe：优先项目内置，其次配置路径"""
+        # 1. 项目内置 tools/bin/dwg2dxf.exe
+        builtin = Path(__file__).parent.parent.parent / "tools" / "bin" / "dwg2dxf.exe"
+        if builtin.exists():
+            logger.info(f"使用项目内置 LibreDWG: {builtin}")
+            return builtin
+
+        # 2. 配置路径 (libredwg_path 可为目录或直接指向 exe)
+        libredwg_path = self.config.get("libredwg_path", "")
+        if libredwg_path:
+            p = Path(libredwg_path)
+            if p.is_file() and p.suffix.lower() == ".exe":
+                logger.info(f"使用配置 LibreDWG: {p}")
+                return p
+            if p.is_dir():
+                exe = p / "dwg2dxf.exe"
+                if exe.exists():
+                    logger.info(f"使用配置 LibreDWG: {exe}")
+                    return exe
+                for found in p.rglob("dwg2dxf.exe"):
+                    logger.info(f"使用配置 LibreDWG (搜索): {found}")
+                    return found
+
+        return None
+
     def _convert_with_libredwg(self):
         """使用LibreDWG将DWG转换为DXF"""
         import shutil
         import tempfile
 
-        libredwg_path = Path(self.config.get("libredwg_path", ""))
-        
-        if not libredwg_path.exists():
-            raise FileNotFoundError(f"LibreDWG路径不存在: {libredwg_path}")
-        
-        dwg2dxf = libredwg_path / "dwg2dxf.exe"
-        if not dwg2dxf.exists():
-            for p in libredwg_path.rglob("dwg2dxf.exe"):
-                dwg2dxf = p
-                break
-        
-        if not dwg2dxf.exists():
-            raise FileNotFoundError(f"未找到 dwg2dxf.exe 在: {libredwg_path}")
+        dwg2dxf = self._find_dwg2dxf()
+        if not dwg2dxf:
+            raise FileNotFoundError(
+                "未找到 dwg2dxf.exe。请将 LibreDWG 放入 tools/bin/dwg2dxf.exe "
+                "或在 config.yaml 中配置 dxf_parser.libredwg_path"
+            )
         
         dxf_target = self.file_path.with_suffix(".dxf")
 
@@ -367,7 +386,7 @@ class CADParser:
         try:
             block = self.doc.blocks.get(block_name)
         except Exception:
-            logger.debug(f"Block not found: {block_name}")
+            logger.debug(f"未找到块定义: {block_name}")
             return []
 
         sub_entities: List[Dict] = []
@@ -450,7 +469,7 @@ class CADParser:
         """
         导出解析结果为JSON文件
 
-        Args:
+        ??:
             output_path: 输出文件路径
         """
         if not self.entities:
@@ -472,7 +491,7 @@ class CADParser:
         """
         可视化DXF文件（使用matplotlib）
 
-        Args:
+        ??:
             output_path: 可选，保存为图片文件。不指定时自动保存到output_dir
         """
         import os as _os

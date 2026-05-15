@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Legacy/basic planar modeling kept for compatibility paths."""
+"""废弃的 legacy/basic 基础建模模块"""
 
 from .generator import FreeCADModeler
 

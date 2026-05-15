@@ -33,7 +33,7 @@ class IntelligentEngineeringAnalyzer:
         """
         初始化分析器
 
-        Args:
+        ??:
             api_key: DeepSeek API密钥
             config: 配置字典
             enable_cache: 是否启用缓存
@@ -68,12 +68,12 @@ class IntelligentEngineeringAnalyzer:
         """
         执行完整的智能分析和建模指令生成
 
-        Args:
+        ??:
             geometry_data: CAD解析得到的几何数据
             extrude_height: 默认拉伸高度
             file_path: 原始图纸文件路径（用于缓存）
 
-        Returns:
+        ??:
             完整分析结果字典
         """
         analysis_params = {"analysis_version": self.ANALYSIS_VERSION}
@@ -112,7 +112,7 @@ class IntelligentEngineeringAnalyzer:
         local_analysis = self._analyze_local_fallback(geometry_data)
 
         # 5. 构建重建上下文
-        logger.info("stage 5: entering semantic reconstruction core...")
+        logger.info("步骤5: 进入语义重建内核...")
         reconstruction_result = self.reconstruction_pipeline.run(
             geometry_data=geometry_data,
             view_analysis=view_result,
@@ -143,7 +143,7 @@ class IntelligentEngineeringAnalyzer:
         return result
 
     def _is_semantic_confidence_sufficient(self, part_semantics: Dict[str, Any]) -> bool:
-        """Compatibility shim; semantic gating now belongs to reconstruction."""
+        """兼容入口；语义置信度判断已迁入 reconstruction。"""
         if hasattr(self, "reconstruction_pipeline"):
             return self.reconstruction_pipeline._is_semantic_confidence_sufficient(part_semantics)
         confidence = float(part_semantics.get("confidence") or 0.0)
@@ -155,7 +155,7 @@ class IntelligentEngineeringAnalyzer:
         """
         保存分析结果到文件
 
-        Args:
+        ??:
             analysis_result: 分析结果
             output_dir: 输出目录
             base_name: 文件基名

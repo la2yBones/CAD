@@ -76,8 +76,10 @@ Copy-Item .env.example .env
 
 ```env
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
-LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
+
+# 以下为可选配置（项目已内置）
+# LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 ```
 
 ## 建议工作流

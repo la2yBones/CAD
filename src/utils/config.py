@@ -8,7 +8,7 @@ _ENV_VAR_RE = re.compile(r'\$\{(\w+)\}')
 
 
 def _load_dotenv(env_path: Optional[Path] = None) -> Dict[str, str]:
-    """Load key=value pairs from a .env file."""
+    """从 .env 文件加载 key=value 配置。"""
     if env_path is None:
         env_path = Path(__file__).parent.parent.parent / ".env"
     if not env_path.exists():
@@ -30,7 +30,7 @@ def _load_dotenv(env_path: Optional[Path] = None) -> Dict[str, str]:
 
 
 def _resolve_env_vars(value: Any, dotenv_vars: Dict[str, str]) -> Any:
-    """Recursively resolve ${VAR} placeholders in config values."""
+    """递归解析配置值中的 ${VAR} 占位符。"""
     if isinstance(value, str):
         def _replace(m: re.Match) -> str:
             var_name = m.group(1)
@@ -50,12 +50,12 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     Resolution order (highest priority first):
       1. OS environment variables
       2. .env file in project root
-      3. Config file literal values (fallback)
+      3. 配置文件字面值（兜底）
 
-    Args:
+    ??:
         config_path: Path to config YAML file. Defaults to config/config.yaml.
 
-    Returns:
+    ??:
         Resolved configuration dictionary.
     """
     if config_path is None:
@@ -76,7 +76,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         with open(config_path, "r", encoding="utf-8") as f:
             raw_config = yaml.safe_load(f) or {}
     except Exception as e:
-        print(f"Failed to load config: {e}")
+        print(f"加载配置失败: {e}")
         return {}
 
     return _resolve_env_vars(raw_config, dotenv_vars)

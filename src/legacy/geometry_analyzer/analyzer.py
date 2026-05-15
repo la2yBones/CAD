@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 LOCAL_ANALYSIS_LIMIT = 300
 class GeometryAnalyzer:
     """
-    [DEPRECATED] 几何关系分析器，使用DeepSeek分析实体间关系
+    【已废弃】 几何关系分析器，使用DeepSeek分析实体间关系
 
     此分析器已废弃。请使用 IntelligentEngineeringAnalyzer 替代:
         from src.intelligent_analyzer import IntelligentEngineeringAnalyzer
@@ -41,10 +41,10 @@ class GeometryAnalyzer:
         """
         分析几何实体间的关系
 
-        Args:
+        ??:
             geometry_data: 从DXF解析得到的几何数据
 
-        Returns:
+        ??:
             包含关系分析结果的字典
         """
         logger.info("开始分析几何关系")

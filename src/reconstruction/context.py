@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build the structured handoff from CAD analysis to 3D reconstruction."""
+"""构建从 CAD 分析到三维重建的结构化交接数据。"""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 
 class ReconstructionContextBuilder:
-    """Create a stable, model-facing context without making semantic guesses."""
+    """创建面向模型的稳定上下文，不在此层做语义猜测。"""
 
     CONTEXT_VERSION = "reconstruction_context_v1"
 

@@ -32,7 +32,7 @@ class CADFileManager:
         """
         初始化文件管理器
 
-        Args:
+        ??:
             input_dir: 输入目录路径
             output_dir: 输出目录路径
         """
@@ -63,10 +63,10 @@ class CADFileManager:
         """
         列出目录中所有支持的CAD文件
 
-        Args:
+        ??:
             input_dir: 可选，指定输入目录，默认使用初始化时的目录
 
-        Returns:
+        ??:
             文件信息列表，每个元素包含文件名、路径、大小等信息
         """
         target_dir = Path(input_dir) if input_dir else self.input_dir
@@ -93,10 +93,10 @@ class CADFileManager:
         """
         验证CAD文件是否有效
 
-        Args:
+        ??:
             file_path: 文件路径
 
-        Returns:
+        ??:
             (是否有效, 错误信息)
         """
         path = Path(file_path)
@@ -120,12 +120,12 @@ class CADFileManager:
         """
         获取输出文件路径
 
-        Args:
+        ??:
             input_file: 输入文件路径
             output_type: 输出类型 ('geometry', 'model', 'visualization')
             create_subdir: 是否为每个图纸创建独立子目录
 
-        Returns:
+        ??:
             输出文件的完整路径
         """
         input_path = Path(input_file)
@@ -151,10 +151,10 @@ class CADFileManager:
         """
         为单个图纸创建完整的输出结构
 
-        Args:
+        ??:
             input_file: 输入文件路径
 
-        Returns:
+        ??:
             包含各类输出路径的字典
         """
         input_path = Path(input_file)
@@ -181,10 +181,10 @@ class CADFileManager:
         """
         生成文件唯一标识符
 
-        Args:
+        ??:
             file_path: 文件路径
 
-        Returns:
+        ??:
             唯一标识符字符串
         """
         import hashlib
@@ -196,10 +196,10 @@ class CADFileManager:
         """
         根据文件名解析完整路径
 
-        Args:
+        ??:
             filename: 文件名或相对路径
 
-        Returns:
+        ??:
             完整的文件路径，找不到返回None
         """
         # 尝试直接作为绝对路径

@@ -48,7 +48,7 @@ class CADProcessor:
         """
         初始化处理器
 
-        Args:
+        ??:
             config: 配置字典
         """
         self.config = config or {}
@@ -79,7 +79,7 @@ class CADProcessor:
         analysis_result: Optional[Dict[str, Any]] = None,
         source_name: Optional[str] = None
     ) -> Tuple[Dict[str, Any], bool]:
-        """Detect whether the drawing is a multi-view engineering drawing."""
+        """判断图纸是否为多视图工程图。"""
         view_analysis = {}
 
         if analysis_result:
@@ -109,7 +109,7 @@ class CADProcessor:
         return view_analysis, is_multiview
 
     def _has_planar_name_hint(self, source_name: str) -> bool:
-        """Treat assembly drawings as single-sheet planar/section drawings."""
+        """将装配图按单张平面/剖视图处理。"""
         stem = Path(source_name).stem
         explicit_multiview = any(
             marker in stem
@@ -121,7 +121,7 @@ class CADProcessor:
         return any(marker in stem for marker in ("装配图", "总装图"))
 
     def _is_multiview_view_analysis(self, view_analysis: Dict[str, Any]) -> bool:
-        """Return True when the view analyzer found two or more projected views."""
+        """视图分析器找到两个或更多投影视图时返回 True。"""
         drawing_type = view_analysis.get("drawing_type")
         if drawing_type in ("assembly_drawing", "single_view", "section_view"):
             return False
@@ -151,7 +151,7 @@ class CADProcessor:
         return False
 
     def _is_strong_projection_relationship(self, relationship: Dict[str, Any]) -> bool:
-        """Only treat validated projection alignment as a multi-view signal."""
+        """仅将已校验的投影对齐关系视为多视图信号。"""
         if relationship.get("type") != "projection":
             return False
 
@@ -175,7 +175,7 @@ class CADProcessor:
         view_analysis: Dict[str, Any],
         reason: Optional[str] = None
     ) -> str:
-        """Build a user-facing message for blocked planar extrusion fallback."""
+        """构建阻止平面拉伸降级时面向用户的说明。"""
         label_map = {
             "main": "主视图",
             "top": "俯视图",
@@ -199,7 +199,7 @@ class CADProcessor:
         )
 
     def _is_fallback_modeling_result(self, modeling_result: Dict[str, Any]) -> bool:
-        """Detect the local fallback script generated when AI modeling failed."""
+        """识别 AI 建模失败后生成的本地降级脚本。"""
         if modeling_result.get("blocked_by_semantic_confidence"):
             return True
         summary = str(modeling_result.get("analysis_summary", ""))
@@ -233,13 +233,13 @@ class CADProcessor:
         """
         处理单个CAD文件
 
-        Args:
+        ??:
             file_path: CAD文件路径
             output_structure: 输出结构字典
             extrude_height: 拉伸高度
             enable_analysis: 是否启用AI分析
 
-        Returns:
+        ??:
             处理结果对象
         """
         result = CADProcessResult(success=False, input_file=file_path)
@@ -352,12 +352,12 @@ class CADProcessor:
         """
         使用智能分析处理图纸（视图识别、尺寸提取、建模指令生成）
 
-        Args:
+        ??:
             file_path: CAD文件路径
             output_structure: 输出结构
             extrude_height: 拉伸高度
 
-        Returns:
+        ??:
             处理结果
         """
         result = CADProcessResult(success=False, input_file=file_path)
@@ -514,13 +514,13 @@ class CADProcessor:
         """
         直接从几何数据开始处理（跳过CAD解析阶段）
 
-        Args:
+        ??:
             geometry_data: 几何数据字典
             output_structure: 输出结构
             extrude_height: 拉伸高度
             relationships: 关系数据
 
-        Returns:
+        ??:
             处理结果
         """
         result = CADProcessResult(success=False, input_file="direct_from_data")

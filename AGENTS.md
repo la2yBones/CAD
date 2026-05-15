@@ -340,9 +340,11 @@ python tools/diagnose_export.py
 
 ```env
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
-LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 CAD_PREVIEW_CACHE_DIR=.cache/previews
+
+# 可选：外部 LibreDWG 路径（项目已内置 tools/bin/dwg2dxf.exe）
+# LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 ```
 
 ### 7.3 DeepSeek 配置

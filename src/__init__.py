@@ -6,14 +6,14 @@ __version__ = "0.3.0"
 __author__ = "Your Name"
 
 from .cad_parser import CADParser, DXFParser
-from .geometry_analyzer import GeometryAnalyzer  # deprecated, 请使用 IntelligentEngineeringAnalyzer
+from .geometry_analyzer import GeometryAnalyzer  # 已废弃, 请使用 IntelligentEngineeringAnalyzer
 from .model_generator import FreeCADModeler
 from .intelligent_analyzer import IntelligentEngineeringAnalyzer
 
 __all__ = [
     "CADParser",
     "DXFParser",
-    "GeometryAnalyzer",             # deprecated
+    "GeometryAnalyzer",             # 已废弃
     "IntelligentEngineeringAnalyzer",
     "FreeCADModeler"
 ]

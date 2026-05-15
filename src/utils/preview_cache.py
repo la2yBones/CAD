@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Preview image cache path helpers."""
+"""预览图缓存路径辅助工具。"""
 from __future__ import annotations
 
 import hashlib
@@ -14,7 +14,7 @@ PREVIEW_RENDER_VERSION = "dimension_text_overlay_v2"
 
 
 def get_preview_cache_dir(configured_dir: Optional[str] = None) -> Path:
-    """Return the shared preview cache directory."""
+    """返回共享预览缓存目录。"""
     raw_dir = configured_dir or os.getenv("CAD_PREVIEW_CACHE_DIR")
     cache_dir = Path(raw_dir) if raw_dir else DEFAULT_PREVIEW_CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -22,7 +22,7 @@ def get_preview_cache_dir(configured_dir: Optional[str] = None) -> Path:
 
 
 def get_preview_cache_path(file_path: str, cache_dir: Optional[str] = None) -> Path:
-    """Build a stable preview image path for one CAD file."""
+    """为单个 CAD 文件生成稳定的预览图路径。"""
     path = Path(file_path)
     try:
         resolved = path.resolve()

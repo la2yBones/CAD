@@ -65,7 +65,7 @@ DEEPSEEK_API_KEY=your-deepseek-api-key-here
 
 - `matplotlib` 已安装。
 - `ezdxf` 已安装。
-- DWG 文件需要 `LIBREDWG_PATH` 指向可用 LibreDWG 目录。
+- DWG 文件默认使用项目内置 `tools/bin/dwg2dxf.exe`，也可通过 `LIBREDWG_PATH` 指定外部路径。
 
 ### FreeCAD 不可用
 

@@ -49,7 +49,7 @@ class Result(Generic[T]):
 
     def unwrap(self) -> T:
         if not self.success:
-            raise ValueError(f"Called unwrap on a failed Result: {self.error}")
+            raise ValueError(f"对失败的 Result 调用 unwrap: {self.error}")
         return self.data
 
     def unwrap_or(self, default: T) -> T:

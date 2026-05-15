@@ -34,8 +34,10 @@ Copy-Item .env.example .env
 
 ```env
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
-LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
+
+# 以下为可选配置（项目已内置）
+# LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 ```
 
 安全要求：
@@ -51,7 +53,7 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 | `api.deepseek.api_key` | `${DEEPSEEK_API_KEY}` | 智能分析调用 DeepSeek API | 智能模式必需 |
 | `api.deepseek.base_url` | YAML | DeepSeek API 地址 | 智能模式必需 |
 | `api.deepseek.model` | YAML | 模型名称，默认 `deepseek-v4-pro` | 智能模式必需 |
-| `dxf_parser.libredwg_path` | `${LIBREDWG_PATH}` | DWG 转 DXF 工具路径 | 处理 DWG 必需 |
+| `dxf_parser.libredwg_path` | `${LIBREDWG_PATH}` | DWG 转 DXF 工具路径（可选） | DWG 转换外部覆盖 |
 | `dxf_parser.output_dir` | YAML | CAD 预览图默认输出目录 | 可选 |
 | `dxf_parser.overlay_dimension_text` | YAML，默认 `auto` | DIMENSION 匿名块文字补绘策略，支持 `auto`、`true`、`false` | 可选 |
 | `dxf_parser.dimension_text_auto_overlay_ratio` | YAML，默认 `0.008` | `auto` 模式下按图幅跨度计算补绘阈值 | 可选 |

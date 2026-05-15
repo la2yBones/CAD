@@ -54,8 +54,10 @@ Copy-Item .env.example .env
 
 ```env
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
-LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
+
+# 以下为可选配置
+# LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 ```
 
 配置读取优先级：
@@ -159,7 +161,8 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 确认：
 
 ```env
-LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
+# 项目已内置 LibreDWG 到 tools/bin/，无需配置
+# LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 ```
 
-并确保该目录下存在 `dwg2dxf.exe`，或子目录中可搜索到该文件。
+确认 `tools/bin/dwg2dxf.exe` 存在，或通过 `LIBREDWG_PATH` 指定外部 LibreDWG 路径。

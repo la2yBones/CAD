@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Semantic reconstruction core."""
+"""语义重建核心。"""
 
 from .context import ReconstructionContextBuilder
 from .semantics import PartSemanticGenerator

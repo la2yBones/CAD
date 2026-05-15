@@ -25,27 +25,27 @@ class FreeCADModeler:
         if self.bridge.mode == "direct":
             self.App = self.bridge.App
             self.Part = self.bridge.Part
-            logger.info("FreeCAD initialized (direct mode)")
+            logger.info("FreeCAD 环境就绪（direct 模式）")
         elif self.bridge.mode == "subprocess":
             self.App = None
             self.Part = None
-            logger.info("FreeCAD will be called via subprocess")
+            logger.info("将通过子进程调用 FreeCAD")
         else:
             self.App = None
             self.Part = None
             logger.warning(
-                "FreeCAD not available. Install FreeCAD 1.0+ and set freecad.bin_path in config.yaml"
+                "FreeCAD 不可用。请安装 FreeCAD 1.0+ 并在 config.yaml 中设置 freecad.bin_path"
             )
 
     def generate(self, geometry_data: Dict[str, Any], relationships: Dict[str, Any]) -> 'FreeCADModeler':
         """
         根据几何数据和关系生成3D模型
 
-        Args:
+        参数:
             geometry_data: 几何数据
             relationships: 关系分析结果
 
-        Returns:
+        返回:
             self
         """
         if self.bridge is not None and self.bridge.mode == "subprocess":
@@ -53,15 +53,15 @@ class FreeCADModeler:
 
         if self.App is None:
             raise Exception(
-                "FreeCAD not available. "
-                "Install FreeCAD 1.0+ and set freecad.bin_path in config.yaml, "
-                "or run inside FreeCAD's Python environment."
+                "FreeCAD 不可用。"
+                "请安装 FreeCAD 1.0+ 并在 config.yaml 中设置 freecad.bin_path，"
+                "或在 FreeCAD 的 Python 环境中运行。"
             )
 
         return self._generate_direct(geometry_data, relationships)
 
     def _generate_direct(self, geometry_data: Dict[str, Any], relationships: Dict[str, Any]) -> 'FreeCADModeler':
-        logger.info("generating 3D model (direct mode)")
+        logger.info("生成 3D 模型（direct 模式）")
 
         # 创建新文档
         self.doc = self.App.newDocument("CADModel")
@@ -262,22 +262,22 @@ class FreeCADModeler:
 
     def _generate_via_bridge(self, geometry_data: Dict[str, Any],
                               relationships: Dict[str, Any]) -> 'FreeCADModeler':
-        logger.info("generating 3D model (subprocess mode)")
+        logger.info("生成 3D 模型（subprocess 模式）")
         extrude_height = self.config.get("default_extrude_height", 10.0)
         script = self.bridge.build_geometry_script(geometry_data, extrude_height)
         output_dir = tempfile.mkdtemp(prefix="cad_model_")
         self._bridge_result = self.bridge.execute_script(script, output_dir)
         if self._bridge_result.get("success"):
-            logger.info("subprocess modeling completed")
+            logger.info("桥接建模成功")
         else:
-            logger.error(f"subprocess modeling failed: {self._bridge_result.get('error')}")
+            logger.error(f"桥接建模失败: {self._bridge_result.get('error')}")
         return self
 
     def export(self, output_path: str, format: str = "STEP"):
         """
         导出模型
 
-        Args:
+        参数:
             output_path: 输出文件路径
             format: 导出格式 (STEP, STL, FCStd)
         """
@@ -391,7 +391,7 @@ class FreeCADModeler:
         """
         生成Python建模脚本
 
-        Args:
+        参数:
             output_path: 输出脚本路径
         """
         script_content = f"""
@@ -432,7 +432,7 @@ doc.saveAs("{output_path.replace('.py', '.FCStd')}")
             import shutil
             dest = str(Path(output_path).with_suffix(ext))
             shutil.copy2(src, dest)
-            logger.info(f"exported from bridge: {dest}")
+            logger.info(f"已复制桥接导出文件: {dest}")
             return Path(dest).exists()
 
         outputs = (self._bridge_result or {}).get("outputs", [])
@@ -441,10 +441,10 @@ doc.saveAs("{output_path.replace('.py', '.FCStd')}")
                 import shutil
                 dest = str(Path(output_path).with_suffix(ext))
                 shutil.copy2(o, dest)
-                logger.info(f"exported from bridge: {dest}")
+                logger.info(f"已复制桥接导出文件: {dest}")
                 return Path(dest).exists()
 
-        logger.warning(f"no {fmt} output found in bridge result")
+        logger.warning(f"未找到可导出的 {fmt} 文件")
         return False
 
     def close(self):

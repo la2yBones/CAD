@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Compatibility exports for old intelligent_analyzer reconstruction imports."""
+"""旧 intelligent_analyzer 重建相关导入的兼容导出。"""
 
 from src.reconstruction.context import ReconstructionContextBuilder
 from src.reconstruction.instruction_generator import FreeCADInstructionGenerator
@@ -17,4 +17,3 @@ __all__ = [
     "PART_SEMANTICS_SCHEMA",
     "PartSemanticsValidator",
 ]
-

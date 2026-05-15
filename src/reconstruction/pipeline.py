@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Semantic reconstruction pipeline isolated from drawing-analysis orchestration."""
+"""语义重建管道，与图纸分析编排层解耦。"""
 
 from typing import Any, Dict, Optional
 
@@ -10,7 +10,7 @@ from .instruction_generator import FreeCADInstructionGenerator
 
 
 class SemanticReconstructionPipeline:
-    """Build reconstruction context, semantics, and executable instructions."""
+    """构建重建上下文、零件语义和可执行建模指令。"""
 
     def __init__(self, api_key: str, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}

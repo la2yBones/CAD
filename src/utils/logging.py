@@ -6,7 +6,7 @@ from typing import Optional
 
 
 class SensitiveDataFilter(logging.Filter):
-    """Filters out API keys, tokens, and other sensitive data from log records."""
+    """从日志记录中过滤 API Key、token 和其他敏感数据。"""
 
     _SENSITIVE_PATTERNS = [
         (re.compile(r'sk-[a-zA-Z0-9]{32,}'), 'sk-***REDACTED***'),
@@ -53,12 +53,12 @@ def setup_logging(
     """
     设置日志配置
 
-    Args:
+    ??:
         level: 日志级别
         log_file: 日志文件路径
         name: logger名称
 
-    Returns:
+    ??:
         配置好的logger
     """
     logger = logging.getLogger(name)

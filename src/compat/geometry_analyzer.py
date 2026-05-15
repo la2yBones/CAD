@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Compatibility exports for old geometry_analyzer imports."""
+"""旧 geometry_analyzer 导入的兼容导出。"""
 
 from src.legacy.geometry_analyzer import GeometryAnalyzer
 
 __all__ = ["GeometryAnalyzer"]
-

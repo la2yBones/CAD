@@ -20,6 +20,9 @@
 | 配置     | YAML + `.env`                | 环境变量 > `.env` > YAML 字面值          |
 | 日志     | Python logging               | 自动脱敏 `sk-*`、`api_key=*`、`token=*` |
 
+
+> 许可提示：项目已在 `tools/bin/` 内置 LibreDWG 的 `dwg2dxf.exe` 及运行库，用于开箱即用地完成 DWG → DXF 转换。LibreDWG 组件遵循 GPLv3 许可；若分发本项目，请同时保留 LibreDWG 的来源、版本和许可说明，详见 `tools/bin/README.md`。
+
 ## 目录结构
 
 ```text
@@ -73,8 +76,10 @@ Copy-Item .env.example .env
 
 ```env
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
-LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
+
+# 以下为可选配置（项目已内置 LibreDWG 到 tools/bin/）
+# LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 ```
 
 运行测试：

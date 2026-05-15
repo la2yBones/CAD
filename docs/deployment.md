@@ -23,8 +23,10 @@ Copy-Item .env.example .env
 
 ```env
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
-LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
+
+# DWG 转换已内置 LibreDWG 到 tools/bin/，以下为可选覆盖
+# LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 ```
 
 ## 3. 配置说明
@@ -32,7 +34,7 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 | 配置 | 作用 | 必需场景 |
 |---|---|---|
 | `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 默认智能重建、`--legacy-analysis`、`--intelligent`、`--analysis-only` |
-| `LIBREDWG_PATH` | LibreDWG 目录，需包含 `dwg2dxf.exe` | 处理 DWG |
+| `LIBREDWG_PATH` | LibreDWG 目录（可选，项目已内置 tools/bin/dwg2dxf.exe） | DWG 转换外部覆盖 |
 | `FREECAD_BIN_PATH` | FreeCAD `bin` 目录 | 建模导出 |
 | `CAD_PREVIEW_CACHE_DIR` | 预览图缓存目录 | 可选 |
 
@@ -64,7 +66,7 @@ python tools/diagnose_export.py
 - `python cad_cli.py --list` 能列出示例图纸。
 - `python tools/cache_tool.py stats` 能读取缓存目录。
 - `FREECAD_BIN_PATH` 指向的目录下存在 `python.exe`。
-- `LIBREDWG_PATH` 指向的目录或子目录下存在 `dwg2dxf.exe`。
+- `tools/bin/dwg2dxf.exe` 存在（项目内置），或 `LIBREDWG_PATH` 指向有效 LibreDWG。
 - 智能模式前确认 `DEEPSEEK_API_KEY` 不是模板值。
 
 ## 7. 故障处理
@@ -72,7 +74,7 @@ python tools/diagnose_export.py
 | 现象 | 排查方向 |
 |---|---|
 | 找不到 API Key | 检查 `.env` 或系统环境变量中的 `DEEPSEEK_API_KEY` |
-| DWG 转换失败 | 检查 `LIBREDWG_PATH` 和 DWG 文件是否损坏或加密 |
+| DWG 转换失败 | 确认 `tools/bin/dwg2dxf.exe` 存在，或检查 `LIBREDWG_PATH` |
 | FreeCAD 不可用 | 检查 `FREECAD_BIN_PATH`，或确认 FreeCAD 是否安装 |
 | 预览图为空 | 检查 CAD 是否包含实体、matplotlib/ezdxf 是否安装 |
 | 智能模式很慢 | 查看 GUI 的 AI 调用监控或 `.cache/llm_telemetry` |

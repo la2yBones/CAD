@@ -26,7 +26,7 @@ class AnalysisCache:
         """
         初始化缓存管理器
 
-        Args:
+        ??:
             cache_dir: 缓存目录
             default_ttl: 默认过期时间（秒）
             config: 配置字典
@@ -44,12 +44,12 @@ class AnalysisCache:
         """
         生成唯一缓存键
 
-        Args:
+        ??:
             file_path: 图纸文件路径
             extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数字典
 
-        Returns:
+        ??:
             唯一缓存键字符串
         """
         path_obj = Path(file_path)
@@ -115,12 +115,12 @@ class AnalysisCache:
         """
         从缓存读取分析结果
 
-        Args:
+        ??:
             file_path: 图纸文件路径
             extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数
 
-        Returns:
+        ??:
             缓存结果，如果不存在或已过期返回None
         """
         try:
@@ -160,14 +160,14 @@ class AnalysisCache:
         """
         将分析结果写入缓存
 
-        Args:
+        ??:
             file_path: 图纸文件路径
             extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             result_data: 结果数据
             ttl: 过期时间（秒）
             analysis_params: 分析参数
 
-        Returns:
+        ??:
             是否成功
         """
         try:
@@ -196,12 +196,12 @@ class AnalysisCache:
         """
         使特定文件缓存失效
 
-        Args:
+        ??:
             file_path: 图纸文件路径
             extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数
 
-        Returns:
+        ??:
             删除的缓存数量
         """
         try:
@@ -230,7 +230,7 @@ class AnalysisCache:
         """
         清理所有过期缓存
 
-        Returns:
+        ??:
             删除的缓存文件数量
         """
         removed_count = 0
@@ -260,7 +260,7 @@ class AnalysisCache:
         """
         清空所有缓存
 
-        Returns:
+        ??:
             删除的缓存文件数量
         """
         removed_count = 0
@@ -279,7 +279,7 @@ class AnalysisCache:
         """
         列出缓存条目，供GUI缓存管理面板展示。
 
-        Returns:
+        ??:
             缓存条目列表。每个条目包含源文件、大小、时间戳、是否过期等信息。
         """
         entries = []
@@ -324,7 +324,7 @@ class AnalysisCache:
         """
         获取缓存统计信息
 
-        Returns:
+        ??:
             统计字典
         """
         total_size = 0

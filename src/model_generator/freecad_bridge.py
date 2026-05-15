@@ -44,7 +44,7 @@ class FreeCADBridge:
             self.Part = Part
             self.freecad_available = True
             self.mode = "direct"
-            logger.info("FreeCAD direct mode: imported successfully")
+            logger.info("FreeCAD direct 模式：导入成功")
             return
         except ImportError:
             pass
@@ -60,7 +60,7 @@ class FreeCADBridge:
                 self.freecad_python = str(python_path)
                 self.freecad_available = True
                 self.mode = "subprocess"
-                logger.info(f"FreeCAD subprocess mode: {self.freecad_python}")
+                logger.info(f"FreeCAD subprocess 路径: {self.freecad_python}")
                 return
 
         candidates = self._find_freecad_candidates()
@@ -69,13 +69,13 @@ class FreeCADBridge:
                 self.freecad_python = c
                 self.freecad_available = True
                 self.mode = "subprocess"
-                logger.info(f"FreeCAD subprocess mode (auto-detected): {c}")
+                logger.info(f"FreeCAD subprocess 模式（自动发现）: {c}")
                 return
 
         self.freecad_available = False
         self.mode = "unavailable"
         logger.warning(
-            "FreeCAD not available. Install FreeCAD 1.0+ and set 'FREECAD_BIN_PATH' in .env"
+            "FreeCAD 不可用。请安装 FreeCAD 1.0+，并在 .env 中设置 'FREECAD_BIN_PATH'"
         )
 
     @staticmethod
@@ -97,16 +97,16 @@ class FreeCADBridge:
         """
         执行 FreeCAD Python 脚本（根据模式自动选择执行方式）
 
-        Args:
+        ??:
             script_content: FreeCAD Python 脚本内容
             output_dir: 输出文件目录
             timeout: 超时秒数
 
-        Returns:
+        ??:
             {success, outputs, step_path, fcstd_path, stdout, stderr}
         """
         if not self.freecad_available:
-            return {"success": False, "error": "FreeCAD not available"}
+            return {"success": False, "error": "FreeCAD 不可用"}
 
         output_dir = str(Path(output_dir).resolve())
 
@@ -164,7 +164,7 @@ class FreeCADBridge:
             return results
 
         except Exception as e:
-            logger.error(f"Direct execution failed: {e}")
+            logger.error(f"direct 执行失败: {e}")
             return {"success": False, "error": str(e)}
 
     def _execute_subprocess(self, script_content: str, output_dir: str,
@@ -179,7 +179,7 @@ class FreeCADBridge:
             with open(script_file, "w", encoding="utf-8") as f:
                 f.write(full_script)
 
-            logger.debug(f"Launching FreeCAD subprocess with script: {script_file}")
+            logger.debug(f"启动 FreeCAD 子进程脚本: {script_file}")
             proc = subprocess.run(
                 [self.freecad_python, script_file],
                 capture_output=True,
@@ -209,9 +209,9 @@ class FreeCADBridge:
             return result
 
         except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"timeout after {timeout}s"}
+            return {"success": False, "error": f"执行超时: {timeout}s"}
         except Exception as e:
-            logger.error(f"Subprocess execution failed: {e}")
+            logger.error(f"子进程执行失败: {e}")
             return {"success": False, "error": str(e)}
         finally:
             if script_file:

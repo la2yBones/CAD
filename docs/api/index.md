@@ -19,7 +19,7 @@
 常用变量：
 
 - `DEEPSEEK_API_KEY`
-- `LIBREDWG_PATH`
+- `LIBREDWG_PATH`（可选，项目已内置）
 - `FREECAD_BIN_PATH`
 
 ### `src.utils.setup_logging(level="INFO", log_file=None, name="cad_modeler")`

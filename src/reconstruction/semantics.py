@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Generate structured part semantics from reconstruction context."""
+"""根据重建上下文生成结构化零件语义。"""
 from __future__ import annotations
 
 import json
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class PartSemanticGenerator:
-    """Ask the model to explain the part before any CAD script is generated."""
+    """在生成 CAD 脚本前，先让模型解释零件结构。"""
 
     SYSTEM_PROMPT = """你是机械制图和三维重建专家。
 你的任务不是写 FreeCAD 脚本，而是把 reconstruction_context 解释为结构化零件语义。
@@ -124,7 +124,7 @@ class PartSemanticGenerator:
             "additive_features": [],
             "subtractive_features": [],
             "key_dimensions": [],
-            "uncertainties": ["semantic generation failed"],
+            "uncertainties": ["语义生成失败"],
             "warnings": [error],
         }
 

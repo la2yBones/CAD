@@ -34,29 +34,29 @@ class AIScriptRunner:
         if self.bridge.mode == "direct":
             self.App = self.bridge.App
             self.Part = self.bridge.Part
-            logger.info("FreeCAD environment ready (direct mode)")
+            logger.info("FreeCAD 环境就绪（direct 模式）")
         elif self.bridge.mode == "subprocess":
             self.App = None
             self.Part = None
-            logger.info("FreeCAD will be called via subprocess")
+            logger.info("将通过子进程调用 FreeCAD")
         else:
             self.App = None
             self.Part = None
-            logger.warning("FreeCAD not available")
+            logger.warning("FreeCAD 不可用")
 
     def run_script(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         """
         运行AI生成的FreeCAD脚本（双模式自适应）
 
-        Args:
+        ??:
             script_content: Python脚本内容
             output_path: 可选的STEP输出路径
 
-        Returns:
+        ??:
             包含执行结果的字典
         """
         if not self.bridge or not self.bridge.freecad_available:
-            return {"success": False, "error": "FreeCAD not available"}
+            return {"success": False, "error": "FreeCAD 不可用"}
 
         script_content = self._normalize_generated_script(script_content)
 
@@ -66,7 +66,7 @@ class AIScriptRunner:
         return self._run_direct(script_content, output_path)
 
     def _normalize_generated_script(self, script_content: str) -> str:
-        """Repair common AI geometry mistakes before sending code to FreeCAD."""
+        """发送到 FreeCAD 前修正常见 AI 几何脚本问题。"""
         pattern = re.compile(
             r"^(?P<prefix>\s*\w+\s*=\s*Part\.(?:LineSegment|ArcOfCircle)\(.*\))\s*$",
             re.MULTILINE,
@@ -81,7 +81,7 @@ class AIScriptRunner:
         return pattern.sub(add_to_shape, script_content)
 
     def _run_via_bridge(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
-        logger.info("executing AI script via subprocess bridge")
+        logger.info("通过子进程桥接执行 AI 脚本")
         requested_step = Path(output_path).resolve() if output_path else None
         if requested_step:
             with tempfile.TemporaryDirectory(prefix="ai_model_") as temp_output_dir:
@@ -141,12 +141,12 @@ class AIScriptRunner:
 
         return {
             "success": False,
-            "error": result.get("error", "unknown subprocess error"),
+            "error": result.get("error", "未知子进程错误"),
             "stdout": result.get("stdout", ""),
         }
 
     def _run_direct(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
-        logger.info("executing AI script (direct mode)")
+        logger.info("执行 AI 脚本（direct 模式）")
 
         try:
             # 创建新文档
@@ -300,11 +300,11 @@ import Part
         """
         从文件运行脚本
 
-        Args:
+        ??:
             script_file: .py脚本文件路径
             output_path: 可选的STEP输出路径
 
-        Returns:
+        ??:
             执行结果
         """
         try:

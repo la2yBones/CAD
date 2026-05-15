@@ -127,7 +127,7 @@ class TestAIModeling(unittest.TestCase):
         )
 
         self.assertFalse(valid)
-        self.assertIn("confidence must be between 0 and 1", errors)
+        self.assertIn("confidence 必须介于 0 到 1 之间", errors)
 
     def test_low_semantic_confidence_blocks_modeling(self):
         analyzer = IntelligentEngineeringAnalyzer.__new__(IntelligentEngineeringAnalyzer)

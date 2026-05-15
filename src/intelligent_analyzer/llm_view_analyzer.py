@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LLM-assisted engineering view analyzer.
+LLM 辅助的工程视图分析器。
 
-This module keeps the existing rule analyzer as the first pass and asks the
-language model to correct drawing semantics such as assembly drawings,
-two-view drawings, three-view drawings and section views.
+本模块以现有规则分析器作为初判，再请求大模型校正装配图、二视图、三视图和剖视图等图纸语义。
 """
 from __future__ import annotations
 
@@ -30,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMViewAnalyzer:
-    """Use an LLM to validate and correct local engineering view analysis."""
+    """使用 LLM 校验并校正本地工程视图分析。"""
 
     MAX_ENTITIES_IN_PROMPT = 40
     MAX_PROMPT_CHARS = 18000
@@ -56,7 +54,7 @@ class LLMViewAnalyzer:
         preview_path: Optional[str] = None,
         media_inputs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Return an LLM-corrected view analysis, or the standardized rule result."""
+        """返回 LLM 校正后的视图分析，或标准化后的规则结果。"""
         rule_standard = build_standard_view_analysis(
             rule_result,
             confidence=0.72,
@@ -335,7 +333,7 @@ class LLMViewAnalyzer:
         standard_result: Dict[str, Any],
         rule_result: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Keep legacy keys expected by existing callers while adding schema output."""
+        """在补充 schema 输出的同时，保留旧调用方期望的兼容键。"""
         merged = dict(rule_result)
         merged["schema_result"] = standard_result
         merged["drawing_type"] = standard_result.get("drawing_type")

@@ -58,7 +58,7 @@ api:
     model: "deepseek-v4-pro"
 ```
 dxf_parser:
-  libredwg_path: "D:\\Code\\libredwg-0.13.4.8160-win64"
+  # libredwg_path: "D:\\Code\\libredwg-0.13.4.8160-win64"  # 可选，项目已内置 tools/bin/dwg2dxf.exe
 
 freecad:
   bin_path: "D:\\FreeCAD 1.0\\bin"
@@ -140,8 +140,8 @@ python examples\scripts\test_config.py
 - DWG 文件会自动转换
 
 ### Q: DWG 转换失败？
-- 检查 LibreDWG 路径是否正确配置
-- 确认 `config.yaml` 中的 `libredwg_path` 正确
+- 确认 `tools/bin/dwg2dxf.exe` 存在（项目已内置）
+- 检查 `LIBREDWG_PATH` 配置（可选）
 - 确保 DWG 文件没有加密或损坏
 - 运行 `python examples\scripts\test_config.py` 检查配置
 

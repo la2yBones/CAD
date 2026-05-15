@@ -189,7 +189,7 @@ def infer_drawing_type(views: List[Dict[str, Any]], rule_result: Dict[str, Any])
 
 
 class ViewAnalysisValidator:
-    """Validate LLM-corrected view analysis and reject unsafe output."""
+    """校验 LLM 校正后的视图分析，并拒绝不安全输出。"""
 
     def __init__(self, confidence_threshold: float = DEFAULT_ACCEPT_CONFIDENCE):
         self.confidence_threshold = confidence_threshold

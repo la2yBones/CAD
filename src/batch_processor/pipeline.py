@@ -26,7 +26,7 @@ class CADPipeline:
         """
         初始化处理管道
 
-        Args:
+        ??:
             config: 配置字典
             input_dir: 输入目录
             output_dir: 输出目录
@@ -59,12 +59,12 @@ class CADPipeline:
         """
         处理单个文件（外部接口）
 
-        Args:
+        ??:
             filename: 文件名或完整路径
             extrude_height: 拉伸高度
             enable_analysis: 是否启用AI分析
 
-        Returns:
+        ??:
             处理结果对象
         """
         # 解析文件路径
@@ -95,7 +95,7 @@ class CADPipeline:
         )
 
     def process_file_basic(self, filename: str, extrude_height: float = 10.0) -> CADProcessResult:
-        """Compatibility helper for legacy/basic planar extrusion."""
+        """兼容基础模式入口：legacy/basic 平面拉伸。"""
         return self.process_file(filename, extrude_height, enable_analysis=False)
 
     def process_file_legacy_analysis(
@@ -103,7 +103,7 @@ class CADPipeline:
         filename: str,
         extrude_height: float = 10.0,
     ) -> CADProcessResult:
-        """Compatibility helper for legacy/basic modeling with old AI relationship analysis."""
+        """兼容分析模式入口：legacy/basic 建模 + 旧 AI 几何关系分析。"""
         return self.process_file(filename, extrude_height, enable_analysis=True)
 
     def process_multiple_files(self, filenames: List[str],
@@ -113,13 +113,13 @@ class CADPipeline:
         """
         批量处理多个文件（外部接口）
 
-        Args:
+        ??:
             filenames: 文件名列表
             extrude_height: 拉伸高度
             enable_analysis: 是否启用AI分析
             progress_callback: 进度回调函数，接收(current, total, result)
 
-        Returns:
+        ??:
             处理结果字典 {文件名: 结果对象}
         """
         results = {}
@@ -142,13 +142,13 @@ class CADPipeline:
         """
         处理整个目录中的所有CAD文件（外部接口）
 
-        Args:
+        ??:
             input_dir: 输入目录，可选
             extrude_height: 拉伸高度
             enable_analysis: 是否启用AI分析
             progress_callback: 进度回调函数
 
-        Returns:
+        ??:
             处理结果字典
         """
         files = self.list_available_files(input_dir)
@@ -174,7 +174,7 @@ class CADPipeline:
         extrude_height: float = 10.0,
         progress_callback: Optional[Callable] = None,
     ) -> Dict[str, CADProcessResult]:
-        """Process multiple files through the intelligent reconstruction path."""
+        """使用智能重建路径批量处理多个文件。"""
         results = {}
         total = len(filenames)
 
@@ -194,7 +194,7 @@ class CADPipeline:
         extrude_height: float = 10.0,
         progress_callback: Optional[Callable] = None,
     ) -> Dict[str, CADProcessResult]:
-        """Process a directory through the intelligent reconstruction path."""
+        """使用智能重建路径处理目录。"""
         files = self.list_available_files(input_dir)
         if not files:
             logger.warning("没有找到可处理的CAD文件")
@@ -214,10 +214,10 @@ class CADPipeline:
         """
         生成处理摘要
 
-        Args:
+        ??:
             results: 处理结果字典
 
-        Returns:
+        ??:
             摘要信息字典
         """
         total = len(results)
@@ -237,11 +237,11 @@ class CADPipeline:
         """
         使用智能分析处理单个文件（视图识别、尺寸提取、建模指令生成）
 
-        Args:
+        ??:
             filename: 文件名或路径
             extrude_height: 拉伸高度
 
-        Returns:
+        ??:
             处理结果
         """
         # 解析文件路径

@@ -171,13 +171,13 @@ JSON 必须包含以下字段：
         """
         生成FreeCAD建模指令
 
-        Args:
+        ??:
             geometry_data: 几何数据
             view_analysis: 视图分析结果（可选）
             dimension_data: 尺寸标注结果（可选）
             extrude_height: 默认拉伸高度
 
-        Returns:
+        ??:
             包含建模指令的结果字典
         """
         logger.info("开始生成FreeCAD建模指令")

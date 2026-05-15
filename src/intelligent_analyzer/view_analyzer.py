@@ -44,7 +44,7 @@ class EngineeringViewAnalyzer:
             from sklearn.cluster import DBSCAN
             return True
         except ImportError:
-            logger.info("scikit-learn not available, using zone-based view detection")
+            logger.info("scikit-learn 不可用，使用区域规则识别视图")
             return False
 
     def analyze_views(
@@ -117,9 +117,9 @@ class EngineeringViewAnalyzer:
                     )
                     view_groups = self._merge_aligned_clusters(raw_groups)
                     detection_method = "DBSCAN"
-                    logger.info(f"DBSCAN: {len(raw_groups)}->{len(view_groups)} clusters")
+                    logger.info(f"DBSCAN: {len(raw_groups)}->{len(view_groups)} 个聚类")
             except Exception as e:
-                logger.warning(f"DBSCAN failed: {e}")
+                logger.warning(f"DBSCAN 聚类失败: {e}")
 
         if view_groups is None:
             return self._analyze_fallback(entities, layers)
@@ -264,7 +264,7 @@ class EngineeringViewAnalyzer:
         y_boundaries = self._find_gaps(ys, min_gap_ratio=0.08, max_groups=3)
 
         if len(x_boundaries) <= 1 and len(y_boundaries) <= 1:
-            logger.debug("gap detection found only 1 region, trying DBSCAN")
+            logger.debug("间隙检测只发现 1 个区域，尝试使用 DBSCAN")
             return None
 
         x_zones: List[Tuple[float, float]] = []
@@ -377,7 +377,7 @@ class EngineeringViewAnalyzer:
         eps = max(eps, 5.0)
         eps = min(eps, 500.0)
 
-        logger.debug(f"DBSCAN eps={eps:.1f}, n_points={len(centers)}, range={data_range:.1f}")
+        logger.debug(f"DBSCAN eps={eps:.1f}, 点数={len(centers)}, 范围={data_range:.1f}")
 
         clustering = DBSCAN(eps=eps, min_samples=self.DBSCAN_MIN_SAMPLES)
         return list(clustering.fit_predict(centers))

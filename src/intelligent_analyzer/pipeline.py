@@ -20,9 +20,6 @@ from src.reconstruction import SemanticReconstructionPipeline
 
 logger = logging.getLogger(__name__)
 
-LOCAL_ANALYSIS_ENTITY_LIMIT = 300
-
-
 class IntelligentEngineeringAnalyzer:
     """
     智能工程图纸分析器
@@ -269,11 +266,6 @@ class IntelligentEngineeringAnalyzer:
             from shapely.strtree import STRtree
 
             entities = geometry_data.get("entities", [])
-            if len(entities) > LOCAL_ANALYSIS_ENTITY_LIMIT:
-                logger.info(
-                    f"实体数 {len(entities)} 超过阈值 {LOCAL_ANALYSIS_ENTITY_LIMIT}，跳过全量本地分析"
-                )
-                return None
 
             shapes = []
             for i, entity in enumerate(entities):

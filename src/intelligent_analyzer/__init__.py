@@ -22,5 +22,5 @@ __all__ = [
     "PartSemanticGenerator",
     "FreeCADInstructionGenerator",
     "SemanticReconstructionPipeline",
-    "IntelligentEngineeringAnalyzer"
+    "IntelligentEngineeringAnalyzer",
 ]

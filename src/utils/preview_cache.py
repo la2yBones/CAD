@@ -10,7 +10,7 @@ from typing import Optional
 
 
 DEFAULT_PREVIEW_CACHE_DIR = Path(".cache") / "previews"
-PREVIEW_RENDER_VERSION = "dimension_text_overlay_v2"
+PREVIEW_RENDER_VERSION = "dimension_text_overlay_v4"
 
 
 def get_preview_cache_dir(configured_dir: Optional[str] = None) -> Path:

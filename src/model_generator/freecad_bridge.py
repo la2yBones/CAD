@@ -255,13 +255,25 @@ try:
         except Exception:
             return False
 
+    def _shape_from_value(value):
+        if _valid_shape(value):
+            return value
+        try:
+            shape = getattr(value, "Shape", None)
+            if _valid_shape(shape):
+                return shape
+        except Exception:
+            pass
+        return None
+
     def _select_result_shape():
         preferred_vars = ["final_shape", "result_shape", "solid", "body", "part", "model"]
         for name in preferred_vars:
             val = globals().get(name)
-            if _valid_shape(val):
+            shape = _shape_from_value(val)
+            if shape:
                 print(f"BRIDGE_SELECTED:VAR:{{name}}", flush=True)
-                return val
+                return shape
 
         candidates = []
         if doc:
@@ -289,6 +301,11 @@ try:
     exported = False
     result_shape = None
     if doc:
+        try:
+            doc.recompute()
+        except Exception as recompute_error:
+            print(f"BRIDGE_WARNING:DOC_RECOMPUTE_FAILED:{{recompute_error}}", flush=True)
+
         result_shape = _select_result_shape()
         if result_shape:
             try:

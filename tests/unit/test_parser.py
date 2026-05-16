@@ -67,6 +67,60 @@ class TestCADParser(unittest.TestCase):
             self.assertEqual(1, result["total"])
             self.assertEqual(12.0, result["dimensions"][0]["value"])
 
+    def test_dxf_unicode_diameter_escape_is_decoded(self):
+        parser = CADParser("dummy.dxf")
+
+        self.assertEqual("⌀16", parser._clean_text_content(r"\U+220516"))
+        self.assertEqual("φ120", parser._format_dimension_text_for_preview(r"\U+2205120"))
+
+        extractor = DimensionExtractor()
+        result = extractor.extract_dimensions({
+            "entities": [
+                {"type": "TEXT", "text": r"\U+220522", "position": [0, 0, 0]},
+            ]
+        })
+
+        self.assertEqual(1, result["total"])
+        self.assertEqual("⌀22", result["dimensions"][0]["text"])
+        self.assertEqual(22.0, result["dimensions"][0]["value"])
+        self.assertEqual("直径", result["dimensions"][0]["type"])
+
+    def test_flange_diameter_dimensions_are_extracted(self):
+        dxf_path = self.test_dir / "法兰盘二视图.dxf"
+        if not dxf_path.exists():
+            self.skipTest("法兰盘二视图.dxf not available")
+
+        parser = CADParser(str(dxf_path))
+        geometry = parser.parse()
+        result = DimensionExtractor().extract_dimensions(geometry)
+        diameters = {
+            item["text"]: item["value"]
+            for item in result["dimensions"]
+            if item["type"] == "直径"
+        }
+
+        self.assertEqual(16.0, diameters["⌀16"])
+        self.assertEqual(22.0, diameters["⌀22"])
+        self.assertEqual(120.0, diameters["⌀120"])
+
+    def test_preview_normalizes_dimension_block_texts(self):
+        dxf_path = self.test_dir / "法兰盘二视图.dxf"
+        if not dxf_path.exists():
+            self.skipTest("法兰盘二视图.dxf not available")
+
+        parser = CADParser(str(dxf_path))
+        parser.parse()
+        parser._normalize_dimension_block_texts_for_preview()
+
+        block_texts = []
+        for dim in parser.doc.modelspace().query("DIMENSION"):
+            block_texts.extend(item["text"] for item in parser._extract_dimension_block_texts(dim))
+
+        self.assertIn("φ16", block_texts)
+        self.assertIn("φ22", block_texts)
+        self.assertIn("φ120", block_texts)
+        self.assertNotIn(r"\U+220516", block_texts)
+
     def test_dimension_overlay_auto_threshold(self):
         """Auto overlay should only target tiny dimension text."""
         parser = CADParser("dummy.dxf")

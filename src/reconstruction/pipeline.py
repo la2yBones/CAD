@@ -8,6 +8,11 @@ from .context import ReconstructionContextBuilder
 from .semantic_policy import SemanticPolicy
 from .semantics import PartSemanticGenerator
 from .instruction_generator import FreeCADInstructionGenerator
+from src.utils.stage_confirmation import (
+    StageConfirmationStopped,
+    StageReview,
+    resolve_stage_confirmation,
+)
 
 
 class SemanticReconstructionPipeline:
@@ -19,7 +24,7 @@ class SemanticReconstructionPipeline:
         self.semantic_policy = SemanticPolicy()
         self.semantic_generator = PartSemanticGenerator(api_key, self.config)
         self.instruction_generator = FreeCADInstructionGenerator(api_key, self.config)
-        self.stage_confirmation_callback = self.config.get("_stage_confirmation_callback")
+        self.stage_confirmation = resolve_stage_confirmation(self.config)
 
     def run(
         self,
@@ -155,12 +160,12 @@ class SemanticReconstructionPipeline:
 
     def _confirm_stage(self, stage: str, payload: Dict[str, Any]) -> None:
         """Let interactive callers review a completed LLM stage before continuing."""
-        callback = getattr(self, "stage_confirmation_callback", None)
-        if not callable(callback):
-            return
-        should_continue = callback(stage, payload)
-        if not should_continue:
-            raise RuntimeError(f"用户在 {stage} 阶段确认后停止处理")
+        confirmation = getattr(self, "stage_confirmation", None)
+        if confirmation is None:
+            confirmation = resolve_stage_confirmation(getattr(self, "config", {}))
+            self.stage_confirmation = confirmation
+        if not confirmation.should_continue(StageReview(stage=stage, payload=payload)):
+            raise StageConfirmationStopped(f"用户在 {stage} 阶段确认后停止处理")
 
     def _is_semantic_confidence_sufficient(self, part_semantics: Dict[str, Any]) -> bool:
         confidence = float(part_semantics.get("confidence") or 0.0)

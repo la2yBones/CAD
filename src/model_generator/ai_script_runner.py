@@ -151,9 +151,36 @@ class AIScriptRunner:
 
         return {
             "success": False,
-            "error": result.get("error", "未知子进程错误"),
+            "error": self._format_bridge_error(result),
             "stdout": result.get("stdout", ""),
         }
+
+    def _format_bridge_error(self, result: Dict[str, Any]) -> str:
+        error = result.get("error", "未知子进程错误")
+        details = self._extract_runtime_details(result.get("stdout") or "")
+        if details:
+            return f"{error}; {details}"
+        return error
+
+    @staticmethod
+    def _extract_runtime_details(stdout: str) -> str:
+        if not stdout:
+            return ""
+        detail_lines = []
+        for line in stdout.splitlines():
+            clean = line.strip()
+            if not clean:
+                continue
+            if (
+                "Runtime warnings" in clean
+                or "Traceback" in clean
+                or clean.startswith("BRIDGE_WARNING:")
+                or clean.startswith("BRIDGE_SELECTED:")
+            ):
+                detail_lines.append(clean)
+        if not detail_lines:
+            return ""
+        return " | ".join(detail_lines[-5:])
 
     def _run_direct(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         logger.info("执行 AI 脚本（direct 模式）")

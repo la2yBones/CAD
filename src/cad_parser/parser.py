@@ -365,13 +365,31 @@ class CADParser:
         if not text:
             return ""
         cleaned = str(text).replace("\\P", " ").replace("\n", " ")
-        cleaned = cleaned.replace("%%c", "⌀").replace("%%C", "⌀")
+        cleaned = self._decode_dxf_text_escapes(cleaned)
         cleaned = re.sub(r"\\[A-Za-z]+[0-9.;,+-]*", "", cleaned)
         cleaned = cleaned.replace("{", "").replace("}", "")
         return " ".join(cleaned.split())
 
     def _format_dimension_text_for_preview(self, text: str) -> str:
-        return str(text).replace("∅", "⌀").replace("Ø", "⌀").replace("Φ", "⌀")
+        return self._decode_dxf_text_escapes(str(text)).replace("∅", "φ").replace("⌀", "φ").replace("Ø", "φ").replace("Φ", "φ")
+
+    @staticmethod
+    def _decode_dxf_text_escapes(text: str) -> str:
+        if not text:
+            return ""
+        decoded = str(text).replace("%%c", "⌀").replace("%%C", "⌀")
+        decoded = re.sub(r"\\U\+2205(?=\d)", "⌀", decoded, flags=re.IGNORECASE)
+
+        def replace_unicode(match: re.Match[str]) -> str:
+            codepoint = int(match.group(1), 16)
+            if codepoint == 0x2205:
+                return "⌀"
+            try:
+                return chr(codepoint)
+            except ValueError:
+                return match.group(0)
+
+        return re.sub(r"\\U\+([0-9A-Fa-f]{4})", replace_unicode, decoded)
 
     def _expand_block(self, insert_entity) -> List[Dict]:
         block_name = insert_entity.dxf.name
@@ -519,6 +537,7 @@ class CADParser:
             ax = fig.add_axes([0, 0, 1, 1])
             ctx = RenderContext(self.doc)
             out = MatplotlibBackend(ax)
+            self._normalize_dimension_block_texts_for_preview()
             Frontend(ctx, out).draw_layout(self.doc.modelspace(), finalize=True)
             overlay_mode = self.config.get("overlay_dimension_text", "auto")
             if self._is_dimension_overlay_enabled(overlay_mode):
@@ -585,6 +604,32 @@ class CADParser:
                     fontfamily=["DejaVu Sans", "Microsoft YaHei", "SimHei"],
                     zorder=1000,
                 )
+
+    def _normalize_dimension_block_texts_for_preview(self) -> None:
+        if self.doc is None:
+            return
+        for dim in self.doc.modelspace().query("DIMENSION"):
+            try:
+                block = self.doc.blocks.get(dim.dxf.geometry)
+            except Exception:
+                continue
+            for sub in block:
+                if sub.dxftype() not in ("TEXT", "MTEXT"):
+                    continue
+                try:
+                    current = sub.plain_text() if sub.dxftype() == "MTEXT" and hasattr(sub, "plain_text") else sub.dxf.text
+                except Exception:
+                    continue
+                normalized = self._format_dimension_text_for_preview(current)
+                if not normalized or normalized == current:
+                    continue
+                try:
+                    sub.dxf.text = normalized
+                except Exception:
+                    try:
+                        sub.text = normalized
+                    except Exception:
+                        pass
 
 
 # 向后兼容性：保持 DXFParser 作为 CADParser 的别名

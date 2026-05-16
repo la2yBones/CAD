@@ -11,6 +11,11 @@ from pathlib import Path
 from .view_analyzer import EngineeringViewAnalyzer
 from .llm_view_analyzer import LLMViewAnalyzer
 from .dimension_extractor import DimensionExtractor
+from src.utils.stage_confirmation import (
+    StageConfirmationStopped,
+    StageReview,
+    resolve_stage_confirmation,
+)
 from src.reconstruction import SemanticReconstructionPipeline
 
 logger = logging.getLogger(__name__)
@@ -47,6 +52,7 @@ class IntelligentEngineeringAnalyzer:
         self.llm_view_analyzer = LLMViewAnalyzer(api_key, config)
         self.dimension_extractor = DimensionExtractor(config)
         self.reconstruction_pipeline = SemanticReconstructionPipeline(api_key, config)
+        self.stage_confirmation = resolve_stage_confirmation(self.config)
 
         self.enable_cache = enable_cache
         self.cache = None
@@ -157,15 +163,17 @@ class IntelligentEngineeringAnalyzer:
 
     def _confirm_cached_stages(self, analysis_result: Dict[str, Any]) -> None:
         """Replay GUI stage confirmations when a complete analysis comes from cache."""
-        callback = self.config.get("_stage_confirmation_callback")
-        if not callable(callback):
-            return
-        if not callback("view_analysis", {
+        confirmation = getattr(self, "stage_confirmation", None)
+        if confirmation is None:
+            confirmation = resolve_stage_confirmation(getattr(self, "config", {}))
+            self.stage_confirmation = confirmation
+
+        if not confirmation.should_continue(StageReview("view_analysis", {
             "view_analysis": analysis_result.get("view_analysis", {}),
             "dimension_data": analysis_result.get("dimension_extraction", {}),
             "semantic_policy": analysis_result.get("semantic_policy", {}),
-        }):
-            raise RuntimeError("用户在 view_analysis 阶段确认后停止处理")
+        })):
+            raise StageConfirmationStopped("用户在 view_analysis 阶段确认后停止处理")
 
         clarification_questions = (
             analysis_result.get("semantic_policy", {}) or {}
@@ -174,11 +182,11 @@ class IntelligentEngineeringAnalyzer:
             return
 
         part_semantics = analysis_result.get("part_semantics")
-        if part_semantics and not callback("semantic_reconstruction", {
+        if part_semantics and not confirmation.should_continue(StageReview("semantic_reconstruction", {
             "part_semantics": part_semantics,
             "semantic_policy": analysis_result.get("semantic_policy", {}),
-        }):
-            raise RuntimeError("用户在 semantic_reconstruction 阶段确认后停止处理")
+        })):
+            raise StageConfirmationStopped("用户在 semantic_reconstruction 阶段确认后停止处理")
 
     def _is_semantic_confidence_sufficient(self, part_semantics: Dict[str, Any]) -> bool:
         """兼容入口；语义置信度判断已迁入 reconstruction。"""

@@ -222,13 +222,23 @@ class CADPipeline:
         """
         total = len(results)
         success_count = sum(1 for r in results.values() if r.success)
-        fail_count = total - success_count
+        stopped_count = sum(
+            1 for r in results.values()
+            if getattr(getattr(r, "status", None), "value", "") == "stopped_by_user"
+        )
+        clarification_count = sum(
+            1 for r in results.values()
+            if getattr(getattr(r, "status", None), "value", "") == "needs_clarification"
+        )
+        fail_count = total - success_count - stopped_count - clarification_count
         total_entities = sum(r.entity_count for r in results.values())
 
         return {
             'total': total,
             'success': success_count,
             'failed': fail_count,
+            'stopped_by_user': stopped_count,
+            'needs_clarification': clarification_count,
             'total_entities': total_entities,
             'details': {name: result.to_dict() for name, result in results.items()}
         }

@@ -9,12 +9,19 @@ from src.intelligent_analyzer.reconstruction_context import ReconstructionContex
 from src.intelligent_analyzer.dimension_extractor import DimensionExtractor
 from src.intelligent_analyzer.semantic_schema import PartSemanticsValidator
 from src.intelligent_analyzer.pipeline import IntelligentEngineeringAnalyzer
+from src.utils.stage_confirmation import (
+    CallbackStageConfirmation,
+    StageConfirmationStopped,
+    StageReview,
+    resolve_stage_confirmation,
+)
 from src.reconstruction.modeling_constraints import ModelingConstraints
 from src.reconstruction.semantic_policy import SemanticPolicy
 from src.reconstruction.pipeline import SemanticReconstructionPipeline
 from src.model_generator.freecad_bridge import FreeCADBridge
 from src.model_generator.ai_script_runner import AIScriptRunner
-from src.batch_processor.processor import CADProcessResult, PipelineStatus
+from src.batch_processor.pipeline import CADPipeline
+from src.batch_processor.processor import CADProcessor, CADProcessResult, PipelineStatus
 
 
 class TestAIModeling(unittest.TestCase):
@@ -330,9 +337,10 @@ class TestAIModeling(unittest.TestCase):
         questions = {item["id"]: item for item in policy_result["clarification_questions"]}
         self.assertIn("bind_profile_length", questions)
         self.assertEqual(
-            ["30", "12"],
+            ["30", "12", "__unknown__"],
             [option["value"] for option in questions["bind_profile_length"]["options"]],
         )
+        self.assertIn("不确定", questions["bind_profile_length"]["text"])
 
     def test_semantic_policy_derives_composite_main_length_from_dimension_chain(self):
         policy_result = SemanticPolicy().evaluate(
@@ -409,6 +417,35 @@ class TestAIModeling(unittest.TestCase):
         self.assertEqual("profile_length", bindings["30"]["semantic_role"])
         self.assertEqual([], policy_result["clarification_questions"])
 
+    def test_semantic_policy_accepts_unknown_clarification_answer(self):
+        context = {
+            "context_version": "reconstruction_context_v1",
+            "dimensions": [
+                {"text": "30", "value": 30.0, "type": "线性"},
+                {"text": "12", "value": 12.0, "type": "线性"},
+            ],
+            "view_analysis": {
+                "drawing_type": "two_view",
+                "views": [
+                    {"name": "main", "bbox": [0, 0, 40, 40]},
+                    {"name": "right", "bbox": [60, 0, 100, 40]},
+                ],
+            },
+        }
+
+        policy_result = SemanticPolicy().evaluate(
+            context,
+            clarification_answers={
+                "bind_profile_length": SemanticPolicy.UNKNOWN_ANSWER,
+            },
+        )
+
+        roles = {item["text"]: item["semantic_role"] for item in policy_result["dimension_bindings"]}
+        self.assertEqual("excluded_by_user", roles["30"])
+        self.assertEqual("excluded_by_user", roles["12"])
+        self.assertEqual([], policy_result["clarification_questions"])
+        self.assertEqual(2, len(policy_result["dimension_plan"]["excluded_dimensions"]))
+
     def test_prompt_includes_part_semantics(self):
         generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
         generator.MAX_PROMPT_CHARS = 10000
@@ -425,7 +462,7 @@ class TestAIModeling(unittest.TestCase):
         self.assertIn('"part_type": "bracket"', prompt)
 
     def test_modeling_generation_retries_when_required_chamfer_is_skipped(self):
-        generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
+        constraints = ModelingConstraints()
         result = {
             "analysis_summary": "六角头螺栓，包含1x45°倒角",
             "modeling_strategy": "忽略倒角细节",
@@ -442,15 +479,17 @@ class TestAIModeling(unittest.TestCase):
             }
         }
 
-        self.assertTrue(
-            generator._needs_chamfer_retry(
+        self.assertEqual(
+            "chamfer",
+            constraints.retry_reason(
                 result,
                 reconstruction_context,
                 {"part_type": "bolt"},
             )
         )
-        self.assertFalse(
-            generator._needs_chamfer_retry(
+        self.assertEqual(
+            "",
+            constraints.retry_reason(
                 {"analysis_summary": "已实现倒角斜面", "warnings": []},
                 reconstruction_context,
                 {"part_type": "bolt"},
@@ -458,7 +497,7 @@ class TestAIModeling(unittest.TestCase):
         )
 
     def test_modeling_generation_retries_when_required_radius_surface_is_skipped(self):
-        generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
+        constraints = ModelingConstraints()
         result = {
             "analysis_summary": "六角头螺栓，包含R15圆弧面",
             "modeling_strategy": "忽略圆角细节",
@@ -475,14 +514,15 @@ class TestAIModeling(unittest.TestCase):
             }
         }
 
-        self.assertTrue(
-            generator._needs_radius_surface_retry(
+        self.assertEqual(
+            "radius_surface",
+            constraints.retry_reason(
                 result,
                 reconstruction_context,
                 {"part_type": "六角头螺栓", "summary": "R15圆弧面/承面"},
             )
         )
-        retry_prompt = generator._build_feature_retry_prompt("原始提示", "radius_surface")
+        retry_prompt = constraints.retry_prompt("原始提示", "radius_surface")
         self.assertIn("Shape.revolve()", retry_prompt)
         self.assertIn("球面/承面", retry_prompt)
 
@@ -520,6 +560,21 @@ doc.recompute()
                 result = constraints.validate_script(script)
                 self.assertFalse(result.success)
                 self.assertIn(expected, result.error)
+
+    def test_modeling_constraints_reject_malformed_arc_of_circle(self):
+        script = """
+import FreeCAD
+import Part
+arc = Part.ArcOfCircle(
+    Part.Circle(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1), 5),
+    0,
+)
+"""
+
+        result = ModelingConstraints().validate_script(script)
+
+        self.assertFalse(result.success)
+        self.assertIn("Part.ArcOfCircle must use exactly 3 positional arguments", result.error)
 
     def test_part_semantics_validator_requires_core_fields(self):
         valid, errors = PartSemanticsValidator().validate(
@@ -715,6 +770,7 @@ doc.recompute()
         pipeline.semantic_generator = unittest.mock.Mock()
         pipeline.instruction_generator = unittest.mock.Mock()
         pipeline.config = {}
+        pipeline.stage_confirmation = resolve_stage_confirmation(pipeline.config)
 
         result = pipeline.run(
             geometry_data={"entities": []},
@@ -744,6 +800,7 @@ doc.recompute()
         pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
         pipeline.context_builder = ReconstructionContextBuilder()
         pipeline.semantic_policy = SemanticPolicy()
+        pipeline.stage_confirmation = resolve_stage_confirmation({})
         pipeline.semantic_generator = unittest.mock.Mock(
             generate=unittest.mock.Mock(
                 return_value={
@@ -796,6 +853,52 @@ doc.recompute()
         self.assertEqual([], resumed["semantic_policy"]["clarification_questions"])
         self.assertEqual("pass", resumed["modeling_instructions"]["freecad_script"])
 
+    def test_stage_confirmation_default_adapter_continues(self):
+        confirmation = resolve_stage_confirmation({})
+
+        self.assertTrue(confirmation.should_continue(StageReview("view_analysis", {})))
+
+    def test_reconstruction_pipeline_uses_stage_confirmation_adapter(self):
+        calls = []
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.semantic_generator = unittest.mock.Mock()
+        pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.config = {}
+        pipeline.stage_confirmation = CallbackStageConfirmation(
+            lambda stage, payload: calls.append(stage) or False
+        )
+
+        with self.assertRaises(StageConfirmationStopped):
+            pipeline.run(
+                geometry_data={"entities": []},
+                view_analysis={"drawing_type": "single_view", "views": []},
+                dimension_data={"dimensions": []},
+                local_relationships=None,
+                extrude_height=10.0,
+            )
+
+        self.assertEqual(["view_analysis"], calls)
+        pipeline.semantic_generator.generate.assert_not_called()
+
+    def test_cached_analysis_replays_stage_confirmation_adapter(self):
+        calls = []
+        analyzer = IntelligentEngineeringAnalyzer.__new__(IntelligentEngineeringAnalyzer)
+        analyzer.config = {}
+        analyzer.stage_confirmation = CallbackStageConfirmation(
+            lambda stage, payload: calls.append(stage) or True
+        )
+
+        analyzer._confirm_cached_stages({
+            "view_analysis": {},
+            "dimension_extraction": {},
+            "semantic_policy": {},
+            "part_semantics": {"confidence": 0.9},
+        })
+
+        self.assertEqual(["view_analysis", "semantic_reconstruction"], calls)
+
     def test_cad_process_result_supports_needs_clarification_status(self):
         result = CADProcessResult(success=False, input_file="drawing.dxf")
         result.mark_needs_clarification(
@@ -807,6 +910,63 @@ doc.recompute()
         self.assertEqual(PipelineStatus.NEEDS_CLARIFICATION, result.status)
         self.assertEqual("needs_clarification", result.to_dict()["status"])
         self.assertEqual({"marker": "keep"}, result.clarification_context)
+
+    def test_cad_process_result_supports_stopped_by_user_status(self):
+        result = CADProcessResult(success=False, input_file="drawing.dxf")
+
+        result.mark_stopped_by_user("用户在 view_analysis 阶段确认后停止处理")
+
+        self.assertFalse(result.success)
+        self.assertEqual(PipelineStatus.STOPPED_BY_USER, result.status)
+        self.assertEqual("stopped_by_user", result.to_dict()["status"])
+        self.assertIn("用户在 view_analysis", result.error_message)
+
+    def test_processor_maps_stage_confirmation_stop_to_status(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {
+            "api": {
+                "deepseek": {
+                    "api_key": "test-key",
+                    "_stage_confirmation": CallbackStageConfirmation(
+                        lambda stage, payload: False
+                    ),
+                }
+            }
+        }
+        processor._get_parser = unittest.mock.Mock()
+        parser = unittest.mock.Mock()
+        parser.parse.return_value = {"entities": []}
+        parser.export_json.return_value = None
+        processor._get_parser.return_value = unittest.mock.Mock(return_value=parser)
+        processor._analyze_view_context = unittest.mock.Mock(return_value=({}, False))
+
+        result = processor.process_with_intelligent_analysis(
+            "drawing.dxf",
+            {},
+            10.0,
+        )
+
+        self.assertEqual(PipelineStatus.STOPPED_BY_USER, result.status)
+        self.assertIn("用户在 view_analysis", result.error_message)
+
+    def test_pipeline_summary_separates_user_stop_from_failure(self):
+        completed = CADProcessResult(success=True, input_file="ok.dxf")
+        completed.mark_completed()
+        stopped = CADProcessResult(success=False, input_file="stop.dxf")
+        stopped.mark_stopped_by_user()
+        failed = CADProcessResult(success=False, input_file="bad.dxf")
+        failed.mark_failed("bad")
+
+        pipeline = CADPipeline.__new__(CADPipeline)
+        summary = pipeline.get_summary({
+            "ok": completed,
+            "stop": stopped,
+            "bad": failed,
+        })
+
+        self.assertEqual(1, summary["success"])
+        self.assertEqual(1, summary["stopped_by_user"])
+        self.assertEqual(1, summary["failed"])
 
     def test_bridge_outputs_are_normalized_to_requested_paths(self):
         runner = AIScriptRunner.__new__(AIScriptRunner)
@@ -894,6 +1054,26 @@ doc.recompute()
         script = bridge._build_subprocess_script("doc = App.newDocument('Empty')", "C:/tmp/out")
 
         self.assertIn('print("BRIDGE_ERROR:NO_VALID_SHAPE"', script)
+
+    def test_bridge_script_recomputes_before_selecting_shape(self):
+        bridge = FreeCADBridge.__new__(FreeCADBridge)
+        bridge.freecad_python = r"D:\FreeCAD 1.0\bin\python.exe"
+        script = bridge._build_subprocess_script("Part.show(final_shape, 'GeneratedModel')", "C:/tmp/out")
+
+        self.assertIn("doc.recompute()", script)
+        self.assertIn('getattr(value, "Shape", None)', script)
+
+    def test_ai_script_runner_includes_runtime_warning_in_error(self):
+        runner = AIScriptRunner.__new__(AIScriptRunner)
+        result = runner._format_bridge_error(
+            {
+                "error": "NO_VALID_SHAPE",
+                "stdout": "BRIDGE_START\nRuntime warnings: ['建模失败: bad arc']\n",
+            }
+        )
+
+        self.assertIn("NO_VALID_SHAPE", result)
+        self.assertIn("Runtime warnings", result)
 
 
 if __name__ == "__main__":

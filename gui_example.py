@@ -1373,6 +1373,9 @@ class ProcessingPanel(ttk.Frame):
                 self.after(0, lambda: self.progress_label.set("等待澄清"))
                 self.after(0, lambda r=result, s=start_time: self._show_clarification_dialog(r, s))
                 return
+            elif getattr(result, "status", None) and getattr(result.status, "value", "") == "stopped_by_user":
+                logger.info(f"用户停止处理 | 耗时: {elapsed:.1f}s | {result.error_message}")
+                self.after(0, lambda: self.progress_label.set("已停止"))
             else:
                 logger.error(f"处理失败 | 耗时: {elapsed:.1f}s | 错误: {result.error_message}")
                 self.after(0, lambda: self.progress_label.set("失败"))
@@ -1439,9 +1442,20 @@ class ProcessingPanel(ttk.Frame):
             kind = question.get("kind")
             options = question.get("options", []) or []
             if kind == "single_choice" and options:
-                values = [str(option.get("value")) if isinstance(option, dict) else str(option) for option in options]
+                display_to_value = {}
+                values = []
+                for option in options:
+                    if isinstance(option, dict):
+                        display = str(option.get("label") or option.get("value"))
+                        value = str(option.get("value"))
+                    else:
+                        display = str(option)
+                        value = display
+                    display_to_value[display] = value
+                    values.append(display)
                 var = tk.StringVar(value=values[0])
-                combo = ttk.Combobox(block, textvariable=var, state="readonly", values=values, width=24)
+                var._cad_value_map = display_to_value
+                combo = ttk.Combobox(block, textvariable=var, state="readonly", values=values, width=36)
                 combo.pack(anchor=tk.W, pady=(4, 0))
             else:
                 var = tk.StringVar()
@@ -1453,7 +1467,7 @@ class ProcessingPanel(ttk.Frame):
 
         def submit():
             answers = {
-                question_id: var.get().strip()
+                question_id: getattr(var, "_cad_value_map", {}).get(var.get(), var.get()).strip()
                 for question_id, var in answer_vars.items()
                 if question_id and var.get().strip()
             }
@@ -1547,6 +1561,11 @@ class ProcessingPanel(ttk.Frame):
         report_text.insert("1.0", self._build_stage_report(stage, payload))
         report_text.configure(state="disabled")
 
+        ttk.Label(
+            body,
+            text="选择“停止”会结束本次处理，但保留已完成阶段的结果供查看。",
+        ).pack(anchor=tk.W, pady=(10, 0))
+
         action_row = ttk.Frame(body)
         action_row.pack(fill=tk.X, pady=(10, 0))
 
@@ -1557,12 +1576,11 @@ class ProcessingPanel(ttk.Frame):
 
         def stop_stage():
             outcome["continue"] = False
-            self._cancel_event.set()
             completed.set()
             dialog.destroy()
 
         ttk.Button(action_row, text="继续", command=continue_stage).pack(side=tk.RIGHT)
-        ttk.Button(action_row, text="停止本次处理", command=stop_stage).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(action_row, text="停止", command=stop_stage).pack(side=tk.RIGHT, padx=(0, 8))
         self._center_dialog(dialog)
         dialog.protocol("WM_DELETE_WINDOW", stop_stage)
 
@@ -1588,6 +1606,7 @@ class ProcessingPanel(ttk.Frame):
         ]
         if questions:
             lines.append(f"继续后将先补充信息：{len(questions)} 个追问")
+            lines.append("建议动作：继续后先回答追问，再决定是否进入下一阶段。")
 
         warnings = view.get("warnings") or []
         if warnings:
@@ -1612,13 +1631,19 @@ class ProcessingPanel(ttk.Frame):
     def _build_semantic_stage_report(self, payload: Dict[str, Any]) -> str:
         semantics = payload.get("part_semantics") or {}
         policy = payload.get("semantic_policy") or {}
+        confidence = semantics.get("confidence", "unknown")
         lines = [
             "阶段：零件语义重建",
             f"零件类型：{semantics.get('part_type', 'unknown')}",
-            f"置信度：{semantics.get('confidence', 'unknown')}",
+            f"置信度：{confidence}",
             f"摘要：{semantics.get('summary', '')}",
             f"尺寸来源：{semantics.get('dimension_source') or policy.get('dimension_source', 'unknown')}",
         ]
+        try:
+            if float(confidence) < 0.7:
+                lines.append("建议动作：当前置信度较低，建议先检查汇报再决定是否继续。")
+        except (TypeError, ValueError):
+            pass
 
         for title, key in (
             ("关键尺寸", "key_dimensions"),
@@ -1673,6 +1698,9 @@ class ProcessingPanel(ttk.Frame):
                 self.after(0, lambda: self.progress_label.set("等待澄清"))
                 self.after(0, lambda r=resumed, s=start_time: self._show_clarification_dialog(r, s))
                 return
+            elif getattr(resumed, "status", None) and getattr(resumed.status, "value", "") == "stopped_by_user":
+                logger.info(f"用户停止处理 | 总耗时: {elapsed:.1f}s | {resumed.error_message}")
+                self.after(0, lambda: self.progress_label.set("已停止"))
             else:
                 logger.error(f"澄清后处理失败 | 总耗时: {elapsed:.1f}s | 错误: {resumed.error_message}")
                 self.after(0, lambda: self.progress_label.set("失败"))
@@ -1735,9 +1763,10 @@ class ProcessingPanel(ttk.Frame):
         config['cache_dir'] = self.app_config.get('cache', 'dir', default='.cache/analysis')
         config['cache_ttl'] = self.app_config.get('cache', 'default_ttl_days', default=7) * 86400
         if getattr(self, "stage_confirmation_var", None) and self.stage_confirmation_var.get():
+            from src.utils.stage_confirmation import CallbackStageConfirmation
             config.setdefault("api", {}).setdefault("deepseek", {})[
-                "_stage_confirmation_callback"
-            ] = self._confirm_llm_stage
+                "_stage_confirmation"
+            ] = CallbackStageConfirmation(self._confirm_llm_stage)
         return config
 
     def _update_progress(self, value: float, text: str):

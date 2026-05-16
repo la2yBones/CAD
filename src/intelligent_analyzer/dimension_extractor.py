@@ -102,12 +102,14 @@ class DimensionExtractor:
         dimension_texts = []
 
         for entity in texts:
-            text_content = entity.get("text", "")
+            text_content = self._normalize_dimension_text(entity.get("text", ""))
             if self._is_likely_dimension(text_content):
+                normalized_entity = dict(entity)
+                normalized_entity["text"] = text_content
                 dimension_texts.append({
                     "text": text_content,
                     "position": entity.get("position", [0, 0, 0]),
-                    "entity": entity
+                    "entity": normalized_entity
                 })
 
         return dimension_texts
@@ -146,6 +148,7 @@ class DimensionExtractor:
 
     def _extract_numeric_value(self, text: str) -> Optional[float]:
         """提取数值"""
+        text = self._normalize_dimension_text(text)
         match = re.search(r'(\d+\.?\d*)', text)
         if match:
             return float(match.group(1))
@@ -153,6 +156,7 @@ class DimensionExtractor:
 
     def _determine_dimension_type(self, text: str) -> str:
         """确定尺寸类型"""
+        text = self._normalize_dimension_text(text)
         if any(symbol in text for symbol in ('φ', 'Φ', '∅', '⌀', 'Ø')):
             return "直径"
         elif 'R' in text or 'r' in text:
@@ -161,6 +165,24 @@ class DimensionExtractor:
             return "螺纹"
         else:
             return "线性"
+
+    @staticmethod
+    def _normalize_dimension_text(text: str) -> str:
+        if not text:
+            return ""
+        normalized = str(text).replace("%%c", "⌀").replace("%%C", "⌀")
+        normalized = re.sub(r"\\U\+2205(?=\d)", "⌀", normalized, flags=re.IGNORECASE)
+
+        def replace_unicode(match: re.Match[str]) -> str:
+            codepoint = int(match.group(1), 16)
+            if codepoint == 0x2205:
+                return "⌀"
+            try:
+                return chr(codepoint)
+            except ValueError:
+                return match.group(0)
+
+        return re.sub(r"\\U\+([0-9A-Fa-f]{4})", replace_unicode, normalized)
 
     def _find_nearby_lines(self, position: List[float], lines: List[Dict],
                            max_dist: float = 20.0) -> List[Dict]:

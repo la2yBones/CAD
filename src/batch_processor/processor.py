@@ -12,6 +12,8 @@ from typing import Dict, Any, Optional, Tuple
 import logging
 import traceback
 
+from src.utils.stage_confirmation import StageConfirmationStopped
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +23,7 @@ class PipelineStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     NEEDS_CLARIFICATION = "needs_clarification"
+    STOPPED_BY_USER = "stopped_by_user"
 
 
 class CADProcessResult:
@@ -58,6 +61,11 @@ class CADProcessResult:
         self.status = PipelineStatus.NEEDS_CLARIFICATION
         self.clarification_questions = questions
         self.clarification_context = clarification_context
+
+    def mark_stopped_by_user(self, message: Optional[str] = None) -> None:
+        self.success = False
+        self.status = PipelineStatus.STOPPED_BY_USER
+        self.error_message = message or "用户停止处理"
 
     def to_dict(self) -> Dict:
         return {
@@ -474,6 +482,10 @@ class CADProcessor:
                         source_name=file_path
                     )
                         
+                except StageConfirmationStopped as stopped:
+                    result.mark_stopped_by_user(str(stopped))
+                    logger.info(result.error_message)
+                    return result
                 except Exception as e:
                     result.error_message = f"智能分析失败，未进入建模阶段: {e}"
                     logger.warning(result.error_message)
@@ -534,6 +546,9 @@ class CADProcessor:
             result.mark_completed()
             logger.info(f"智能分析处理完成: {Path(file_path).name}")
 
+        except StageConfirmationStopped as stopped:
+            result.mark_stopped_by_user(str(stopped))
+            logger.info(result.error_message)
         except Exception as e:
             result.error_message = str(e)
             logger.error(f"智能分析处理失败: {e}")
@@ -601,6 +616,10 @@ class CADProcessor:
                 result.output_paths["model_fcstd"] = run_result["fcstd_path"]
             result.mark_completed()
             logger.info("用户澄清后的智能建模已完成")
+            return result
+        except StageConfirmationStopped as stopped:
+            result.mark_stopped_by_user(str(stopped))
+            logger.info(result.error_message)
             return result
         except Exception as error:
             result.mark_failed(f"用户澄清后的局部恢复失败: {error}")

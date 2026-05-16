@@ -224,6 +224,9 @@ class ModelingConstraints:
                     errors.append(f"禁止动态执行或系统调用: {call_name}")
                 if leaf_name in self.FORBIDDEN_ATTRS:
                     errors.append(f"禁止使用 FreeCAD 拓扑自动化或复杂派生 API: {call_name}")
+                api_error = self._validate_geometry_call(call_name, node)
+                if api_error:
+                    errors.append(api_error)
 
         for marker in self.FORBIDDEN_TEXT_MARKERS:
             if marker in script_content:
@@ -298,6 +301,17 @@ class ModelingConstraints:
         if isinstance(func, ast.Attribute):
             base = cls._call_name(func.value)
             return f"{base}.{func.attr}" if base else func.attr
+        return ""
+
+    @staticmethod
+    def _validate_geometry_call(call_name: str, node: ast.Call) -> str:
+        leaf_name = call_name.rsplit(".", 1)[-1]
+        if leaf_name == "ArcOfCircle" and len(node.args) != 3:
+            return "Part.ArcOfCircle must use exactly 3 positional arguments"
+        if leaf_name == "LineSegment" and len(node.args) != 2:
+            return "Part.LineSegment must use exactly 2 positional arguments"
+        if leaf_name == "Circle" and len(node.args) < 1:
+            return "Part.Circle must include a center or construction geometry"
         return ""
 
 

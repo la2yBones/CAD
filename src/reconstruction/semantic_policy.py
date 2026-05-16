@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Sequence
 class SemanticPolicy:
     """对尺寸来源和特征升级门槛做确定性裁决。"""
 
+    UNKNOWN_ANSWER = "__unknown__"
+
     def evaluate(
         self,
         reconstruction_context: Dict[str, Any],
@@ -159,10 +161,16 @@ class SemanticPolicy:
             for binding in bindings
             if binding.get("semantic_role") == "unresolved_linear"
         ]
+        excluded_dimensions = [
+            cls._plan_item(binding)
+            for binding in bindings
+            if binding.get("semantic_role") == "excluded_by_user"
+        ]
         return {
             "allowed_dimensions": allowed_dimensions,
             "segment_dimensions": segment_dimensions,
             "unresolved_dimensions": unresolved_dimensions,
+            "excluded_dimensions": excluded_dimensions,
             "rules": [
                 "key_dimensions 只能使用 allowed_dimensions 中的值和语义角色。",
                 "segment_dimensions 只能作为组合尺寸的证据，不能单独命名为总长、深度、对边、对角、法兰直径或孔径。",
@@ -497,6 +505,9 @@ class SemanticPolicy:
         for question_id, role in answer_to_role.items():
             if question_id not in clarification_answers:
                 continue
+            if cls._is_unknown_answer(clarification_answers[question_id]):
+                cls._exclude_unresolved_for_question(resolved, question_id)
+                continue
             cls._bind_selected_value(
                 resolved,
                 role=role,
@@ -505,6 +516,9 @@ class SemanticPolicy:
 
         for question_id, answer in clarification_answers.items():
             if not question_id.startswith("resolve_"):
+                continue
+            if cls._is_unknown_answer(answer):
+                cls._exclude_unresolved_for_question(resolved, question_id)
                 continue
             role = question_id.removeprefix("resolve_")
             cls._resolve_conflicting_role(
@@ -556,6 +570,20 @@ class SemanticPolicy:
                 binding["semantic_role"] = "unresolved_linear"
                 binding["confidence"] = 0.0
                 binding["evidence"] = ["用户澄清排除"]
+
+    @classmethod
+    def _exclude_unresolved_for_question(
+        cls,
+        bindings: List[Dict[str, Any]],
+        question_id: str,
+    ) -> None:
+        if question_id != "bind_profile_length":
+            return
+        for binding in bindings:
+            if binding.get("semantic_role") == "unresolved_linear":
+                binding["semantic_role"] = "excluded_by_user"
+                binding["confidence"] = 0.0
+                binding["evidence"] = ["用户不确定该标注是否为主视图总长，已排除自动绑定"]
 
     @classmethod
     def _questions_for_conflicting_key_roles(
@@ -623,6 +651,10 @@ class SemanticPolicy:
             }
             for binding in unresolved
         ]
+        unresolved_options.append({
+            "label": "我不确定 / 这些都不要绑定为总长",
+            "value": cls.UNKNOWN_ANSWER,
+        })
 
         questions: List[Dict[str, Any]] = []
         required_roles = (
@@ -633,10 +665,10 @@ class SemanticPolicy:
                 continue
             questions.append({
                 "id": f"bind_{role}",
-                "text": f"请确认哪个裸尺寸表示{label}。",
+                "text": f"请看图纸标注：哪一个值表示{label}？如果你也看不出来，选择“不确定”。",
                 "kind": "single_choice",
                 "options": unresolved_options,
-                "reason": f"多视图重建缺少 {role} 绑定，继续自动建模会影响关键尺寸。",
+                "reason": "多视图重建缺少这个关键尺寸；不确定时不会强行把某个裸尺寸绑定为总长。",
             })
         return questions
 
@@ -659,6 +691,12 @@ class SemanticPolicy:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _is_unknown_answer(cls, value: Any) -> bool:
+        if isinstance(value, dict):
+            value = value.get("value")
+        return str(value).strip() == cls.UNKNOWN_ANSWER
 
     @classmethod
     def _values_equal(cls, left: Any, right: Any) -> bool:

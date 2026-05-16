@@ -72,18 +72,53 @@ class PartSemanticsValidator:
             elif not 0.0 <= float(confidence) <= 1.0:
                 errors.append("confidence 必须介于 0 到 1 之间")
 
+        policy_plan: Dict[str, Any] = {}
+        allowed_values: List[float] = []
+        if reconstruction_context:
+            policy_plan = (
+                reconstruction_context.get("semantic_policy", {}) or {}
+            ).get("dimension_plan", {})
+            allowed_values = self._dimension_plan_allowed_values(policy_plan)
+
         if reconstruction_context and dimension_source == "annotation":
             annotation_values = self._annotation_values(reconstruction_context)
+            # A semantic policy may adjudicate derived annotation values, such as
+            # a total length built from an adjacent dimension chain (9+39=48).
+            # Those are still annotation-derived and should pass this guard.
+            permitted_values = allowed_values or annotation_values
             key_dimension_values = self._key_dimension_values(result)
             unexpected_values = sorted(
                 value for value in key_dimension_values
-                if not self._matches_annotation_value(value, annotation_values)
+                if not self._matches_annotation_value(value, permitted_values)
             )
             if unexpected_values:
                 errors.append(
                     "声明按标注建模时，key_dimensions 只能使用标注值；"
                     f"发现非标注值: {unexpected_values}"
                 )
+
+        if reconstruction_context:
+            policy_dimension_source = (
+                reconstruction_context.get("semantic_policy", {}) or {}
+            ).get("dimension_source")
+            if (
+                policy_dimension_source in ("annotation", "geometry", "unresolved")
+                and dimension_source != policy_dimension_source
+            ):
+                errors.append(
+                    "dimension_source 必须服从 semantic_policy.dimension_source；"
+                    f"期望 {policy_dimension_source}，实际 {dimension_source}"
+                )
+            if allowed_values:
+                unexpected_values = sorted(
+                    value for value in self._key_dimension_values(result)
+                    if not self._matches_annotation_value(value, allowed_values)
+                )
+                if unexpected_values:
+                    errors.append(
+                        "key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；"
+                        f"发现未裁决尺寸值: {unexpected_values}"
+                    )
 
         return not errors, errors
 
@@ -108,3 +143,12 @@ class PartSemanticsValidator:
     @staticmethod
     def _matches_annotation_value(value: float, annotation_values: List[float]) -> bool:
         return any(abs(value - annotated) <= 1e-6 for annotated in annotation_values)
+
+    @staticmethod
+    def _dimension_plan_allowed_values(policy_plan: Dict[str, Any]) -> List[float]:
+        values: List[float] = []
+        for dimension in policy_plan.get("allowed_dimensions", []) or []:
+            value = dimension.get("value")
+            if isinstance(value, (int, float)):
+                values.append(float(value))
+        return values

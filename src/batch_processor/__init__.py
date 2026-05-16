@@ -6,11 +6,13 @@ CAD图纸批量处理模块
 """
 
 from .file_manager import CADFileManager
-from .processor import CADProcessor
+from .processor import CADProcessor, CADProcessResult, PipelineStatus
 from .pipeline import CADPipeline
 
 __all__ = [
     'CADFileManager',
     'CADProcessor',
+    'CADProcessResult',
+    'PipelineStatus',
     'CADPipeline'
 ]

@@ -85,7 +85,16 @@ class ReconstructionContextBuilder:
 
     @staticmethod
     def _compact_dimension(dimension: Dict[str, Any]) -> Dict[str, Any]:
-        keep_keys = ("text", "value", "type", "position", "associated_lines")
+        keep_keys = (
+            "text",
+            "value",
+            "type",
+            "position",
+            "associated_lines",
+            "definition_points",
+            "measurement",
+            "dimension_type",
+        )
         return {key: dimension.get(key) for key in keep_keys if key in dimension}
 
     @staticmethod
@@ -145,6 +154,8 @@ class ReconstructionContextBuilder:
             "dimensions": dimensions,
             "shape_hints": self._derive_shape_hints(views),
         }
+        if "semantic_policy" in full_context:
+            summary["semantic_policy"] = full_context["semantic_policy"]
         return summary
 
     @staticmethod

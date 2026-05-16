@@ -12,8 +12,10 @@ from pathlib import Path
 from openai import OpenAI
 
 from src.utils.llm_telemetry import default_llm_telemetry_store
+from .modeling_constraints import DEFAULT_MODELING_CONSTRAINTS
 
 logger = logging.getLogger(__name__)
+MODELING_CONSTRAINTS_PROMPT = DEFAULT_MODELING_CONSTRAINTS.prompt_section()
 
 
 class FreeCADInstructionGenerator:
@@ -64,53 +66,31 @@ class FreeCADInstructionGenerator:
 - 优先使用基础原语构造：盒体、圆柱、圆锥。
 - 对复杂组合体，先创建基础原语，再分步融合或切割。
 - 对二视图/三视图，先把各视图解释为同一零件的正交投影，再开始建模；不得把右视图或俯视图当成附加在主视图旁边的新实体。
-- 主视图表达宽高，右视图通常表达深度；右视图的水平尺寸应优先解释为零件深度，不得直接解释为“向右延伸的凸台长度”。
+- 主视图表达主要轮廓，右视图/左视图表达同一零件的正交投影外形；这些投影视图尺寸不得直接解释为“向右延伸的凸台长度”或未经裁决的深度。
 - 只有在至少两个视图或明确尺寸共同支持时，才可新增凸台、槽、台阶等三维特征；单一视图里的线段不得直接推断成额外凸台或开槽。
 - 主视图中出现同心圆时，必须结合侧视图隐藏线/尺寸判断其含义；不得默认把所有同心圆都切成贯通孔。若证据不足，应优先生成单一通孔并在 warnings 中说明可能存在沉孔或台阶孔。
 - 单个步骤中连续 .fuse() 或 .cut() 不得超过 2 次；若需要更多布尔操作，必须拆分为多个中间变量和多个 try/except 步骤。
-- 若需自定义截面，仅允许用直线或圆弧构造 Part.Wire，再通过 Part.Face 和 Shape.extrude() 生成实体。
+- 若需自定义截面，仅允许用直线或圆弧构造 Part.Wire，再通过 Part.Face 和 Shape.extrude() 生成实体；若需要轴对称圆弧面，可用 Part.ArcOfCircle 构造轮廓并通过 Shape.revolve() 绕轴线生成回转曲面或回转切除体。
 - 使用 Part.LineSegment 或 Part.ArcOfCircle 构造线框时，传入 Part.Wire 的每一项必须是 Shape；应先调用 `.toShape()`，例如 `edge = Part.LineSegment(...).toShape()`。
 - 中间变量若在后续步骤复用，必须在 try/except 外先给出默认值，避免前一步失败后后续引用未定义变量。
 - 若轮廓点写成 `(x, y, 0)`，则轮廓位于 XY 平面，拉伸方向必须沿 Z 轴；若需要沿 Y 轴拉伸，则轮廓点必须写成 `(x, 0, z)`，确保拉伸方向垂直于轮廓平面。
 - 对板件、法兰、底座这类正视图轮廓，默认优先在 XY 平面构造轮廓，再按深度沿 Z 轴拉伸，除非图纸语义明确要求其他坐标系。
+- 若输入包含 semantic_policy.dimension_plan，key_dimensions 只能使用 allowed_dimensions 中已裁决的尺寸；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
+- segment_dimensions 可作为建模构造步骤的分段尺寸；不得单独当成总长、深度、对边、对角、法兰直径或孔径。
+- unresolved_dimensions 不得用于创建关键几何；如果缺少这些尺寸会影响建模，必须在 warnings 中说明并保守降级。
+- `1x45°`、`2x45°` 等倒角标注表示外部尖角被削掉形成斜面；实现时只能去除外角材料，不得把它建成向实体内部凹陷的槽、坑、沉孔或内切缺口。
+- 若 semantic_policy.dimension_plan.allowed_dimensions 或 part_semantics 中存在 chamfer，且语义里已经定位到外部边，不得因为“FreeCAD 基本 API 限制”直接跳过。必须至少尝试用白名单 API 建出可见斜面。
+- 可接受的倒角实现方式：对圆柱端部使用 `Part.makeCone(大半径, 小半径, 倒角轴向长度, FreeCAD.Vector(...), FreeCAD.Vector(...))` 构造 45° 截锥段；对六角头外端倒角，优先用较短的端部过渡体表达外轮廓收缩，必要时用 `Part.Wire`、`Part.Face`、`Shape.extrude` 和 `Shape.cut` 构造外角切除体。
+- 对六角头螺栓这类“六角头 + 圆柱杆”零件，若存在 `1x45°`，应在头部外端或头部-杆过渡外角处生成可见倒角斜面；不能在 warnings 中写“倒角未实现”后继续输出成功模型。
+- 若无法可靠定位倒角所在的外部边，必须在 warnings 中说明并跳过该倒角；不得为了表现倒角而在实体表面挖内陷特征。
+- `R15`、`R2` 等是圆角/圆弧过渡，不是 45° 倒角。对于六角头螺栓主视图左侧头部的 R15 标注，应解释为绕螺栓轴线形成的圆弧面/承面；必须尝试以轴线为中心、半径 15mm 创建圆弧轮廓，并用 Shape.revolve() 或等价回转切除生成该曲面。
+- 如果 part_semantics 或 semantic_policy.dimension_plan.allowed_dimensions 中存在 radius/R15，且语义已说明它属于螺栓头部圆弧面/承面，不得在 warnings 中写“R15未实现/圆角未实现”后输出成功模型。
 - 不得使用高级拓扑修改、网格建模、草图约束或不在白名单内的 API。
 - 每个建模步骤必须用 try/except 包裹。
 - except 中不得静默忽略错误，必须将错误信息追加到 runtime_warnings 列表。
 - 脚本末尾必须打印 runtime_warnings，便于调试。
 
-【允许使用的 FreeCAD / Part API 白名单】
-仅允许使用以下 API 或对象方法：
-
-- import FreeCAD
-- import Part
-- FreeCAD.Vector
-- FreeCAD.newDocument
-- FreeCAD.ActiveDocument
-- Part.makeBox
-- Part.makeCylinder
-- Part.makeCone
-- Part.LineSegment
-- Part.Circle
-- Part.ArcOfCircle
-- Part.Wire
-- Part.Face
-- Shape.extrude
-- Shape.fuse
-- Shape.cut
-- Part.show
-- doc.recompute
-- doc.saveAs
-
-严禁使用：
-- Part.ShapeSplit
-- Part.BooleanOperations
-- BOPTools
-- Mesh
-- Sketcher
-- Draft
-- PartDesign
-- 高级拓扑修复、分割、细化、自动圆角/倒角函数
-- subprocess、os.system、eval、exec、文件删除或网络访问
+{MODELING_CONSTRAINTS_PROMPT}
 
 【FreeCAD 脚本要求】
 freecad_script 必须：
@@ -158,6 +138,7 @@ JSON 必须包含以下字段：
         )
         self.model = self.config.get("model", "deepseek-v4-pro")
         self.telemetry_store = default_llm_telemetry_store(self.config)
+        self.constraints = DEFAULT_MODELING_CONSTRAINTS
 
         max_prompt_tokens = self.config.get("max_prompt_tokens", 12000)
         self.MAX_PROMPT_CHARS = max_prompt_tokens * 4
@@ -238,6 +219,28 @@ JSON 必须包含以下字段：
                     raise ValueError("AI响应正文为空，且没有 reasoning_content 可解析")
 
             result = self._extract_json(content)
+            retry_reason = self.constraints.retry_reason(result, reconstruction_context, part_semantics)
+            if retry_reason:
+                logger.warning(f"建模指令跳过了已裁决特征，使用强化约束重试: {retry_reason}")
+                response = self._create_chat_completion(
+                    file_path=file_path,
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": self.MODELING_SYSTEM_PROMPT
+                        },
+                        {"role": "user", "content": self.constraints.retry_prompt(prompt, retry_reason)}
+                    ],
+                    max_tokens=max_tokens,
+                    extra_body=extra_body
+                )
+                retry_content = response.choices[0].message.content or ""
+                if not retry_content:
+                    retry_reasoning = getattr(response.choices[0].message, 'reasoning_content', None)
+                    retry_content = retry_reasoning or ""
+                if retry_content:
+                    result = self._extract_json(retry_content)
             logger.info("建模指令生成成功")
             return result
 
@@ -267,6 +270,98 @@ JSON 必须包含以下字段：
         except Exception as call_error:
             call_span.finish(error=call_error)
             raise
+
+    def _needs_chamfer_retry(
+        self,
+        result: Dict[str, Any],
+        reconstruction_context: Optional[Dict[str, Any]],
+        part_semantics: Optional[Dict[str, Any]],
+    ) -> bool:
+        if not self._requires_chamfer(reconstruction_context, part_semantics):
+            return False
+        combined = "\n".join([
+            str(result.get("analysis_summary") or ""),
+            str(result.get("modeling_strategy") or ""),
+            str(result.get("freecad_script") or ""),
+            "\n".join(str(item) for item in result.get("warnings", []) or []),
+        ])
+        return "倒角" in combined and any(marker in combined for marker in ("未实现", "跳过", "忽略"))
+
+    def _feature_retry_reason(
+        self,
+        result: Dict[str, Any],
+        reconstruction_context: Optional[Dict[str, Any]],
+        part_semantics: Optional[Dict[str, Any]],
+    ) -> str:
+        if self._needs_chamfer_retry(result, reconstruction_context, part_semantics):
+            return "chamfer"
+        if self._needs_radius_surface_retry(result, reconstruction_context, part_semantics):
+            return "radius_surface"
+        return ""
+
+    def _needs_radius_surface_retry(
+        self,
+        result: Dict[str, Any],
+        reconstruction_context: Optional[Dict[str, Any]],
+        part_semantics: Optional[Dict[str, Any]],
+    ) -> bool:
+        if not self._requires_radius_surface(reconstruction_context, part_semantics):
+            return False
+        combined = "\n".join([
+            str(result.get("analysis_summary") or ""),
+            str(result.get("modeling_strategy") or ""),
+            str(result.get("freecad_script") or ""),
+            "\n".join(str(item) for item in result.get("warnings", []) or []),
+        ])
+        mentions_radius = any(marker in combined for marker in ("R15", "圆角", "圆弧面", "承面"))
+        skips_radius = any(marker in combined for marker in ("未实现", "跳过", "忽略"))
+        return mentions_radius and skips_radius
+
+    def _requires_chamfer(
+        self,
+        reconstruction_context: Optional[Dict[str, Any]],
+        part_semantics: Optional[Dict[str, Any]],
+    ) -> bool:
+        policy_plan = (reconstruction_context or {}).get("semantic_policy", {}).get("dimension_plan", {})
+        for item in policy_plan.get("allowed_dimensions", []) or []:
+            if item.get("role") == "chamfer":
+                return True
+        semantic_text = json.dumps(part_semantics or {}, ensure_ascii=False, default=str)
+        return "chamfer" in semantic_text.lower() or "倒角" in semantic_text
+
+    def _requires_radius_surface(
+        self,
+        reconstruction_context: Optional[Dict[str, Any]],
+        part_semantics: Optional[Dict[str, Any]],
+    ) -> bool:
+        policy_plan = (reconstruction_context or {}).get("semantic_policy", {}).get("dimension_plan", {})
+        for item in policy_plan.get("allowed_dimensions", []) or []:
+            if item.get("role") == "radius":
+                return True
+        semantic_text = json.dumps(part_semantics or {}, ensure_ascii=False, default=str)
+        return "R15" in semantic_text or "圆弧面" in semantic_text or "承面" in semantic_text
+
+    def _build_feature_retry_prompt(self, prompt: str, retry_reason: str) -> str:
+        extra = ""
+        if retry_reason == "radius_surface":
+            extra = (
+                "- 若存在 R15 / radius 且语义说明它是螺栓头部圆弧面/承面，必须用 Part.ArcOfCircle + Part.Wire + Part.Face + Shape.revolve() 绕螺栓轴线生成回转圆弧面或回转切除体。\n"
+                "- 不得在 analysis_summary、modeling_strategy、warnings 或 runtime_warnings 中写“R15未实现/圆角未实现/跳过/忽略”。\n"
+                "- 该 R15 是螺栓头部的球面/承面，不是普通 edge fillet；不要使用被禁用的 makeFillet/PartDesign。\n"
+            )
+        elif retry_reason == "chamfer":
+            extra = (
+                "- 若存在 1x45° / chamfer，必须在 freecad_script 中实现可见外角斜面。\n"
+                "- 不得在 analysis_summary、modeling_strategy、warnings 或 runtime_warnings 中写“倒角未实现/跳过/忽略”。\n"
+                "- 可用 Part.makeCone 表达圆柱端部 45° 截锥倒角；可用 Part.Wire/Part.Face/extrude/cut 表达六角头外角切除。\n"
+                "- R15 是圆角/圆弧面，不是倒角；如果无法精确圆角，可单独处理，但不能因此跳过 1x45° 倒角。\n"
+            )
+        return (
+            prompt
+            + "\n\n【必须修正】\n"
+            + "上一版建模指令跳过了已经识别到并裁决过的几何特征。请重新生成完整 JSON：\n"
+            + extra
+        )
 
     MAX_ENTITIES_IN_PROMPT = 20
     MAX_ENTITY_JSON_CHARS = 500
@@ -589,3 +684,11 @@ JSON 必须包含以下字段：
             logger.info(f"FreeCAD脚本已保存: {output_path}")
         except Exception as e:
             logger.error(f"保存脚本失败: {e}")
+
+
+FreeCADInstructionGenerator.MODELING_SYSTEM_PROMPT = (
+    FreeCADInstructionGenerator.MODELING_SYSTEM_PROMPT.replace(
+        "{MODELING_CONSTRAINTS_PROMPT}",
+        MODELING_CONSTRAINTS_PROMPT,
+    )
+)

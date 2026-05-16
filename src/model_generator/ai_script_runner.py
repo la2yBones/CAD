@@ -12,6 +12,7 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
+from src.reconstruction.modeling_constraints import DEFAULT_MODELING_CONSTRAINTS
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class AIScriptRunner:
         self.bridge = None
         self.App = None
         self.Part = None
+        self.constraints = DEFAULT_MODELING_CONSTRAINTS
         self._init_freecad()
 
     def _init_freecad(self):
@@ -59,6 +61,14 @@ class AIScriptRunner:
             return {"success": False, "error": "FreeCAD 不可用"}
 
         script_content = self._normalize_generated_script(script_content)
+        validation = self.constraints.validate_script(script_content)
+        if validation.is_fail:
+            logger.warning(f"AI脚本未通过建模约束校验: {validation.error}")
+            return {
+                "success": False,
+                "error": f"AI脚本未通过建模约束校验: {validation.error}",
+                "validation_errors": validation.warnings,
+            }
 
         if self.bridge.mode == "subprocess":
             return self._run_via_bridge(script_content, output_path)

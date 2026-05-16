@@ -24,7 +24,7 @@ class IntelligentEngineeringAnalyzer:
     集成所有分析功能的完整管道
     """
 
-    ANALYSIS_VERSION = "llm_view_classifier_v7_semantic_gate"
+    ANALYSIS_VERSION = "llm_view_classifier_v8_semantic_policy"
 
     def __init__(self, api_key: str, config: Optional[Dict] = None,
                  enable_cache: bool = True,
@@ -83,6 +83,7 @@ class IntelligentEngineeringAnalyzer:
             cached = self.cache.get(file_path, extrude_height, analysis_params=analysis_params)
             if cached:
                 logger.info("从缓存加载分析结果")
+                self._confirm_cached_stages(cached)
                 return cached
 
         logger.info("=== 开始智能工程图纸分析 ===")
@@ -142,6 +143,42 @@ class IntelligentEngineeringAnalyzer:
             )
 
         return result
+
+    def continue_with_clarification(
+        self,
+        clarification_context: Dict[str, Any],
+        clarification_answers: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """复用首次分析结果，从语义裁决阶段继续。"""
+        return self.reconstruction_pipeline.continue_with_clarification(
+            clarification_context,
+            clarification_answers,
+        )
+
+    def _confirm_cached_stages(self, analysis_result: Dict[str, Any]) -> None:
+        """Replay GUI stage confirmations when a complete analysis comes from cache."""
+        callback = self.config.get("_stage_confirmation_callback")
+        if not callable(callback):
+            return
+        if not callback("view_analysis", {
+            "view_analysis": analysis_result.get("view_analysis", {}),
+            "dimension_data": analysis_result.get("dimension_extraction", {}),
+            "semantic_policy": analysis_result.get("semantic_policy", {}),
+        }):
+            raise RuntimeError("用户在 view_analysis 阶段确认后停止处理")
+
+        clarification_questions = (
+            analysis_result.get("semantic_policy", {}) or {}
+        ).get("clarification_questions", [])
+        if clarification_questions:
+            return
+
+        part_semantics = analysis_result.get("part_semantics")
+        if part_semantics and not callback("semantic_reconstruction", {
+            "part_semantics": part_semantics,
+            "semantic_policy": analysis_result.get("semantic_policy", {}),
+        }):
+            raise RuntimeError("用户在 semantic_reconstruction 阶段确认后停止处理")
 
     def _is_semantic_confidence_sufficient(self, part_semantics: Dict[str, Any]) -> bool:
         """兼容入口；语义置信度判断已迁入 reconstruction。"""

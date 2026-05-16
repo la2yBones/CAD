@@ -270,6 +270,19 @@ class CADPipeline:
             extrude_height
         )
 
+    def continue_file_with_clarification(
+        self,
+        result: CADProcessResult,
+        clarification_answers: Dict[str, object],
+    ) -> CADProcessResult:
+        """继续一个已进入 needs_clarification 的智能处理任务。"""
+        output_structure = self.file_manager.create_output_structure(result.input_file)
+        return self.processor.continue_with_clarification(
+            result,
+            clarification_answers,
+            output_structure,
+        )
+
     def print_summary(self, results: Dict[str, CADProcessResult]):
         """打印处理摘要"""
         summary = self.get_summary(results)

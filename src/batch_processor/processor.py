@@ -6,6 +6,7 @@ CAD处理器组件
 """
 
 import json
+from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 import logging
@@ -14,27 +15,61 @@ import traceback
 logger = logging.getLogger(__name__)
 
 
+class PipelineStatus(str, Enum):
+    """单文件处理流程的真实状态。"""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    NEEDS_CLARIFICATION = "needs_clarification"
+
+
 class CADProcessResult:
     """处理结果封装类"""
 
     def __init__(self, success: bool, input_file: str):
         self.success = success
+        self.status = PipelineStatus.COMPLETED if success else PipelineStatus.FAILED
         self.input_file = input_file
         self.geometry_data: Optional[Dict] = None
         self.relationships: Optional[Dict] = None
         self.intelligent_analysis: Optional[Dict] = None  # 智能分析结果
+        self.clarification_questions: list[Dict[str, Any]] = []
+        self.clarification_context: Optional[Dict[str, Any]] = None
         self.output_paths: Dict[str, str] = {}
         self.error_message: Optional[str] = None
         self.entity_count: int = 0
 
+    def mark_completed(self) -> None:
+        self.success = True
+        self.status = PipelineStatus.COMPLETED
+
+    def mark_failed(self, error_message: Optional[str] = None) -> None:
+        self.success = False
+        self.status = PipelineStatus.FAILED
+        if error_message is not None:
+            self.error_message = error_message
+
+    def mark_needs_clarification(
+        self,
+        questions: list[Dict[str, Any]],
+        clarification_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.success = False
+        self.status = PipelineStatus.NEEDS_CLARIFICATION
+        self.clarification_questions = questions
+        self.clarification_context = clarification_context
+
     def to_dict(self) -> Dict:
         return {
             'success': self.success,
+            'status': self.status.value,
             'input_file': self.input_file,
             'entity_count': self.entity_count,
             'output_paths': self.output_paths,
             'error_message': self.error_message,
-            'has_intelligent_analysis': self.intelligent_analysis is not None
+            'has_intelligent_analysis': self.intelligent_analysis is not None,
+            'clarification_questions': self.clarification_questions,
+            'has_clarification_context': self.clarification_context is not None,
         }
 
 
@@ -337,7 +372,7 @@ class CADProcessor:
 
             modeler.close()
 
-            result.success = True
+            result.mark_completed()
             logger.info(f"处理完成: {Path(file_path).name}")
 
         except Exception as e:
@@ -404,6 +439,17 @@ class CADProcessor:
                         file_path=str(file_path)
                     )
                     result.intelligent_analysis = analysis_result
+
+                    clarification_questions = (
+                        analysis_result.get("semantic_policy", {}) or {}
+                    ).get("clarification_questions", [])
+                    if clarification_questions:
+                        result.mark_needs_clarification(
+                            clarification_questions,
+                            analysis_result.get("clarification_context"),
+                        )
+                        logger.info("语义裁决需要用户澄清，已暂停智能建模")
+                        return result
 
                     # 保存分析结果
                     output_dir = output_structure.get('directory', Path('.') / 'output')
@@ -485,7 +531,7 @@ class CADProcessor:
                 logger.warning(result.error_message)
                 return result
 
-            result.success = True
+            result.mark_completed()
             logger.info(f"智能分析处理完成: {Path(file_path).name}")
 
         except Exception as e:
@@ -494,6 +540,72 @@ class CADProcessor:
             logger.error(traceback.format_exc())
 
         return result
+
+    def continue_with_clarification(
+        self,
+        result: CADProcessResult,
+        clarification_answers: Dict[str, Any],
+        output_structure: Dict[str, Path],
+    ) -> CADProcessResult:
+        """在用户补充答案后，从语义裁决阶段继续智能建模。"""
+        if not result.clarification_context:
+            result.mark_failed("缺少澄清上下文，无法继续局部恢复")
+            return result
+
+        try:
+            logger.info("收到用户澄清，继续智能建模")
+            api_key = self.config.get("api", {}).get("deepseek", {}).get("api_key", "")
+            from src.intelligent_analyzer import IntelligentEngineeringAnalyzer
+
+            analyzer = IntelligentEngineeringAnalyzer(
+                api_key,
+                self.config.get("api", {}).get("deepseek", {}),
+                enable_cache=False,
+            )
+            resumed_analysis = analyzer.continue_with_clarification(
+                result.clarification_context,
+                clarification_answers,
+            )
+            result.intelligent_analysis = resumed_analysis
+
+            clarification_questions = (
+                resumed_analysis.get("semantic_policy", {}) or {}
+            ).get("clarification_questions", [])
+            if clarification_questions:
+                result.mark_needs_clarification(
+                    clarification_questions,
+                    resumed_analysis.get("clarification_context", result.clarification_context),
+                )
+                logger.info("用户澄清后仍存在未决问题，继续等待输入")
+                return result
+
+            modeling_instructions = resumed_analysis.get("modeling_instructions", {})
+            ai_script_content = modeling_instructions.get("freecad_script")
+            if not ai_script_content:
+                result.mark_failed("用户澄清后仍未获得可执行的 AI FreeCAD 建模脚本")
+                return result
+
+            from src.model_generator.ai_script_runner import AIScriptRunner
+            runner = AIScriptRunner(self.config)
+            step_path = str(output_structure["model_step"]) if "model_step" in output_structure else None
+            run_result = runner.run_script(ai_script_content, step_path)
+            if not run_result.get("success"):
+                result.mark_failed(
+                    f"用户澄清后的 AI 脚本执行失败: {run_result.get('error', '未知错误')}"
+                )
+                return result
+
+            if run_result.get("step_path"):
+                result.output_paths["model_step"] = run_result["step_path"]
+            if run_result.get("fcstd_path"):
+                result.output_paths["model_fcstd"] = run_result["fcstd_path"]
+            result.mark_completed()
+            logger.info("用户澄清后的智能建模已完成")
+            return result
+        except Exception as error:
+            result.mark_failed(f"用户澄清后的局部恢复失败: {error}")
+            logger.error(traceback.format_exc())
+            return result
 
     def process_from_geometry_data(self, geometry_data: Dict,
                                    output_structure: Dict[str, Path],
@@ -540,7 +652,7 @@ class CADProcessor:
                 result.output_paths['model_step'] = str(output_structure['model_step'])
 
             modeler.close()
-            result.success = True
+            result.mark_completed()
 
         except Exception as e:
             result.error_message = str(e)

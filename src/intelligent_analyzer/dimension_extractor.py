@@ -131,13 +131,18 @@ class DimensionExtractor:
         if value is None:
             return None
 
-        return {
+        dimension_entity = (text_info.get("entity") or {}).get("dimension_entity") or {}
+        result = {
             "text": text,
             "value": value,
             "type": self._determine_dimension_type(text),
             "position": text_info["position"],
             "associated_lines": self._find_nearby_lines(text_info["position"], lines)
         }
+        for key in ("definition_points", "measurement", "dimension_type"):
+            if key in dimension_entity:
+                result[key] = dimension_entity[key]
+        return result
 
     def _extract_numeric_value(self, text: str) -> Optional[float]:
         """提取数值"""

@@ -24,6 +24,7 @@
 - `src/cad_parser/parser.py` 移除 `plt.show()` 依赖，避免无头服务器或 CI 环境中预览失败。
 - `gui_example.py` 移除临时文件预览，改为保存到 `examples/output/<图纸名>/<图纸名>_preview.png`，与流水线输出结构保持一致。
 - `gui_example.py` 在解析到 0 个实体时直接返回，避免生成无效空预览图。
+- `gui_example.py` 新增默认开启的“逐阶段确认”，在视图语义校正和零件语义重建完成后展示阶段汇报，用户点击“继续”后再进入后续阶段或追问窗口。
 
 ### 依赖更新
 

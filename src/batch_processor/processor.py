@@ -29,10 +29,18 @@ class PipelineStatus(str, Enum):
 class CADProcessResult:
     """处理结果封装类"""
 
-    def __init__(self, success: bool, input_file: str):
+    def __init__(
+        self,
+        success: bool,
+        input_file: str,
+        mode: Optional[str] = None,
+        modeling_path: Optional[str] = None,
+    ):
         self.success = success
         self.status = PipelineStatus.COMPLETED if success else PipelineStatus.FAILED
         self.input_file = input_file
+        self.mode = mode
+        self.modeling_path = modeling_path
         self.geometry_data: Optional[Dict] = None
         self.relationships: Optional[Dict] = None
         self.intelligent_analysis: Optional[Dict] = None  # 智能分析结果
@@ -72,6 +80,8 @@ class CADProcessResult:
             'success': self.success,
             'status': self.status.value,
             'input_file': self.input_file,
+            'mode': self.mode,
+            'modeling_path': self.modeling_path,
             'entity_count': self.entity_count,
             'output_paths': self.output_paths,
             'error_message': self.error_message,
@@ -116,13 +126,13 @@ class CADProcessor:
             self._modeler = FreeCADModeler
         return self._modeler
 
-    def _analyze_view_context(
+    def _prepare_intelligent_view_context(
         self,
         geometry_data: Dict[str, Any],
         analysis_result: Optional[Dict[str, Any]] = None,
         source_name: Optional[str] = None
-    ) -> Tuple[Dict[str, Any], bool]:
-        """判断图纸是否为多视图工程图。"""
+    ) -> Dict[str, Any]:
+        """为智能模式准备可供后续语义校正使用的视图上下文。"""
         view_analysis = {}
 
         if analysis_result:
@@ -137,109 +147,9 @@ class CADProcessor:
                 )
             except Exception as e:
                 logger.warning(f"视图识别失败，暂按单视图处理: {e}")
-                return {}, False
+                return {}
 
-        is_multiview = self._is_multiview_view_analysis(view_analysis)
-        if source_name and self._has_planar_name_hint(source_name):
-            is_multiview = False
-        elif not is_multiview and source_name:
-            stem = Path(source_name).stem
-            is_multiview = any(
-                marker in stem
-                for marker in ("二视图", "两视图", "三视图", "多视图")
-            )
-
-        return view_analysis, is_multiview
-
-    def _has_planar_name_hint(self, source_name: str) -> bool:
-        """将装配图按单张平面/剖视图处理。"""
-        stem = Path(source_name).stem
-        explicit_multiview = any(
-            marker in stem
-            for marker in ("二视图", "两视图", "三视图", "多视图")
-        )
-        if explicit_multiview:
-            return False
-
-        return any(marker in stem for marker in ("装配图", "总装图"))
-
-    def _is_multiview_view_analysis(self, view_analysis: Dict[str, Any]) -> bool:
-        """视图分析器找到两个或更多投影视图时返回 True。"""
-        drawing_type = view_analysis.get("drawing_type")
-        if drawing_type in ("assembly_drawing", "single_view", "section_view"):
-            return False
-        if drawing_type in ("two_view", "three_view"):
-            return True
-
-        views = view_analysis.get("views") or []
-        relationships = view_analysis.get("relationships") or []
-
-        named_views = [
-            v for v in views
-            if v.get("name") not in ("single", "unknown", None)
-        ]
-        view_names = {v.get("name") for v in named_views}
-
-        if len(named_views) < 2:
-            return False
-
-        strong_relationships = [
-            rel for rel in relationships
-            if self._is_strong_projection_relationship(rel)
-        ]
-
-        if strong_relationships:
-            return True
-
-        return False
-
-    def _is_strong_projection_relationship(self, relationship: Dict[str, Any]) -> bool:
-        """仅将已校验的投影对齐关系视为多视图信号。"""
-        if relationship.get("type") != "projection":
-            return False
-
-        description = str(relationship.get("description", ""))
-        if "偏差较大" in description:
-            return False
-
-        strong_markers = ("长对正", "高平齐", "宽相等")
-        if any(marker in description for marker in strong_markers):
-            return True
-
-        return any(
-            marker in str(value)
-            for key, value in relationship.items()
-            if key != "description"
-            for marker in strong_markers
-        )
-
-    def _build_multiview_block_message(
-        self,
-        view_analysis: Dict[str, Any],
-        reason: Optional[str] = None
-    ) -> str:
-        """构建阻止平面拉伸降级时面向用户的说明。"""
-        label_map = {
-            "main": "主视图",
-            "top": "俯视图",
-            "bottom": "仰视图",
-            "left": "左视图",
-            "right": "右视图",
-        }
-        names = [
-            label_map.get(v.get("name"), str(v.get("name")))
-            for v in view_analysis.get("views", [])
-            if v.get("name") not in ("single", "unknown", None)
-        ]
-        view_text = "、".join(names) if names else "多个投影视图"
-        prefix = f"{reason}；" if reason else ""
-        return (
-            f"{prefix}检测到二视图/三视图工程图（{view_text}）。"
-            "当前通用建模器只能处理单一闭合轮廓的平面拉伸，"
-            "已阻止直接拉伸以避免生成错误模型。"
-            "请使用智能模式并确保 AI 生成可用的 FreeCAD 多视图建模脚本，"
-            "或实现多视图投影重建策略后再转换。"
-        )
+        return view_analysis
 
     def _is_fallback_modeling_result(self, modeling_result: Dict[str, Any]) -> bool:
         """识别 AI 建模失败后生成的本地降级脚本。"""
@@ -285,7 +195,12 @@ class CADProcessor:
         ??:
             处理结果对象
         """
-        result = CADProcessResult(success=False, input_file=file_path)
+        result = CADProcessResult(
+            success=False,
+            input_file=file_path,
+            mode="basic",
+            modeling_path="planar_extrude",
+        )
 
         try:
             logger.info(f"开始处理: {Path(file_path).name}")
@@ -334,22 +249,6 @@ class CADProcessor:
                         logger.info("智能分析完成")
                     except Exception as e:
                         logger.warning(f"智能分析失败，使用纯几何建模: {e}")
-
-            view_analysis, is_multiview = self._analyze_view_context(
-                geometry_data,
-                result.intelligent_analysis,
-                source_name=file_path
-            )
-            if is_multiview:
-                result.intelligent_analysis = result.intelligent_analysis or {
-                    "view_analysis": view_analysis
-                }
-                result.error_message = self._build_multiview_block_message(
-                    view_analysis,
-                    reason="当前入口未执行 AI 建模脚本"
-                )
-                logger.warning(result.error_message)
-                return result
 
             # 3. 生成3D模型
             modeler_config = {}
@@ -403,7 +302,12 @@ class CADProcessor:
         ??:
             处理结果
         """
-        result = CADProcessResult(success=False, input_file=file_path)
+        result = CADProcessResult(
+            success=False,
+            input_file=file_path,
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
 
         try:
             logger.info(f"开始智能分析处理: {Path(file_path).name}")
@@ -420,7 +324,7 @@ class CADProcessor:
                 parser.export_json(str(output_structure['geometry']))
                 result.output_paths['geometry'] = str(output_structure['geometry'])
 
-            view_analysis, is_multiview = self._analyze_view_context(
+            view_analysis = self._prepare_intelligent_view_context(
                 geometry_data,
                 source_name=file_path
             )
@@ -476,7 +380,7 @@ class CADProcessor:
                         ai_script_content = modeling_instructions.get('freecad_script')
                         has_ai_script = bool(ai_script_content)
 
-                    view_analysis, is_multiview = self._analyze_view_context(
+                    view_analysis = self._prepare_intelligent_view_context(
                         geometry_data,
                         analysis_result,
                         source_name=file_path
@@ -504,47 +408,16 @@ class CADProcessor:
                 logger.warning(result.error_message)
                 return result
 
-            if not has_ai_script or not ai_script_content:
-                result.error_message = (
-                    "未获得可执行的 AI FreeCAD 建模脚本；"
-                    "智能模式不会调用通用建模器兜底"
-                )
-                logger.warning(result.error_message)
-                return result
-
-            # 3. 智能模式只执行 AI 生成的 FreeCAD 脚本，不调用通用建模器兜底
-            logger.info("使用 AI 生成的 FreeCAD 脚本进行智能建模")
-            try:
-                from src.model_generator.ai_script_runner import AIScriptRunner
-                runner = AIScriptRunner(self.config)
-
-                step_path = None
-                if 'model_step' in output_structure:
-                    step_path = str(output_structure['model_step'])
-
-                run_result = runner.run_script(ai_script_content, step_path)
-
-                if run_result.get('success'):
-                    if run_result.get('step_path'):
-                        result.output_paths['model_step'] = run_result['step_path']
-                    if run_result.get('fcstd_path'):
-                        result.output_paths['model_fcstd'] = run_result['fcstd_path']
-                    logger.info("AI脚本建模成功")
-                else:
-                    result.error_message = (
-                        f"AI脚本执行失败，智能模式不会调用通用建模器兜底: "
-                        f"{run_result.get('error', '未知错误')}"
-                    )
-                    logger.warning(result.error_message)
-                    return result
-
-            except Exception as e:
-                result.error_message = f"执行AI脚本出错，智能模式不会调用通用建模器兜底: {e}"
-                logger.warning(result.error_message)
-                return result
-
-            result.mark_completed()
-            logger.info(f"智能分析处理完成: {Path(file_path).name}")
+            return self._execute_intelligent_modeling_path(
+                result=result,
+                analysis_result=result.intelligent_analysis,
+                geometry_data=geometry_data,
+                output_structure=output_structure,
+                extrude_height=extrude_height,
+                missing_script_message="未获得可执行的 AI FreeCAD 建模脚本；智能模式不会调用通用建模器兜底",
+                script_failure_prefix="AI脚本执行失败，智能模式不会调用通用建模器兜底",
+                completion_message=f"智能分析处理完成: {Path(file_path).name}",
+            )
 
         except StageConfirmationStopped as stopped:
             result.mark_stopped_by_user(str(stopped))
@@ -555,6 +428,101 @@ class CADProcessor:
             logger.error(traceback.format_exc())
 
         return result
+
+    def _run_planar_extrude_for_intelligent_result(
+        self,
+        result: CADProcessResult,
+        geometry_data: Dict[str, Any],
+        output_structure: Dict[str, Path],
+        extrude_height: float,
+    ) -> CADProcessResult:
+        modeler_config = {}
+        if "freecad" in self.config:
+            modeler_config.update(self.config.get("freecad", {}))
+        modeler_config["default_extrude_height"] = extrude_height
+
+        modeler = self._get_modeler()(modeler_config)
+        modeler.generate(geometry_data, {})
+
+        if "model_step" in output_structure:
+            export_path = str(output_structure["model_step"])
+            export_success = modeler.export(export_path, "STEP")
+            if export_success and Path(export_path).exists():
+                result.output_paths["model_step"] = export_path
+                logger.info(f"STEP模型已确认保存: {export_path}")
+            else:
+                logger.warning(f"STEP模型可能未正确保存: {export_path}")
+
+        if "model_stl" in output_structure:
+            try:
+                stl_path = str(output_structure["model_stl"])
+                if modeler.export(stl_path, "STL") and Path(stl_path).exists():
+                    result.output_paths["model_stl"] = stl_path
+            except Exception as error:
+                logger.warning(f"STL导出失败: {error}")
+
+        modeler.close()
+        result.mark_completed()
+        logger.info(f"智能模式平面拉伸完成: {Path(result.input_file).name}")
+        return result
+
+    def _execute_intelligent_modeling_path(
+        self,
+        *,
+        result: CADProcessResult,
+        analysis_result: Dict[str, Any],
+        geometry_data: Dict[str, Any],
+        output_structure: Dict[str, Path],
+        extrude_height: float,
+        missing_script_message: str,
+        script_failure_prefix: str,
+        completion_message: str,
+    ) -> CADProcessResult:
+        modeling_path_decision = analysis_result.get("modeling_path_decision", {}) or {}
+        if modeling_path_decision.get("modeling_path") == "planar_extrude":
+            result.modeling_path = "planar_extrude"
+            logger.info(
+                "智能模式已裁决为可平面拉伸图，转交基础拉伸执行路径"
+                f" | 原因: {modeling_path_decision.get('reason', '')}"
+            )
+            return self._run_planar_extrude_for_intelligent_result(
+                result,
+                geometry_data,
+                output_structure,
+                extrude_height,
+            )
+
+        modeling_instructions = analysis_result.get("modeling_instructions", {}) or {}
+        ai_script_content = modeling_instructions.get("freecad_script")
+        if not ai_script_content:
+            result.mark_failed(missing_script_message)
+            logger.warning(result.error_message)
+            return result
+
+        logger.info("使用 AI 生成的 FreeCAD 脚本进行智能建模")
+        try:
+            from src.model_generator.ai_script_runner import AIScriptRunner
+            runner = AIScriptRunner(self.config)
+            step_path = str(output_structure["model_step"]) if "model_step" in output_structure else None
+            run_result = runner.run_script(ai_script_content, step_path)
+            if not run_result.get("success"):
+                result.mark_failed(
+                    f"{script_failure_prefix}: {run_result.get('error', '未知错误')}"
+                )
+                logger.warning(result.error_message)
+                return result
+
+            if run_result.get("step_path"):
+                result.output_paths["model_step"] = run_result["step_path"]
+            if run_result.get("fcstd_path"):
+                result.output_paths["model_fcstd"] = run_result["fcstd_path"]
+            result.mark_completed()
+            logger.info(completion_message)
+            return result
+        except Exception as error:
+            result.mark_failed(f"执行AI脚本出错，智能模式不会调用通用建模器兜底: {error}")
+            logger.warning(result.error_message)
+            return result
 
     def continue_with_clarification(
         self,
@@ -594,29 +562,16 @@ class CADProcessor:
                 logger.info("用户澄清后仍存在未决问题，继续等待输入")
                 return result
 
-            modeling_instructions = resumed_analysis.get("modeling_instructions", {})
-            ai_script_content = modeling_instructions.get("freecad_script")
-            if not ai_script_content:
-                result.mark_failed("用户澄清后仍未获得可执行的 AI FreeCAD 建模脚本")
-                return result
-
-            from src.model_generator.ai_script_runner import AIScriptRunner
-            runner = AIScriptRunner(self.config)
-            step_path = str(output_structure["model_step"]) if "model_step" in output_structure else None
-            run_result = runner.run_script(ai_script_content, step_path)
-            if not run_result.get("success"):
-                result.mark_failed(
-                    f"用户澄清后的 AI 脚本执行失败: {run_result.get('error', '未知错误')}"
-                )
-                return result
-
-            if run_result.get("step_path"):
-                result.output_paths["model_step"] = run_result["step_path"]
-            if run_result.get("fcstd_path"):
-                result.output_paths["model_fcstd"] = run_result["fcstd_path"]
-            result.mark_completed()
-            logger.info("用户澄清后的智能建模已完成")
-            return result
+            return self._execute_intelligent_modeling_path(
+                result=result,
+                analysis_result=resumed_analysis,
+                geometry_data=result.clarification_context["geometry_data"],
+                output_structure=output_structure,
+                extrude_height=result.clarification_context["extrude_height"],
+                missing_script_message="用户澄清后仍未获得可执行的 AI FreeCAD 建模脚本",
+                script_failure_prefix="用户澄清后的 AI 脚本执行失败",
+                completion_message="用户澄清后的智能建模已完成",
+            )
         except StageConfirmationStopped as stopped:
             result.mark_stopped_by_user(str(stopped))
             logger.info(result.error_message)
@@ -642,22 +597,16 @@ class CADProcessor:
         ??:
             处理结果
         """
-        result = CADProcessResult(success=False, input_file="direct_from_data")
+        result = CADProcessResult(
+            success=False,
+            input_file="direct_from_data",
+            mode="basic",
+            modeling_path="planar_extrude",
+        )
         result.geometry_data = geometry_data
         result.entity_count = len(geometry_data.get('entities', []))
 
         try:
-            allow_planar_extrude = bool((relationships or {}).get("allow_planar_extrude"))
-            view_analysis, is_multiview = self._analyze_view_context(geometry_data)
-            if is_multiview and not allow_planar_extrude:
-                result.intelligent_analysis = {"view_analysis": view_analysis}
-                result.error_message = self._build_multiview_block_message(
-                    view_analysis,
-                    reason="直接几何数据入口未声明允许平面拉伸"
-                )
-                logger.warning(result.error_message)
-                return result
-
             modeler_config = {}
             if "freecad" in self.config:
                 modeler_config.update(self.config.get("freecad", {}))

@@ -1017,7 +1017,7 @@ class ProcessingPanel(ttk.Frame):
 
         row3 = ttk.Frame(param_frame)
         row3.pack(fill=tk.X, pady=(0, 8))
-        self.height_label = ttk.Label(row3, text="兼容基础模式拉伸高度 (mm):")
+        self.height_label = ttk.Label(row3, text="基础模式拉伸高度 (mm):")
         self.height_label.pack(side=tk.LEFT, padx=(0, 5))
         self.height_var = tk.DoubleVar(value=self.app_config.get('processing', 'basic_default_height', default=10.0))
         self.height_spinbox = ttk.Spinbox(
@@ -1032,10 +1032,15 @@ class ProcessingPanel(ttk.Frame):
 
         ttk.Label(row3, text="处理模式:").pack(side=tk.LEFT, padx=(20, 5))
         self.mode_var = tk.StringVar(value="intelligent")
+        self.mode_hint_var = tk.StringVar()
         ttk.Radiobutton(row3, text="智能模式", variable=self.mode_var, value="intelligent").pack(side=tk.LEFT)
-        ttk.Radiobutton(row3, text="兼容基础模式", variable=self.mode_var, value="basic").pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(row3, text="基础模式", variable=self.mode_var, value="basic").pack(side=tk.LEFT, padx=(10, 0))
         self.mode_var.trace_add("write", self._sync_height_controls)
         self._sync_height_controls()
+
+        self.mode_hint_label = ttk.Label(param_frame, textvariable=self.mode_hint_var, foreground="gray")
+        self.mode_hint_label.pack(fill=tk.X, pady=(4, 0))
+        self._sync_mode_hint()
 
         control_row = ttk.Frame(param_frame)
         control_row.pack(fill=tk.X)
@@ -1352,7 +1357,7 @@ class ProcessingPanel(ttk.Frame):
                 self._check_control_state("before-intelligent-processing")
                 result = self.pipeline.process_file_intelligent(filepath)
             else:
-                logger.info("使用兼容基础模式（legacy/basic，不调用 AI 脚本建模）")
+                logger.info("使用基础模式（直接按平面图拉伸，不调用 AI 脚本建模）")
                 self._check_control_state("before-basic-processing")
                 result = self.pipeline.process_file(filepath, height, enable_analysis=False)
 
@@ -1361,7 +1366,12 @@ class ProcessingPanel(ttk.Frame):
             self._check_control_state("processing-finished")
             elapsed = time.time() - start_time
             if result.success:
-                logger.info(f"处理成功 | 耗时: {elapsed:.1f}s | 实体数: {result.entity_count}")
+                result_mode = getattr(result, "mode", None) or mode
+                result_path = getattr(result, "modeling_path", None) or "unknown"
+                logger.info(
+                    f"处理成功 | 耗时: {elapsed:.1f}s | 实体数: {result.entity_count} | "
+                    f"模式: {result_mode} | 建模路径: {result_path}"
+                )
                 if result.output_paths:
                     for k, v in result.output_paths.items():
                         logger.info(f"输出产物 [{k}]: {v}")
@@ -1752,6 +1762,13 @@ class ProcessingPanel(ttk.Frame):
         else:
             self.height_label.pack_forget()
             self.height_spinbox.pack_forget()
+        self._sync_mode_hint()
+
+    def _sync_mode_hint(self):
+        if self.mode_var.get() == "basic":
+            self.mode_hint_var.set("基础模式仅负责平面拉伸；多视图或复杂图纸请使用智能模式。")
+        else:
+            self.mode_hint_var.set("智能模式负责识别图纸类型并选择建模路径。")
 
     def _load_config(self) -> Dict:
         config = {}

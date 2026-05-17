@@ -8,6 +8,7 @@ from .context import ReconstructionContextBuilder
 from .semantic_policy import SemanticPolicy
 from .semantics import PartSemanticGenerator
 from .instruction_generator import FreeCADInstructionGenerator
+from .modeling_path import PLANAR_EXTRUDE, choose_modeling_path
 from src.utils.stage_confirmation import (
     StageConfirmationStopped,
     StageReview,
@@ -83,8 +84,12 @@ class SemanticReconstructionPipeline:
             "semantic_policy": policy_result,
         })
 
+        modeling_path_decision = choose_modeling_path(view_analysis, part_semantics)
+
         if not self._is_semantic_confidence_sufficient(part_semantics):
             modeling_result = self._build_blocked_modeling_result(part_semantics)
+        elif modeling_path_decision["modeling_path"] == PLANAR_EXTRUDE:
+            modeling_result = self._build_planar_extrude_modeling_result(part_semantics)
         else:
             modeling_result = self.instruction_generator.generate(
                 enriched_geometry if local_relationships else geometry_data,
@@ -101,6 +106,7 @@ class SemanticReconstructionPipeline:
             "semantic_policy": policy_result,
             "adjudicated_context": adjudicated_context,
             "part_semantics": part_semantics,
+            "modeling_path_decision": modeling_path_decision,
             "modeling_instructions": modeling_result,
         }
 
@@ -138,8 +144,14 @@ class SemanticReconstructionPipeline:
             "part_semantics": part_semantics,
             "semantic_policy": policy_result,
         })
+        modeling_path_decision = choose_modeling_path(
+            clarification_context["view_analysis"],
+            part_semantics,
+        )
         if not self._is_semantic_confidence_sufficient(part_semantics):
             modeling_result = self._build_blocked_modeling_result(part_semantics)
+        elif modeling_path_decision["modeling_path"] == PLANAR_EXTRUDE:
+            modeling_result = self._build_planar_extrude_modeling_result(part_semantics)
         else:
             modeling_result = self.instruction_generator.generate(
                 clarification_context["geometry_data"],
@@ -155,6 +167,7 @@ class SemanticReconstructionPipeline:
             "semantic_policy": policy_result,
             "adjudicated_context": adjudicated_context,
             "part_semantics": part_semantics,
+            "modeling_path_decision": modeling_path_decision,
             "modeling_instructions": modeling_result,
         }
 
@@ -220,6 +233,17 @@ class SemanticReconstructionPipeline:
             "warnings": ["语义裁决需要用户澄清后才能继续自动建模"],
             "blocked_by_clarification": True,
             "clarification_questions": policy_result["clarification_questions"],
+        }
+
+    def _build_planar_extrude_modeling_result(self, part_semantics: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "analysis_summary": part_semantics.get("summary", ""),
+            "modeling_strategy": "由智能模式裁决为可平面拉伸图，转交基础拉伸执行路径",
+            "freecad_script": "",
+            "instructions": [],
+            "key_dimensions": part_semantics.get("key_dimensions", []),
+            "warnings": [],
+            "routed_to_planar_extrude": True,
         }
 
     def _build_clarification_context(

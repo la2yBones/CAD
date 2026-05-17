@@ -131,10 +131,9 @@ result = pipeline.process_file("examples/cad_files/sample.dxf", "examples/output
 ```python
 smart = pipeline.process_file_intelligent("sample.dxf")
 basic = pipeline.process_file_basic("sample.dxf")
-legacy = pipeline.process_file_legacy_analysis("sample.dxf")
 ```
 
-`process_file(..., enable_analysis=True/False)` 仍保留为兼容接口。
+`process_file(..., enable_analysis=True/False)` 仍保留为底层接口。
 
 ## 智能分析
 

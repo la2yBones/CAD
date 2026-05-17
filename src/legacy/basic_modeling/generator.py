@@ -20,7 +20,7 @@ class FreeCADModeler:
         self._init_freecad()
 
     def _init_freecad(self):
-        from .freecad_bridge import FreeCADBridge
+        from src.model_generator.freecad_bridge import FreeCADBridge
         self.bridge = FreeCADBridge(self.config)
         if self.bridge.mode == "direct":
             self.App = self.bridge.App

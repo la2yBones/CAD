@@ -70,7 +70,7 @@ class CADPipeline:
         # 解析文件路径
         file_path = self.file_manager.resolve_file_path(filename)
         if not file_path:
-            result = CADProcessResult(success=False, input_file=filename)
+            result = CADProcessResult(success=False, input_file=filename, mode="basic")
             result.error_message = f"找不到文件: {filename}"
             logger.error(result.error_message)
             return result
@@ -78,7 +78,7 @@ class CADPipeline:
         # 验证文件
         valid, error_msg = self.file_manager.validate_file(str(file_path))
         if not valid:
-            result = CADProcessResult(success=False, input_file=str(file_path))
+            result = CADProcessResult(success=False, input_file=str(file_path), mode="basic")
             result.error_message = error_msg
             logger.error(error_msg)
             return result
@@ -95,7 +95,7 @@ class CADPipeline:
         )
 
     def process_file_basic(self, filename: str, extrude_height: float = 10.0) -> CADProcessResult:
-        """兼容基础模式入口：legacy/basic 平面拉伸。"""
+        """基础模式入口：按平面图直接拉伸。"""
         return self.process_file(filename, extrude_height, enable_analysis=False)
 
     def process_file_legacy_analysis(
@@ -103,7 +103,7 @@ class CADPipeline:
         filename: str,
         extrude_height: float = 10.0,
     ) -> CADProcessResult:
-        """兼容分析模式入口：legacy/basic 建模 + 旧 AI 几何关系分析。"""
+        """旧兼容入口：基础拉伸 + 历史 AI 关系分析。新代码不应使用。"""
         return self.process_file(filename, extrude_height, enable_analysis=True)
 
     def process_multiple_files(self, filenames: List[str],
@@ -257,7 +257,7 @@ class CADPipeline:
         # 解析文件路径
         file_path = self.file_manager.resolve_file_path(filename)
         if not file_path:
-            result = CADProcessResult(success=False, input_file=filename)
+            result = CADProcessResult(success=False, input_file=filename, mode="intelligent")
             result.error_message = f"找不到文件: {filename}"
             logger.error(result.error_message)
             return result
@@ -265,7 +265,7 @@ class CADPipeline:
         # 验证文件
         valid, error_msg = self.file_manager.validate_file(str(file_path))
         if not valid:
-            result = CADProcessResult(success=False, input_file=str(file_path))
+            result = CADProcessResult(success=False, input_file=str(file_path), mode="intelligent")
             result.error_message = error_msg
             logger.error(error_msg)
             return result

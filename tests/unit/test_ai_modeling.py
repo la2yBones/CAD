@@ -18,6 +18,7 @@ from src.utils.stage_confirmation import (
 from src.reconstruction.modeling_constraints import ModelingConstraints
 from src.reconstruction.semantic_policy import SemanticPolicy
 from src.reconstruction.pipeline import SemanticReconstructionPipeline
+from src.reconstruction.modeling_path import choose_modeling_path
 from src.model_generator.freecad_bridge import FreeCADBridge
 from src.model_generator.ai_script_runner import AIScriptRunner
 from src.batch_processor.pipeline import CADPipeline
@@ -114,6 +115,32 @@ class TestAIModeling(unittest.TestCase):
 
         self.assertIn('"context_version": "custom_v1"', prompt)
         self.assertIn('"marker": "keep-me"', prompt)
+
+    def test_modeling_path_routes_simple_single_profile_to_planar_extrude(self):
+        decision = choose_modeling_path(
+            {"drawing_type": "single_view"},
+            {
+                "base_features": [{"kind": "profile_extrusion"}],
+                "additive_features": [],
+                "uncertainties": [],
+                "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
+            },
+        )
+
+        self.assertEqual("planar_extrude", decision["modeling_path"])
+
+    def test_modeling_path_keeps_complex_single_view_in_semantic_reconstruction(self):
+        decision = choose_modeling_path(
+            {"drawing_type": "single_view"},
+            {
+                "base_features": [{"kind": "profile_extrusion"}],
+                "additive_features": [{"kind": "boss"}],
+                "uncertainties": [],
+                "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
+            },
+        )
+
+        self.assertEqual("semantic_reconstruction", decision["modeling_path"])
 
     def test_reconstruction_summary_preserves_semantic_policy(self):
         summary = ReconstructionContextBuilder().build_summary(
@@ -853,6 +880,45 @@ arc = Part.ArcOfCircle(
         self.assertEqual([], resumed["semantic_policy"]["clarification_questions"])
         self.assertEqual("pass", resumed["modeling_instructions"]["freecad_script"])
 
+    def test_reconstruction_pipeline_routes_simple_single_profile_to_planar_extrude(self):
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.stage_confirmation = resolve_stage_confirmation({})
+        pipeline.semantic_generator = unittest.mock.Mock(
+            generate=unittest.mock.Mock(
+                return_value={
+                    "part_type": "profile",
+                    "confidence": 0.9,
+                    "summary": "simple profile",
+                    "evidence": [],
+                    "candidate_interpretations": [],
+                    "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
+                    "dimension_source": "geometry",
+                    "base_features": [{"kind": "profile_extrusion"}],
+                    "additive_features": [],
+                    "subtractive_features": [],
+                    "key_dimensions": [],
+                    "uncertainties": [],
+                    "warnings": [],
+                }
+            )
+        )
+        pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.config = {}
+
+        result = pipeline.run(
+            geometry_data={"entities": []},
+            view_analysis={"drawing_type": "single_view", "views": []},
+            dimension_data={"dimensions": []},
+            local_relationships=None,
+            extrude_height=10.0,
+        )
+
+        self.assertEqual("planar_extrude", result["modeling_path_decision"]["modeling_path"])
+        self.assertTrue(result["modeling_instructions"]["routed_to_planar_extrude"])
+        pipeline.instruction_generator.generate.assert_not_called()
+
     def test_stage_confirmation_default_adapter_continues(self):
         confirmation = resolve_stage_confirmation({})
 
@@ -911,6 +977,17 @@ arc = Part.ArcOfCircle(
         self.assertEqual("needs_clarification", result.to_dict()["status"])
         self.assertEqual({"marker": "keep"}, result.clarification_context)
 
+    def test_cad_process_result_serializes_mode_and_modeling_path(self):
+        result = CADProcessResult(
+            success=False,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+
+        self.assertEqual("intelligent", result.to_dict()["mode"])
+        self.assertEqual("semantic_reconstruction", result.to_dict()["modeling_path"])
+
     def test_cad_process_result_supports_stopped_by_user_status(self):
         result = CADProcessResult(success=False, input_file="drawing.dxf")
 
@@ -938,7 +1015,7 @@ arc = Part.ArcOfCircle(
         parser.parse.return_value = {"entities": []}
         parser.export_json.return_value = None
         processor._get_parser.return_value = unittest.mock.Mock(return_value=parser)
-        processor._analyze_view_context = unittest.mock.Mock(return_value=({}, False))
+        processor._prepare_intelligent_view_context = unittest.mock.Mock(return_value={})
 
         result = processor.process_with_intelligent_analysis(
             "drawing.dxf",
@@ -967,6 +1044,137 @@ arc = Part.ArcOfCircle(
         self.assertEqual(1, summary["success"])
         self.assertEqual(1, summary["stopped_by_user"])
         self.assertEqual(1, summary["failed"])
+
+    def test_basic_processing_skips_multiview_analysis(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {}
+        processor._get_parser = unittest.mock.Mock()
+        parser = unittest.mock.Mock()
+        parser.parse.return_value = {"entities": []}
+        parser.export_json.return_value = None
+        processor._get_parser.return_value = unittest.mock.Mock(return_value=parser)
+        processor._get_modeler = unittest.mock.Mock()
+        modeler = unittest.mock.Mock()
+        modeler.export.return_value = False
+        processor._get_modeler.return_value = unittest.mock.Mock(return_value=modeler)
+        processor._prepare_intelligent_view_context = unittest.mock.Mock(
+            side_effect=AssertionError("basic mode must not inspect views")
+        )
+
+        result = processor.process_single_file(
+            "drawing.dxf",
+            {},
+            10.0,
+            enable_analysis=False,
+        )
+
+        self.assertTrue(result.success)
+        processor._prepare_intelligent_view_context.assert_not_called()
+        self.assertEqual("basic", result.mode)
+        self.assertEqual("planar_extrude", result.modeling_path)
+
+    def test_geometry_data_processing_skips_multiview_analysis(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {}
+        processor._get_modeler = unittest.mock.Mock()
+        modeler = unittest.mock.Mock()
+        processor._get_modeler.return_value = unittest.mock.Mock(return_value=modeler)
+        processor._prepare_intelligent_view_context = unittest.mock.Mock(
+            side_effect=AssertionError("geometry execution must not inspect views")
+        )
+
+        result = processor.process_from_geometry_data(
+            {"entities": []},
+            {},
+            10.0,
+        )
+
+        self.assertTrue(result.success)
+        processor._prepare_intelligent_view_context.assert_not_called()
+        self.assertEqual("basic", result.mode)
+        self.assertEqual("planar_extrude", result.modeling_path)
+
+    def test_intelligent_processing_routes_planar_decision_to_basic_executor(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {
+            "api": {
+                "deepseek": {"api_key": "test-key"},
+            }
+        }
+        processor._get_parser = unittest.mock.Mock()
+        parser = unittest.mock.Mock()
+        parser.parse.return_value = {"entities": []}
+        parser.export_json.return_value = None
+        processor._get_parser.return_value = unittest.mock.Mock(return_value=parser)
+        processor._prepare_intelligent_view_context = unittest.mock.Mock(return_value={})
+        processor._run_planar_extrude_for_intelligent_result = unittest.mock.Mock()
+
+        routed_result = CADProcessResult(
+            success=True,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="planar_extrude",
+        )
+        processor._run_planar_extrude_for_intelligent_result.return_value = routed_result
+
+        fake_analyzer = unittest.mock.Mock()
+        fake_analyzer.analyze_full.return_value = {
+            "modeling_path_decision": {"modeling_path": "planar_extrude", "reason": "simple"},
+            "modeling_instructions": {
+                "analysis_summary": "",
+                "modeling_strategy": "",
+                "freecad_script": "",
+                "instructions": [],
+                "key_dimensions": [],
+                "warnings": [],
+                "routed_to_planar_extrude": True,
+            },
+        }
+        fake_analyzer.save_results.return_value = None
+
+        with patch(
+            "src.intelligent_analyzer.IntelligentEngineeringAnalyzer",
+            return_value=fake_analyzer,
+        ):
+            result = processor.process_with_intelligent_analysis("drawing.dxf", {}, 10.0)
+
+        self.assertIs(result, routed_result)
+        processor._run_planar_extrude_for_intelligent_result.assert_called_once()
+
+    def test_execute_intelligent_modeling_path_runs_ai_script_for_semantic_reconstruction(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {}
+        result = CADProcessResult(
+            success=False,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+        fake_runner = unittest.mock.Mock()
+        fake_runner.run_script.return_value = {
+            "success": True,
+            "step_path": "drawing.step",
+            "fcstd_path": "drawing.FCStd",
+        }
+
+        with patch("src.model_generator.ai_script_runner.AIScriptRunner", return_value=fake_runner):
+            completed = processor._execute_intelligent_modeling_path(
+                result=result,
+                analysis_result={
+                    "modeling_path_decision": {"modeling_path": "semantic_reconstruction"},
+                    "modeling_instructions": {"freecad_script": "pass"},
+                },
+                geometry_data={"entities": []},
+                output_structure={},
+                extrude_height=10.0,
+                missing_script_message="missing",
+                script_failure_prefix="failed",
+                completion_message="done",
+            )
+
+        self.assertTrue(completed.success)
+        self.assertEqual("drawing.step", completed.output_paths["model_step"])
+        self.assertEqual("drawing.FCStd", completed.output_paths["model_fcstd"])
 
     def test_bridge_outputs_are_normalized_to_requested_paths(self):
         runner = AIScriptRunner.__new__(AIScriptRunner)

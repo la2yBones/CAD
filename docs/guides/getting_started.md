@@ -92,8 +92,8 @@ GUI 支持：
 
 - 扫描 `examples/cad_files`
 - 预览 DXF/DWG 图纸
-- 在兼容基础模式下设置拉伸高度
-- 默认使用智能模式处理；必要时显式切换到兼容基础模式
+- 在基础模式下设置拉伸高度
+- 默认使用智能模式处理；已知图纸可直接平面拉伸时，可显式切换到基础模式
 - 输出 STEP/STL/FCStd 和预览 PNG
 
 预览图保存位置：
@@ -116,7 +116,7 @@ D:\anaconda3\envs\cad_study\python.exe cad_cli.py --list
 D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf
 ```
 
-显式兼容基础模式：
+显式基础模式：
 
 ```powershell
 D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf --basic

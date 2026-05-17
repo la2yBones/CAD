@@ -45,7 +45,6 @@ config = load_config()
 pipeline = CADPipeline(config=config, input_dir="examples/cad_files", output_dir="examples/output")
 
 basic = pipeline.process_file_basic("sample.dxf", extrude_height=10.0)
-legacy_analysis = pipeline.process_file_legacy_analysis("sample.dxf", extrude_height=10.0)
 smart = pipeline.process_file_intelligent("sample.dxf", extrude_height=10.0)
 results = pipeline.process_directory(extrude_height=10.0, enable_analysis=False)
 summary = pipeline.get_summary(results)

@@ -63,7 +63,7 @@
 | 建模指令生成代理 | `src/reconstruction/instruction_generator.py` | 启用 | DeepSeek 生成 FreeCAD 建模指令和脚本 |
 | 兼容导出代理 | `src/compat/` | 启用 | 集中承接旧 import 路径，主路径只保留轻量入口 |
 | FreeCAD 桥接代理 | `src/model_generator/freecad_bridge.py` | 启用 | direct/subprocess 模式检测和脚本执行 |
-| 通用建模代理 | `src/legacy/basic_modeling/generator.py` | 兼容 | legacy/basic 基础轮廓建模和 STEP/STL/FCStd 导出 |
+| 通用建模代理 | `src/legacy/basic_modeling/generator.py` | 启用 | 基础模式的平面轮廓建模和 STEP/STL/FCStd 导出 |
 | AI 脚本运行代理 | `src/model_generator/ai_script_runner.py` | 启用 | AI FreeCAD 脚本执行和产物收集 |
 | 分析缓存代理 | `src/utils/cache.py` | 启用 | 智能分析缓存读写、失效和统计 |
 | 预览缓存代理 | `src/utils/preview_cache.py` | 启用 | CAD 预览图稳定路径生成 |

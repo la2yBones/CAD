@@ -1045,6 +1045,21 @@ arc = Part.ArcOfCircle(
         self.assertEqual(1, summary["stopped_by_user"])
         self.assertEqual(1, summary["failed"])
 
+    def test_pipeline_basic_directory_entry_uses_basic_file_entry(self):
+        pipeline = CADPipeline.__new__(CADPipeline)
+        pipeline.list_available_files = unittest.mock.Mock(return_value=[{"name": "a.dxf"}])
+        pipeline.set_input_dir = unittest.mock.Mock()
+        pipeline.process_multiple_files_basic = unittest.mock.Mock(return_value={"a.dxf": "ok"})
+
+        result = pipeline.process_directory_basic("drawings", 12.0)
+
+        self.assertEqual({"a.dxf": "ok"}, result)
+        pipeline.process_multiple_files_basic.assert_called_once_with(
+            ["a.dxf"],
+            12.0,
+            None,
+        )
+
     def test_basic_processing_skips_multiview_analysis(self):
         processor = CADProcessor.__new__(CADProcessor)
         processor.config = {}
@@ -1160,7 +1175,7 @@ arc = Part.ArcOfCircle(
         with patch("src.model_generator.ai_script_runner.AIScriptRunner", return_value=fake_runner):
             completed = processor._execute_intelligent_modeling_path(
                 result=result,
-                analysis_result={
+                intelligent_analysis_result={
                     "modeling_path_decision": {"modeling_path": "semantic_reconstruction"},
                     "modeling_instructions": {"freecad_script": "pass"},
                 },

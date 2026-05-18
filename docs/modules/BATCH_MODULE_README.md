@@ -30,7 +30,7 @@ src/batch_processor/
 ```powershell
 python cad_cli.py --list
 python cad_cli.py --file examples/cad_files/sample.dxf --height 10
-python cad_cli.py --file examples/cad_files/sample.dxf --legacy-analysis
+python cad_cli.py --file examples/cad_files/sample.dxf --basic
 python cad_cli.py --file examples/cad_files/sample.dxf --intelligent
 python cad_cli.py --dir examples/cad_files --output-dir examples/output
 ```
@@ -46,7 +46,7 @@ pipeline = CADPipeline(config=config, input_dir="examples/cad_files", output_dir
 
 basic = pipeline.process_file_basic("sample.dxf", extrude_height=10.0)
 smart = pipeline.process_file_intelligent("sample.dxf", extrude_height=10.0)
-results = pipeline.process_directory(extrude_height=10.0, enable_analysis=False)
+results = pipeline.process_directory_basic(extrude_height=10.0)
 summary = pipeline.get_summary(results)
 ```
 
@@ -71,7 +71,7 @@ examples/output/<图纸名>/
 
 ## 进度回调
 
-`process_multiple_files()` 和 `process_directory()` 支持 `progress_callback(current, total, result)`，GUI 可用该回调更新进度。
+`process_multiple_files_basic()`、`process_directory_basic()`、`process_multiple_files_intelligent()` 和 `process_directory_intelligent()` 支持 `progress_callback(current, total, result)`，GUI 可用该回调更新进度。
 
 ## 错误处理
 

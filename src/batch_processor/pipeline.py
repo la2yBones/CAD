@@ -54,49 +54,55 @@ class CADPipeline:
         """列出可用的CAD文件"""
         return self.file_manager.list_available_files(input_dir)
 
-    def process_file(self, filename: str, extrude_height: float = 10.0,
-                     enable_analysis: bool = True) -> CADProcessResult:
-        """
-        处理单个文件（外部接口）
-
-        ??:
-            filename: 文件名或完整路径
-            extrude_height: 拉伸高度
-            enable_analysis: 是否启用AI分析
-
-        ??:
-            处理结果对象
-        """
+    def _prepare_file_for_processing(
+        self,
+        filename: str,
+        *,
+        mode: str,
+    ) -> tuple[Optional[Path], Optional[Dict[str, Path]], Optional[CADProcessResult]]:
+        """Resolve, validate, and prepare output paths for a single file."""
         # 解析文件路径
         file_path = self.file_manager.resolve_file_path(filename)
         if not file_path:
-            result = CADProcessResult(success=False, input_file=filename, mode="basic")
+            result = CADProcessResult(success=False, input_file=filename, mode=mode)
             result.error_message = f"找不到文件: {filename}"
             logger.error(result.error_message)
-            return result
+            return None, None, result
 
         # 验证文件
         valid, error_msg = self.file_manager.validate_file(str(file_path))
         if not valid:
-            result = CADProcessResult(success=False, input_file=str(file_path), mode="basic")
+            result = CADProcessResult(success=False, input_file=str(file_path), mode=mode)
             result.error_message = error_msg
             logger.error(error_msg)
-            return result
+            return None, None, result
 
         # 创建输出结构
         output_structure = self.file_manager.create_output_structure(str(file_path))
+        return file_path, output_structure, None
 
-        # 执行处理
+    def process_file(self, filename: str, extrude_height: float = 10.0,
+                     enable_analysis: bool = True) -> CADProcessResult:
+        """兼容入口；新代码请使用 process_file_basic/process_file_intelligent。"""
+        if enable_analysis:
+            return self.process_file_legacy_analysis(filename, extrude_height)
+        return self.process_file_basic(filename, extrude_height)
+
+    def process_file_basic(self, filename: str, extrude_height: float = 10.0) -> CADProcessResult:
+        """基础模式入口：按平面图直接拉伸。"""
+        file_path, output_structure, error_result = self._prepare_file_for_processing(
+            filename,
+            mode="basic",
+        )
+        if error_result:
+            return error_result
+        assert file_path is not None and output_structure is not None
         return self.processor.process_single_file(
             str(file_path),
             output_structure,
             extrude_height,
-            enable_analysis
+            enable_analysis=False,
         )
-
-    def process_file_basic(self, filename: str, extrude_height: float = 10.0) -> CADProcessResult:
-        """基础模式入口：按平面图直接拉伸。"""
-        return self.process_file(filename, extrude_height, enable_analysis=False)
 
     def process_file_legacy_analysis(
         self,
@@ -104,7 +110,19 @@ class CADPipeline:
         extrude_height: float = 10.0,
     ) -> CADProcessResult:
         """旧兼容入口：基础拉伸 + 历史 AI 关系分析。新代码不应使用。"""
-        return self.process_file(filename, extrude_height, enable_analysis=True)
+        file_path, output_structure, error_result = self._prepare_file_for_processing(
+            filename,
+            mode="basic",
+        )
+        if error_result:
+            return error_result
+        assert file_path is not None and output_structure is not None
+        return self.processor.process_single_file(
+            str(file_path),
+            output_structure,
+            extrude_height,
+            enable_analysis=True,
+        )
 
     def process_multiple_files(self, filenames: List[str],
                                extrude_height: float = 10.0,
@@ -127,7 +145,30 @@ class CADPipeline:
 
         for idx, filename in enumerate(filenames):
             logger.info(f"[{idx + 1}/{total}] 处理: {filename}")
-            result = self.process_file(filename, extrude_height, enable_analysis)
+            if enable_analysis:
+                result = self.process_file_legacy_analysis(filename, extrude_height)
+            else:
+                result = self.process_file_basic(filename, extrude_height)
+            results[filename] = result
+
+            if progress_callback:
+                progress_callback(idx + 1, total, result)
+
+        return results
+
+    def process_multiple_files_basic(
+        self,
+        filenames: List[str],
+        extrude_height: float = 10.0,
+        progress_callback: Optional[Callable] = None,
+    ) -> Dict[str, CADProcessResult]:
+        """使用基础模式批量处理多个文件。"""
+        results = {}
+        total = len(filenames)
+
+        for idx, filename in enumerate(filenames):
+            logger.info(f"[{idx + 1}/{total}] 基础处理: {filename}")
+            result = self.process_file_basic(filename, extrude_height)
             results[filename] = result
 
             if progress_callback:
@@ -166,6 +207,28 @@ class CADPipeline:
             extrude_height,
             enable_analysis,
             progress_callback
+        )
+
+    def process_directory_basic(
+        self,
+        input_dir: Optional[str] = None,
+        extrude_height: float = 10.0,
+        progress_callback: Optional[Callable] = None,
+    ) -> Dict[str, CADProcessResult]:
+        """使用基础模式处理目录。"""
+        files = self.list_available_files(input_dir)
+        if not files:
+            logger.warning("没有找到可处理的CAD文件")
+            return {}
+
+        filenames = [f["name"] for f in files]
+        if input_dir:
+            self.set_input_dir(input_dir)
+
+        return self.process_multiple_files_basic(
+            filenames,
+            extrude_height,
+            progress_callback,
         )
 
     def process_multiple_files_intelligent(
@@ -254,26 +317,13 @@ class CADPipeline:
         ??:
             处理结果
         """
-        # 解析文件路径
-        file_path = self.file_manager.resolve_file_path(filename)
-        if not file_path:
-            result = CADProcessResult(success=False, input_file=filename, mode="intelligent")
-            result.error_message = f"找不到文件: {filename}"
-            logger.error(result.error_message)
-            return result
-
-        # 验证文件
-        valid, error_msg = self.file_manager.validate_file(str(file_path))
-        if not valid:
-            result = CADProcessResult(success=False, input_file=str(file_path), mode="intelligent")
-            result.error_message = error_msg
-            logger.error(error_msg)
-            return result
-
-        # 创建输出结构
-        output_structure = self.file_manager.create_output_structure(str(file_path))
-
-        # 执行处理
+        file_path, output_structure, error_result = self._prepare_file_for_processing(
+            filename,
+            mode="intelligent",
+        )
+        if error_result:
+            return error_result
+        assert file_path is not None and output_structure is not None
         return self.processor.process_with_intelligent_analysis(
             str(file_path),
             output_structure,

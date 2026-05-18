@@ -4,7 +4,7 @@
 变更日期：2026-05-13
 影响范围：配置加载、安全日志、FreeCAD 自动发现、CAD 预览输出、依赖元数据、开发文档
 
-本项目用于将 DXF/DWG 二维 CAD 工程图解析为结构化几何数据，并通过 FreeCAD Python API 生成 STEP、STL、FCStd 等三维模型。系统提供 CLI、Tkinter GUI、批处理流水线和智能分析模块，适合毕业设计演示、批量图纸验证和后续算法扩展。
+本项目用于将 DXF/DWG 二维 CAD 工程图解析为结构化几何数据，并通过 FreeCAD Python API 生成 STEP、STL、FCStd 等三维模型。系统提供 CLI、Tkinter GUI、批处理流水线和智能处理编排层，适合毕业设计演示、批量图纸验证和后续算法扩展。
 
 ## 技术栈
 
@@ -45,8 +45,8 @@ E:\Code\CAD
 │   ├── cad_parser/               # CAD 解析与预览
 │   ├── compat/                   # 旧 import 路径集中兼容层
 │   ├── legacy/                   # 旧组件归档与兼容实现
-│   ├── reconstruction/           # 语义重建主链
-│   ├── intelligent_analyzer/     # 视图识别、尺寸提取和分析编排
+│   ├── reconstruction/           # 语义重建内核
+│   ├── intelligent_analyzer/     # 智能处理编排与分析子过程
 │   ├── model_generator/          # AI 脚本运行和 FreeCAD 桥接
 │   ├── batch_processor/          # 文件扫描、单文件处理、批处理
 │   └── utils/                    # 配置、日志、Result、缓存
@@ -109,27 +109,29 @@ sequenceDiagram
     participant User as CLI/GUI 用户
     participant FM as FileManager
     participant Parser as CADParser
-    participant Geo as GeometryAnalyzer
     participant IA as IntelligentEngineeringAnalyzer
-    participant Gen as ModelGenerator
+    participant Recon as SemanticReconstructionPipeline
+    participant Basic as FreeCADModeler
     participant FC as FreeCADBridge/AIScriptRunner
 
     %% 主流程：文件选择与解析
     User->>FM: 选择/扫描 DXF/DWG 图纸
     FM->>Parser: validate + parse(file)
     Parser->>Parser: DXF → ezdxf 解析<br/>DWG → LibreDWG 转 DXF 后解析
-    Parser-->>Geo: 输出实体/图层/块/几何原始数据
-
     %% 分支：基础模式 / 智能模式
-    alt 基础快速建模模式
-        %% 基础几何分析
-        Geo-->>Gen: 基础统计/边界框/图层分布
-        Gen->>FC: 生成基础 FreeCAD 建模脚本并执行
-    else AI智能工程模式
+    alt 基础模式
+        Parser-->>Basic: 已知可平面拉伸图
+        Basic->>FC: 执行平面拉伸
+    else 智能模式
         Parser-->>IA: 完整几何与图层数据
-        IA->>IA: 视图识别 → 尺寸提取 → 智能脚本生成
-        IA-->>Gen: 输出建模指令/FreeCAD脚本
-        Gen->>FC: 执行智能生成脚本
+        IA->>IA: 视图初判 → 尺寸提取 → 视图语义校正
+        IA->>Recon: 语义裁决 → 零件语义 → 建模路径裁决
+        alt 可平面拉伸图
+            Recon-->>Basic: planar_extrude
+            Basic->>FC: 执行平面拉伸
+        else 需要语义重建
+            Recon-->>FC: semantic_reconstruction 脚本
+        end
     end
 
     %% 结果返回

@@ -129,14 +129,14 @@ class CADProcessor:
     def _prepare_intelligent_view_context(
         self,
         geometry_data: Dict[str, Any],
-        analysis_result: Optional[Dict[str, Any]] = None,
+        intelligent_analysis_result: Optional[Dict[str, Any]] = None,
         source_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """为智能模式准备可供后续语义校正使用的视图上下文。"""
         view_analysis = {}
 
-        if analysis_result:
-            view_analysis = analysis_result.get("view_analysis") or {}
+        if intelligent_analysis_result:
+            view_analysis = intelligent_analysis_result.get("view_analysis") or {}
 
         if not view_analysis:
             try:
@@ -239,13 +239,13 @@ class CADProcessor:
                             cache_dir=self.config.get('cache_dir', '.cache/analysis'),
                             cache_ttl=self.config.get('cache_ttl', 3600 * 24 * 7)
                         )
-                        analysis_result = analyzer.analyze_full(
+                        intelligent_analysis_result = analyzer.analyze_full(
                             geometry_data,
                             extrude_height,
                             file_path=str(file_path)
                         )
-                        result.intelligent_analysis = analysis_result
-                        relationships = analysis_result.get("modeling_instructions", {})
+                        result.intelligent_analysis = intelligent_analysis_result
+                        relationships = intelligent_analysis_result.get("modeling_instructions", {})
                         logger.info("智能分析完成")
                     except Exception as e:
                         logger.warning(f"智能分析失败，使用纯几何建模: {e}")
@@ -345,20 +345,20 @@ class CADProcessor:
                         cache_dir=self.config.get('cache_dir', '.cache/analysis'),
                         cache_ttl=self.config.get('cache_ttl', 3600 * 24 * 7)
                     )
-                    analysis_result = analyzer.analyze_full(
+                    intelligent_analysis_result = analyzer.analyze_full(
                         geometry_data, 
                         extrude_height, 
                         file_path=str(file_path)
                     )
-                    result.intelligent_analysis = analysis_result
+                    result.intelligent_analysis = intelligent_analysis_result
 
                     clarification_questions = (
-                        analysis_result.get("semantic_policy", {}) or {}
+                        intelligent_analysis_result.get("semantic_policy", {}) or {}
                     ).get("clarification_questions", [])
                     if clarification_questions:
                         result.mark_needs_clarification(
                             clarification_questions,
-                            analysis_result.get("clarification_context"),
+                            intelligent_analysis_result.get("clarification_context"),
                         )
                         logger.info("语义裁决需要用户澄清，已暂停智能建模")
                         return result
@@ -366,23 +366,23 @@ class CADProcessor:
                     # 保存分析结果
                     output_dir = output_structure.get('directory', Path('.') / 'output')
                     base_name = Path(file_path).stem
-                    analyzer.save_results(analysis_result, str(output_dir), base_name)
+                    analyzer.save_results(intelligent_analysis_result, str(output_dir), base_name)
                     
                     # 显示缓存状态
-                    if analysis_result.get('_cache_hit'):
+                    if intelligent_analysis_result.get('_cache_hit'):
                         logger.info("智能分析已从缓存加载")
                     else:
                         logger.info("智能分析完成并已缓存")
                     
                     # 获取AI生成的脚本
-                    if 'modeling_instructions' in analysis_result:
-                        modeling_instructions = analysis_result['modeling_instructions']
+                    if 'modeling_instructions' in intelligent_analysis_result:
+                        modeling_instructions = intelligent_analysis_result['modeling_instructions']
                         ai_script_content = modeling_instructions.get('freecad_script')
                         has_ai_script = bool(ai_script_content)
 
                     view_analysis = self._prepare_intelligent_view_context(
                         geometry_data,
-                        analysis_result,
+                        intelligent_analysis_result,
                         source_name=file_path
                     )
                         
@@ -410,7 +410,7 @@ class CADProcessor:
 
             return self._execute_intelligent_modeling_path(
                 result=result,
-                analysis_result=result.intelligent_analysis,
+                intelligent_analysis_result=result.intelligent_analysis,
                 geometry_data=geometry_data,
                 output_structure=output_structure,
                 extrude_height=extrude_height,
@@ -470,7 +470,7 @@ class CADProcessor:
         self,
         *,
         result: CADProcessResult,
-        analysis_result: Dict[str, Any],
+        intelligent_analysis_result: Dict[str, Any],
         geometry_data: Dict[str, Any],
         output_structure: Dict[str, Path],
         extrude_height: float,
@@ -478,7 +478,7 @@ class CADProcessor:
         script_failure_prefix: str,
         completion_message: str,
     ) -> CADProcessResult:
-        modeling_path_decision = analysis_result.get("modeling_path_decision", {}) or {}
+        modeling_path_decision = intelligent_analysis_result.get("modeling_path_decision", {}) or {}
         if modeling_path_decision.get("modeling_path") == "planar_extrude":
             result.modeling_path = "planar_extrude"
             logger.info(
@@ -492,7 +492,7 @@ class CADProcessor:
                 extrude_height,
             )
 
-        modeling_instructions = analysis_result.get("modeling_instructions", {}) or {}
+        modeling_instructions = intelligent_analysis_result.get("modeling_instructions", {}) or {}
         ai_script_content = modeling_instructions.get("freecad_script")
         if not ai_script_content:
             result.mark_failed(missing_script_message)
@@ -564,7 +564,7 @@ class CADProcessor:
 
             return self._execute_intelligent_modeling_path(
                 result=result,
-                analysis_result=resumed_analysis,
+                intelligent_analysis_result=resumed_analysis,
                 geometry_data=result.clarification_context["geometry_data"],
                 output_structure=output_structure,
                 extrude_height=result.clarification_context["extrude_height"],

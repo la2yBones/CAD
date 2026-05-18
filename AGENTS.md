@@ -59,7 +59,7 @@
 | LLM 视图校正代理 | `src/intelligent_analyzer/llm_view_analyzer.py` | 启用 | DeepSeek 视图语义校正和校验回退 |
 | 视图结果校验代理 | `src/intelligent_analyzer/view_schema.py` | 启用 | JSON Schema、业务规则和可疑内容校验 |
 | 尺寸提取代理 | `src/intelligent_analyzer/dimension_extractor.py` | 启用 | DIMENSION/TEXT/MTEXT 尺寸提取和分类 |
-| 智能分析总控代理 | `src/intelligent_analyzer/pipeline.py` | 启用 | 串联视图、尺寸、关系、建模指令和缓存 |
+| 智能处理编排代理 | `src/intelligent_analyzer/pipeline.py` | 启用 | 串联智能分析子过程，并调用语义重建内核产出后续处理所需结果 |
 | 建模指令生成代理 | `src/reconstruction/instruction_generator.py` | 启用 | DeepSeek 生成 FreeCAD 建模指令和脚本 |
 | 兼容导出代理 | `src/compat/` | 启用 | 集中承接旧 import 路径，主路径只保留轻量入口 |
 | FreeCAD 桥接代理 | `src/model_generator/freecad_bridge.py` | 启用 | direct/subprocess 模式检测和脚本执行 |
@@ -70,7 +70,7 @@
 | LLM 遥测代理 | `src/utils/llm_telemetry.py` | 启用 | LLM 调用记录和统计汇总 |
 | 配置代理 | `src/utils/config.py` | 启用 | YAML、`.env`、环境变量解析 |
 | 日志代理 | `src/utils/logging.py` | 启用 | 日志初始化和敏感信息脱敏 |
-| 旧几何分析代理 | `src/geometry_analyzer/analyzer.py` | 废弃兼容 | 保留兼容入口，新代码使用智能分析总控代理 |
+| 旧几何分析代理 | `src/geometry_analyzer/analyzer.py` | 废弃兼容 | 保留兼容入口，新代码使用智能处理编排代理 |
 
 ---
 
@@ -82,17 +82,16 @@
 CLI/GUI
   -> CADPipeline
   -> CADFileManager.resolve_file_path()
-  -> CADProcessor.process_file(..., enable_analysis=False)
+  -> CADPipeline.process_file_basic()
   -> CADParser.parse()
   -> CADParser.export_json()
   -> CADParser.visualize()
-  -> CADProcessor._analyze_view_context()
   -> FreeCADModeler.generate()
   -> FreeCADModeler.export()
   -> CADProcessResult
 ```
 
-基础模式不需要 API Key。若检测到二视图/三视图工程图，且入口没有可靠 AI 多视图建模脚本，处理器会返回失败结果并说明原因。
+基础模式不需要 API Key，默认输入已经是可平面拉伸图；它不再负责视图类型裁决。
 
 ### 4.2 智能模式
 
@@ -107,13 +106,17 @@ CLI/GUI
       -> LLMViewAnalyzer.refine_view_analysis()
       -> ViewAnalysisValidator.validate()
       -> IntelligentEngineeringAnalyzer._analyze_local_fallback()
-      -> FreeCADInstructionGenerator.generate()
-  -> AIScriptRunner.run_script()
+      -> SemanticReconstructionPipeline.run()
+          -> SemanticPolicy.evaluate()
+          -> PartSemanticGenerator.generate()
+          -> choose_modeling_path()
+          -> FreeCADInstructionGenerator.generate() 或 planar_extrude 路由
+  -> AIScriptRunner.run_script() 或基础拉伸执行路径
   -> FreeCADBridge.execute_script()
   -> CADProcessResult
 ```
 
-智能模式需要有效 `DEEPSEEK_API_KEY`。LLM 视图校正失败时回退本地规则；建模指令生成失败时生成基础降级脚本。多视图场景下，降级脚本不会被当成可靠多视图建模结果直接执行。
+智能模式需要有效 `DEEPSEEK_API_KEY`。LLM 视图校正失败时可回退本地规则；语义重建内核会依据分析结果给出建模路径裁决，智能模式再执行对应路径。
 
 ### 4.3 仅分析模式
 
@@ -168,13 +171,14 @@ parser.export_json(output_path)
 parser.visualize(preview_path)
 ```
 
-### 5.2 智能分析总控代理
+### 5.2 智能处理编排代理
 
 允许：
 
-- 组织本地视图分析、尺寸提取、LLM 视图校正、本地关系分析和建模指令生成。
+- 组织本地视图初判、尺寸提取、LLM 视图语义校正和本地关系分析。
+- 调用语义重建内核，获取语义裁决、零件语义和建模路径裁决。
 - 读写分析缓存。
-- 保存智能分析产物。
+- 保存智能分析结果产物。
 - 记录 LLM 遥测摘要。
 
 禁止：
@@ -224,7 +228,7 @@ view_result = LLMViewAnalyzer(api_key, api_config).refine_view_analysis(
 - 将几何数据、视图分析和尺寸结果发送给 DeepSeek。
 - 生成 `analysis_summary`、`modeling_strategy`、`freecad_script`、`instructions`、`key_dimensions` 和 `warnings`。
 - 根据 `llm_performance_mode` 控制 thinking 开关。
-- 在失败时生成基础降级脚本。
+- 在需要语义重建时生成 FreeCAD 建模指令；若图纸被裁决为可平面拉伸图，则由智能模式选择对应执行路径。
 
 禁止：
 
@@ -237,7 +241,7 @@ view_result = LLMViewAnalyzer(api_key, api_config).refine_view_analysis(
 允许：
 
 - 组合 CAD 解析、智能分析、通用建模和 AI 脚本执行。
-- 根据视图分析决定是否阻止普通拉伸。
+- 组合 CAD 解析、智能处理编排、通用建模和 AI 脚本执行。
 - 写入标准输出结构。
 - 返回 `CADProcessResult`。
 
@@ -301,9 +305,9 @@ from src.utils import load_config
 config = load_config()
 pipeline = CADPipeline(config=config, input_dir="examples/cad_files", output_dir="examples/output")
 
-result = pipeline.process_file("sample.dxf", extrude_height=10.0, enable_analysis=False)
+result = pipeline.process_file_basic("sample.dxf", extrude_height=10.0)
 smart = pipeline.process_file_intelligent("sample.dxf", extrude_height=10.0)
-batch = pipeline.process_directory(extrude_height=10.0, enable_analysis=False)
+batch = pipeline.process_directory_basic(extrude_height=10.0)
 summary = pipeline.get_summary(batch)
 ```
 

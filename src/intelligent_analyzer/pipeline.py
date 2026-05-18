@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-智能工程图纸处理管道
-整合视图识别、尺寸提取、本地几何分析回退和建模指令生成
+智能处理编排。
+
+保留 IntelligentEngineeringAnalyzer 旧类名以兼容现有调用方；
+当前职责是串联智能分析子过程，并把分析结果交给语义重建内核继续处理。
 """
 import logging
 from typing import Dict, List, Any, Optional
@@ -22,8 +24,10 @@ logger = logging.getLogger(__name__)
 
 class IntelligentEngineeringAnalyzer:
     """
-    智能工程图纸分析器
-    集成所有分析功能的完整管道
+    智能处理编排器（保留旧类名）。
+
+    负责组织视图初判、尺寸提取、视图语义校正和本地几何证据，
+    再把结果交给语义重建内核；它不直接持有建模路径判定规则。
     """
 
     ANALYSIS_VERSION = "llm_view_classifier_v8_semantic_policy"
@@ -69,7 +73,7 @@ class IntelligentEngineeringAnalyzer:
                      extrude_height: float = 10.0,
                      file_path: Optional[str] = None) -> Dict[str, Any]:
         """
-        执行完整的智能分析和建模指令生成
+        执行智能处理编排，返回可供后续执行消费的智能分析结果
 
         ??:
             geometry_data: CAD解析得到的几何数据

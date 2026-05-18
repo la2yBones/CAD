@@ -123,7 +123,7 @@ from src.batch_processor import BatchPipeline
 from src.utils import load_config
 
 pipeline = BatchPipeline(load_config())
-result = pipeline.process_file("examples/cad_files/sample.dxf", "examples/output", 10.0)
+result = pipeline.process_file_basic("sample.dxf", extrude_height=10.0)
 ```
 
 新代码优先使用语义明确的入口：
@@ -133,22 +133,20 @@ smart = pipeline.process_file_intelligent("sample.dxf")
 basic = pipeline.process_file_basic("sample.dxf")
 ```
 
-`process_file(..., enable_analysis=True/False)` 仍保留为底层接口。
+`process_file(..., enable_analysis=True/False)` 仅保留为兼容入口；新代码应使用语义明确的模式入口。
 
-## 智能分析
+## 智能处理编排
 
 ### `src.intelligent_analyzer.IntelligentEngineeringAnalyzer`
 
 职责：
 
-- `ViewAnalyzer`：识别主视图、俯视图、侧视图等工程视图
-- `DimensionExtractor`：从文本和标注附近几何中提取尺寸
-- `SemanticReconstructionPipeline`：承接重建主链
-- `ReconstructionContextBuilder`：整理统一重建上下文
-- `PartSemanticGenerator`：先生成结构化零件语义、候选解释、证据和置信度
-- `FreeCADInstructionGenerator`：基于语义生成建模指令和 FreeCAD 脚本
+- 作为保留旧类名的智能处理编排器
+- 组织 `ViewAnalyzer`、`DimensionExtractor`、LLM 视图语义校正和本地几何证据
+- 调用 `SemanticReconstructionPipeline` 这个语义重建内核
+- 返回包含语义结果和 `modeling_path_decision` 的智能分析结果
 
-智能模式需要 `DEEPSEEK_API_KEY` 配置可用。当前本地规则和聚类逻辑仍是视图/尺寸分析的重要组成部分。
+智能模式需要 `DEEPSEEK_API_KEY` 配置可用。当前本地规则和聚类逻辑仍是智能分析子过程的重要组成部分。
 
 ## 模型生成
 

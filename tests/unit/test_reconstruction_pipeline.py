@@ -389,6 +389,11 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
         self.assertTrue(resumed["modeling_path_decision"]["fallback_from_path_clarification"])
         self.assertFalse(resumed["modeling_instructions"].get("blocked_by_clarification", False))
         pipeline.instruction_generator.generate.assert_called_once()
+        call_kwargs = pipeline.instruction_generator.generate.call_args.kwargs
+        fallback_context = call_kwargs["part_semantics"]["path_clarification_fallback"]
+        self.assertEqual(["extrusion_depth"], fallback_context["missing_fields"])
+        self.assertEqual("planar_extrude", fallback_context["original_modeling_path"])
+        self.assertIn("用户已提供补充建模提示", fallback_context["reason"])
 
     def test_reconstruction_pipeline_waits_for_path_preference(self):
         pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)

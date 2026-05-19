@@ -7,10 +7,12 @@ from copy import deepcopy
 from typing import Any, Dict, Mapping
 
 from .clarification_response import ClarificationResponse
+from .modeling_path import ModelingPathDecision
 
 
 def build_path_contract_pending_result(modeling_path_decision: Dict[str, Any]) -> Dict[str, Any]:
     """Build a modeling result that pauses execution for path-contract clarification."""
+    decision = ModelingPathDecision.from_mapping(modeling_path_decision)
     return {
         "analysis_summary": "",
         "modeling_strategy": "",
@@ -22,16 +24,13 @@ def build_path_contract_pending_result(modeling_path_decision: Dict[str, Any]) -
         ],
         "blocked_by_clarification": True,
         "blocked_by_path_contract": True,
-        "clarification_questions": modeling_path_decision.get("clarification_questions", []),
+        "clarification_questions": decision.clarification_questions,
     }
 
 
 def needs_path_clarification(modeling_path_decision: Dict[str, Any]) -> bool:
     """Return whether the path decision must pause for user clarification."""
-    return bool(
-        modeling_path_decision.get("blocked_by_path_contract")
-        or modeling_path_decision.get("requires_path_preference")
-    )
+    return ModelingPathDecision.from_mapping(modeling_path_decision).requires_clarification
 
 
 def build_path_clarification_payload(

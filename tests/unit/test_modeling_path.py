@@ -2,6 +2,7 @@
 import unittest
 
 from src.reconstruction.modeling_path import (
+    ModelingPathDecision,
     choose_modeling_path,
     default_modeling_path_registry,
 )
@@ -89,6 +90,33 @@ class TestModelingPath(unittest.TestCase):
         self.assertEqual("provide_extrusion_depth", decision["clarification_questions"][0]["id"])
         self.assertIn("厚度或拉伸深度", decision["clarification_questions"][0]["text"])
         self.assertIn("10mm", decision["clarification_questions"][0]["example"])
+
+    def test_decision_view_exposes_clarification_contract(self):
+        decision = ModelingPathDecision.from_mapping({
+            "modeling_path": "semantic_reconstruction",
+            "blocked_by_path_contract": True,
+            "candidate_paths": [
+                {
+                    "path": "planar_extrude",
+                    "missing_fields": ["extrusion_depth"],
+                    "rejection_reasons": [],
+                },
+                {
+                    "path": "revolve",
+                    "missing_fields": ["axis_point"],
+                    "rejection_reasons": ["has_uncertainties"],
+                },
+            ],
+            "clarification_questions": [{"id": "provide_extrusion_depth"}],
+        })
+
+        self.assertTrue(decision.requires_clarification)
+        self.assertEqual("planar_extrude", decision.path_requiring_clarification)
+        self.assertEqual(["extrusion_depth"], decision.missing_contract_fields)
+        self.assertEqual(
+            [{"id": "provide_extrusion_depth"}],
+            decision.clarification_questions,
+        )
 
     def test_routes_to_revolve_when_contract_is_closed(self):
         decision = choose_modeling_path(

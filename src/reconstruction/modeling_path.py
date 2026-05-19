@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from .clarification_questions import clarification_question, choice_option
 from .path_contracts import (
@@ -21,6 +21,56 @@ SEMANTIC_RECONSTRUCTION = "semantic_reconstruction"
 ContractEvaluator = Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]
 ClarificationBuilder = Callable[[Dict[str, Any]], List[Dict[str, Any]]]
 ModelingResultBuilder = Callable[[Dict[str, Any]], Dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ModelingPathDecision:
+    """Read-only view over a modeling-path decision dict."""
+
+    data: Mapping[str, Any]
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ModelingPathDecision":
+        return cls(value)
+
+    @property
+    def modeling_path(self) -> Any:
+        return self.data.get("modeling_path")
+
+    @property
+    def candidate_paths(self) -> List[Dict[str, Any]]:
+        return list(self.data.get("candidate_paths", []) or [])
+
+    @property
+    def clarification_questions(self) -> List[Dict[str, Any]]:
+        return list(self.data.get("clarification_questions", []) or [])
+
+    @property
+    def requires_clarification(self) -> bool:
+        return bool(
+            self.data.get("blocked_by_path_contract")
+            or self.data.get("requires_path_preference")
+        )
+
+    @property
+    def path_requiring_clarification(self) -> Any:
+        for candidate in self.candidate_paths:
+            if candidate.get("rejection_reasons"):
+                continue
+            if candidate.get("missing_fields"):
+                return candidate.get("path") or self.modeling_path
+        return self.modeling_path
+
+    @property
+    def missing_contract_fields(self) -> List[str]:
+        missing_fields = []
+        for candidate in self.candidate_paths:
+            if candidate.get("rejection_reasons"):
+                continue
+            for field in candidate.get("missing_fields", []) or []:
+                if field not in missing_fields:
+                    missing_fields.append(field)
+        return missing_fields
 
 
 @dataclass(frozen=True)
@@ -102,7 +152,8 @@ class ModelingPathRegistry:
         modeling_path_decision: Dict[str, Any],
         part_semantics: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        adapter = self._by_path.get(modeling_path_decision.get("modeling_path"))
+        decision = ModelingPathDecision.from_mapping(modeling_path_decision)
+        adapter = self._by_path.get(decision.modeling_path)
         if not adapter:
             return None
         return adapter.build_modeling_result(part_semantics)

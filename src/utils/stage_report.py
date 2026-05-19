@@ -3,20 +3,46 @@
 """Decision summaries for stage-confirmation dialogs."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Tuple
+
+
+@dataclass(frozen=True)
+class StageDecisionSummary:
+    """Compact stage-review summary rendered in confirmation dialogs."""
+
+    conclusion: str
+    next_step: str
+    details: Tuple[str, ...] = ()
+    risks: Tuple[str, ...] = ()
+
+    def render(self) -> str:
+        lines = [f"结论：{self.conclusion}"]
+        if self.details:
+            lines.extend(f"依据：{item}" for item in self.details[:2])
+        if self.risks:
+            lines.append("风险：" + "；".join(self.risks[:2]))
+        else:
+            lines.append("风险：未发现需要立即处理的问题")
+        lines.append(f"下一步：{self.next_step}")
+        return "\n".join(lines)
 
 
 def build_stage_report(stage: str, payload: Dict[str, Any]) -> str:
     """Build a short decision summary for a completed review stage."""
     if stage == "view_analysis":
-        return build_view_stage_report(payload)
+        return build_view_stage_summary(payload).render()
     if stage == "semantic_reconstruction":
-        return build_semantic_stage_report(payload)
+        return build_semantic_stage_summary(payload).render()
     return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
 
 
 def build_view_stage_report(payload: Dict[str, Any]) -> str:
+    return build_view_stage_summary(payload).render()
+
+
+def build_view_stage_summary(payload: Dict[str, Any]) -> StageDecisionSummary:
     view = payload.get("view_analysis") or {}
     dimensions = payload.get("dimension_data") or {}
     policy = payload.get("semantic_policy") or {}
@@ -26,26 +52,23 @@ def build_view_stage_report(payload: Dict[str, Any]) -> str:
     drawing_type = view.get("drawing_type", "unknown")
     confidence = view.get("confidence", "unknown")
     dimension_count = len(dimensions.get("dimensions") or dimensions.get("extracted_dimensions") or [])
-
-    lines = [
-        f"结论：{drawing_type}，{len(views)} 个视图，{dimension_count} 个尺寸，置信度 {confidence}",
-    ]
     risk_lines = []
     if questions:
         risk_lines.append(f"继续后需要补充信息：{len(questions)} 项")
-    risk_lines.extend(str(item) for item in warnings[:2])
-    if risk_lines:
-        lines.extend(["", "风险：", *[f"- {item}" for item in risk_lines]])
-    else:
-        lines.extend(["", "风险：未发现需要立即处理的问题"])
-    if questions:
-        lines.extend(["", "下一步：继续后进入补充信息面板"])
-    else:
-        lines.extend(["", "下一步：继续进入零件语义重建"])
-    return "\n".join(lines)
+    risk_lines.extend(_short_items(warnings, limit=1))
+    next_step = "继续后进入补充信息面板" if questions else "继续进入零件语义重建"
+    return StageDecisionSummary(
+        conclusion=f"{drawing_type}，{len(views)} 个视图，{dimension_count} 个尺寸，置信度 {confidence}",
+        next_step=next_step,
+        risks=tuple(risk_lines),
+    )
 
 
 def build_semantic_stage_report(payload: Dict[str, Any]) -> str:
+    return build_semantic_stage_summary(payload).render()
+
+
+def build_semantic_stage_summary(payload: Dict[str, Any]) -> StageDecisionSummary:
     semantics = payload.get("part_semantics") or {}
     policy = payload.get("semantic_policy") or {}
     confidence = semantics.get("confidence", "unknown")
@@ -55,29 +78,37 @@ def build_semantic_stage_report(payload: Dict[str, Any]) -> str:
     base_features = semantics.get("base_features") or []
     additive_features = semantics.get("additive_features") or []
     subtractive_features = semantics.get("subtractive_features") or []
-    lines = [
-        "结论：{part_type}，置信度 {confidence}，尺寸来源 {dimension_source}".format(
-            part_type=semantics.get("part_type", "unknown"),
-            confidence=confidence,
-            dimension_source=semantics.get("dimension_source") or policy.get("dimension_source", "unknown"),
-        ),
-        f"主体：基础特征 {len(base_features)} 个，增材 {len(additive_features)} 个，减材 {len(subtractive_features)} 个",
-        f"关键尺寸：{len(key_dimensions)} 个",
-    ]
-    summary = str(semantics.get("summary") or "").strip()
-    if summary:
-        lines.append(f"摘要：{summary[:90]}{'...' if len(summary) > 90 else ''}")
 
-    risk_lines = [str(item) for item in uncertainties[:2]]
-    risk_lines.extend(str(item) for item in warnings[:2])
+    risk_lines = _short_items(uncertainties, limit=1)
+    risk_lines.extend(_short_items(warnings, limit=1))
     try:
         if float(confidence) < 0.7:
             risk_lines.insert(0, "置信度较低")
     except (TypeError, ValueError):
         pass
-    if risk_lines:
-        lines.extend(["", "风险：", *[f"- {item}" for item in risk_lines[:4]]])
-    else:
-        lines.extend(["", "风险：未发现需要立即处理的问题"])
-    lines.extend(["", "下一步：继续进入建模路径选择和执行"])
-    return "\n".join(lines)
+
+    return StageDecisionSummary(
+        conclusion="{part_type}，置信度 {confidence}，尺寸来源 {dimension_source}".format(
+            part_type=semantics.get("part_type", "unknown"),
+            confidence=confidence,
+            dimension_source=semantics.get("dimension_source") or policy.get("dimension_source", "unknown"),
+        ),
+        details=(
+            f"主体特征 {len(base_features)} 个，增材 {len(additive_features)} 个，减材 {len(subtractive_features)} 个",
+            f"关键尺寸 {len(key_dimensions)} 个",
+        ),
+        risks=tuple(risk_lines),
+        next_step="继续进入建模路径选择和执行",
+    )
+
+
+def _short_items(items: Iterable[Any], *, limit: int) -> list[str]:
+    short = []
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        short.append(text[:60] + ("..." if len(text) > 60 else ""))
+        if len(short) >= limit:
+            break
+    return short

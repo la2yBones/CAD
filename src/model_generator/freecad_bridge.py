@@ -198,6 +198,7 @@ class FreeCADBridge:
 
             combined_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
             result = self._parse_marker_output(combined_output, output_dir)
+            result["stdout"] = combined_output[-4000:]
 
             if proc.returncode == 0 and result.get("success"):
                 return result
@@ -354,6 +355,15 @@ except Exception as e:
                 p = line.split("BRIDGE_EXPORT:FCStd:", 1)[1].strip()
                 result["fcstd_path"] = p
                 result["outputs"].append(p)
+            elif "PARTIAL_MODELING_RESULT:" in line:
+                payload = line.split("PARTIAL_MODELING_RESULT:", 1)[1].strip()
+                try:
+                    metadata = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                for key in ("completed_features", "skipped_features", "partial_completion_reason"):
+                    if metadata.get(key):
+                        result[key] = metadata[key]
 
         if not result["outputs"] and output_dir:
             for ext in (".step", ".STEP", ".FCStd"):

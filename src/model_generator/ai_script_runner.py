@@ -7,6 +7,7 @@ AI生成的FreeCAD脚本执行器
 import sys
 import os
 import re
+import json
 import tempfile
 import logging
 import shutil
@@ -142,18 +143,56 @@ class AIScriptRunner:
                     "sandbox_mode": True,
                 }
 
-            return {
+            normalized = {
                 "success": True,
                 "step_path": step_path,
                 "fcstd_path": fcstd_path,
                 "sandbox_mode": True,
             }
+            self._copy_partial_metadata(result, normalized)
+            return normalized
 
         return {
             "success": False,
             "error": self._format_bridge_error(result),
             "stdout": result.get("stdout", ""),
         }
+
+    @staticmethod
+    def _copy_partial_metadata(source: Dict[str, Any], target: Dict[str, Any]) -> None:
+        for key in ("completed_features", "skipped_features", "partial_completion_reason"):
+            if source.get(key):
+                target[key] = source[key]
+
+    @staticmethod
+    def _normalize_feature_records(value: Any) -> list[Dict[str, Any]]:
+        if not value:
+            return []
+        if isinstance(value, dict):
+            return [value]
+        if not isinstance(value, list):
+            return [{"name": str(value), "reason": "unspecified"}]
+        records: list[Dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, dict):
+                records.append(item)
+            else:
+                records.append({"name": str(item), "reason": "unspecified"})
+        return records
+
+    @classmethod
+    def _extract_partial_metadata_from_vars(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        skipped = cls._normalize_feature_records(values.get("skipped_features"))
+        completed = cls._normalize_feature_records(values.get("completed_features"))
+        if skipped:
+            metadata["skipped_features"] = skipped
+        if completed:
+            metadata["completed_features"] = completed
+        reason = values.get("partial_completion_reason")
+        if reason:
+            metadata["partial_completion_reason"] = str(reason)
+        return metadata
 
     def _format_bridge_error(self, result: Dict[str, Any]) -> str:
         error = result.get("error", "未知子进程错误")
@@ -216,7 +255,7 @@ import Part
                 "doc": doc
             })
             
-            exec(modified_script, global_vars, {})
+            exec(modified_script, global_vars, global_vars)
             doc.recompute()
             logger.info("脚本执行完成")
 
@@ -280,6 +319,7 @@ import Part
                 "shape": result_shape,
                 "object": final_obj
             }
+            result.update(self._extract_partial_metadata_from_vars(global_vars))
 
             # 导出STEP
             if output_path:

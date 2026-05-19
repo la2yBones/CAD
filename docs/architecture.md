@@ -8,9 +8,9 @@ DXF/DWG
   ▼
 CADParser ──► geometry_data ──► CADProcessor/CADPipeline
   │                                      │
-  ├─ preview_cache PNG                   ├─ 基础模式: FreeCADModeler 平面拉伸执行路径
+  ├─ preview_cache PNG                   ├─ 平面拉伸路径: FreeCADModeler
   │                                      │
-  └─ DWG: LibreDWG 转换                  └─ 智能模式: IntelligentEngineeringAnalyzer
+  └─ DWG: LibreDWG 转换                  └─ 统一智能处理: IntelligentEngineeringAnalyzer
                                              │
                                              ├─ EngineeringViewAnalyzer 本地视图初判
                                              ├─ DimensionExtractor 尺寸提取
@@ -19,12 +19,17 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
                                              └─ src/reconstruction 语义重建内核
                                                 ├─ ReconstructionContextBuilder 重建上下文
                                                 ├─ PartSemanticGenerator 结构化零件语义
+                                                ├─ path_contracts 专用路径契约
+                                                ├─ path_clarification 路径层追问恢复
                                                 ├─ choose_modeling_path 建模路径裁决
                                                 └─ FreeCADInstructionGenerator AI 脚本生成
                                                        │
-                                   ┌───────────────────┴───────────────────┐
-                                   ▼                                       ▼
-                             FreeCADModeler                         AIScriptRunner
+                                                       ▼
+                                      IntelligentModelingExecutor 建模执行分发
+                                                       │
+                       ┌───────────────────────────────┼───────────────────────────────┐
+                       ▼                               ▼                               ▼
+               FreeCADModeler 平面拉伸        revolve_executor 回转体          AIScriptRunner AI 脚本
                                                        │
                                                        ▼
                                              STEP / STL / FCStd / 报告
@@ -39,7 +44,8 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
 | 兼容导出 | `src/compat/` | 集中承接旧 import 路径，避免兼容 shim 分散在主路径 |
 | 语义重建内核 | `src/reconstruction/` | 重建上下文、零件语义、建模路径裁决和脚本生成 |
 | 智能处理编排 | `src/intelligent_analyzer/` | 串联分析子过程并调用语义重建内核 |
-| 基础模式执行 | `src/legacy/basic_modeling/` | `FreeCADModeler` 平面拉伸执行路径 |
+| 建模执行分发 | `src/batch_processor/modeling_execution.py` | 消费建模路径裁决并分发到平面拉伸、回转体或 AI 脚本执行 |
+| 平面拉伸执行 | `src/legacy/basic_modeling/` | `FreeCADModeler` 平面拉伸执行路径 |
 | 模型执行 | `src/model_generator/` | AI 脚本运行和 FreeCAD direct/subprocess 桥接 |
 | 批处理 | `src/batch_processor/` | 文件扫描、输出结构、处理编排、结果汇总 |
 | 工具层 | `src/utils/` | 配置、日志、Result、缓存、预览路径、LLM 遥测 |
@@ -93,21 +99,27 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
 2. 尺寸提取从 DIMENSION、TEXT、MTEXT 及周边几何中提取标注。
 3. LLM 视图校正输出必须符合 `VIEW_ANALYSIS_SCHEMA`，不合规则回退本地规则。
 4. 复杂实体数超过阈值时跳过全量本地关系分析，避免耗时失控。
-5. 语义重建内核基于结构化结果选择 `planar_extrude` 或 `semantic_reconstruction`。
-6. 智能模式只缓存智能分析结果；最终执行路径和产物属于智能处理结果。
+5. 语义重建内核先依据路径契约筛选合法候选；若候选路径语义未闭合，则生成追问而不是静默回退；若多条路径同时闭合但缺少 `preferred_modeling_path`，同样进入路径优选追问；只有同时满足契约且已有执行器的专用路径才可被真正选中。当前 `planar_extrude` 可执行，`revolve` 已支持“轴线 + 闭合母线点列”的受约束回转体。
+6. 统一智能处理只缓存智能分析结果；最终执行路径和产物属于智能处理结果。
 
-## 6. 基础模式边界
+`PartSemanticGenerator` 输出的零件语义必须显式包含 `planar_modeling_semantics`、`revolve_modeling_semantics` 和 `preferred_modeling_path`。当某条专用路径不适用时，对应语义字段应为 `null`；字段缺失表示模型输出未满足语义交接合同，不应被解释为“路径不适用”。
 
-基础模式当前承担三类场景：
+路径契约只消费这些显式建模语义字段，不再从 `base_features`、`coordinate_system` 或 `key_dimensions` 反推出平面拉伸语义。这样可以避免旧兼容字段绕过语义合同，使缺字段输出被误判为可执行。
 
-1. 无 API Key 的单轮廓平面拉伸演示。
-2. 用户明确选择按平面图直接拉伸。
-3. 智能模式将“可平面拉伸图”内部转交给基础模式执行。
+专用建模路径通过 `ModelingPathRegistry` 注册到路径裁决侧。注册项包含路径 ID、展示标签、路径契约评估器、路径层追问构造器和路由建模结果构造器。该注册表不承接 FreeCAD 执行器、输出路径收集或 `CADProcessResult` 状态变更；这些属于建模执行分发职责。
+
+路径层追问属于语义生成之后的局部恢复：用户补充拉伸深度、拉伸方向或路径优选后，系统把答案写回已有零件语义并重新执行路径契约裁决，不重新触发视图分析或零件语义生成。该恢复逻辑集中在 `src/reconstruction/path_clarification.py`，负责判断是否暂停、构造待澄清建模结果、附加路径层恢复上下文，以及把用户回答写回显式建模语义。`revolve` 被选中后直接交给确定性回转执行器，不再额外生成 AI FreeCAD 脚本。
+
+建模执行分发集中在 `src/batch_processor/modeling_execution.py`。`CADProcessor` 只把智能分析结果、几何数据、输出结构和处理结果对象交给 `IntelligentModelingExecutor`；具体选择平面拉伸、回转体执行器或 AI 脚本运行器由执行分发模块负责。执行分发通过路径 handler 表承接专用建模路径，未注册路径才进入 AI 脚本执行。这样批处理代理不再持有每条建模路径的执行细节。
+
+## 6. 平面拉伸路径边界
+
+平面拉伸路径是统一智能处理内部的一条专用建模路径。它只在图纸已经被判定为可平面拉伸图、且相关语义满足执行条件时承接建模任务。
 
 它的限制同样明确：
 
-- 默认输入已经是可平面拉伸图。
 - 不负责视图类型裁决。
+- 不承担复杂特征理解。
 - 不承担多视图或复杂图纸的语义重建。
 
 ## 7. 缓存与遥测

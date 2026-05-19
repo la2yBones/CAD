@@ -285,6 +285,10 @@ class CADPipeline:
         """
         total = len(results)
         success_count = sum(1 for r in results.values() if r.success)
+        partial_count = sum(
+            1 for r in results.values()
+            if getattr(getattr(r, "status", None), "value", "") == "partial_completed"
+        )
         stopped_count = sum(
             1 for r in results.values()
             if getattr(getattr(r, "status", None), "value", "") == "stopped_by_user"
@@ -299,6 +303,7 @@ class CADPipeline:
         return {
             'total': total,
             'success': success_count,
+            'partial_completed': partial_count,
             'failed': fail_count,
             'stopped_by_user': stopped_count,
             'needs_clarification': clarification_count,

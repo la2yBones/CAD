@@ -89,6 +89,8 @@ class FreeCADInstructionGenerator:
 - 每个建模步骤必须用 try/except 包裹。
 - except 中不得静默忽略错误，必须将错误信息追加到 runtime_warnings 列表。
 - 脚本末尾必须打印 runtime_warnings，便于调试。
+- 主体建模必须优先完成并保存；孔、倒角、圆角、槽、螺纹、局部切除等细节特征应逐项尝试，局部失败时写入 skipped_features，不得让细节失败拖垮已经可靠生成的主体模型。
+- 脚本中应维护 completed_features、skipped_features 和 partial_completion_reason；若 skipped_features 非空，脚本末尾必须打印一行 `PARTIAL_MODELING_RESULT:` 加 JSON 字符串，包含 completed_features、skipped_features、partial_completion_reason。
 
 {MODELING_CONSTRAINTS_PROMPT}
 
@@ -120,6 +122,9 @@ JSON 必须包含以下字段：
   "key_dimensions": [
     {"name": "尺寸名称", "value": 数值}
   ],
+  "completed_features": [{"name": "已完成特征", "kind": "base|detail"}],
+  "skipped_features": [{"name": "跳过细节", "kind": "hole|chamfer|fillet|slot|thread|cut|other", "reason": "跳过原因", "risk": "风险说明"}],
+  "partial_completion_reason": "若存在跳过细节，说明为什么主体模型仍可作为部分建模成果；否则为空字符串",
   "warnings": ["潜在风险、假设或无法确认的信息"]
 }
 
@@ -127,6 +132,7 @@ JSON 必须包含以下字段：
 - 如果尺寸缺失，不得编造精确数值；应使用合理默认值并在 warnings 中说明。
 - 如果轮廓不闭合，不得强行生成面；应跳过该轮廓并记录 warning。
 - 如果检测到二视图或三视图，但无法可靠重建三维结构，应在 warnings 中明确说明，并生成保守脚本或空脚本。
+- 主体外形、主要体量、方向或关键尺寸来源不确定时，不得伪装成部分完成；应输出空脚本或保守失败说明。只有主体可靠且可导出时，才允许把细节缺失记录为 skipped_features。
 - 不得输出完整思维链，只输出简短分析摘要和建模策略。"""
 
     def __init__(self, api_key: str, config: Optional[Dict] = None):
@@ -252,6 +258,9 @@ JSON 必须包含以下字段：
                 "freecad_script": self._generate_fallback_script(geometry_data, extrude_height),
                 "instructions": ["创建草图", "拉伸实体"],
                 "key_dimensions": [],
+                "completed_features": [],
+                "skipped_features": [],
+                "partial_completion_reason": "",
                 "warnings": ["使用降级建模方法"]
             }
 
@@ -305,6 +314,12 @@ JSON 必须包含以下字段：
         )
         prompt_parts.append("\n=== 建模上下文 ===\n")
         prompt_parts.append(json.dumps(modeling_context, ensure_ascii=False, indent=2))
+        user_hint_section = self._build_user_modeling_hint_section(
+            modeling_context,
+            part_semantics,
+        )
+        if user_hint_section:
+            prompt_parts.append(user_hint_section)
         if part_semantics:
             prompt_parts.append("\n=== 零件语义 ===\n")
             prompt_parts.append(json.dumps(part_semantics, ensure_ascii=False, indent=2))
@@ -320,6 +335,43 @@ JSON 必须包含以下字段：
         estimated_tokens = self._estimate_tokens(prompt)
         logger.info(f"Prompt大小: {len(prompt)}字符, ~{estimated_tokens} tokens")
         return prompt
+
+    def _build_user_modeling_hint_section(
+        self,
+        modeling_context: Dict[str, Any],
+        part_semantics: Optional[Dict[str, Any]],
+    ) -> str:
+        semantic_policy = modeling_context.get("semantic_policy", {}) or {}
+        hint = (
+            modeling_context.get("user_modeling_hint")
+            or semantic_policy.get("user_modeling_hint")
+            or (part_semantics or {}).get("user_modeling_hint")
+            or ""
+        )
+        hint = str(hint).strip()
+        if not hint:
+            return ""
+
+        conflict_policy = (
+            modeling_context.get("user_modeling_hint_policy")
+            or semantic_policy.get("user_modeling_hint_policy")
+            or (part_semantics or {}).get("user_modeling_hint_policy")
+            or "drawing_facts_override_user_hint"
+        )
+        return "\n".join([
+            "\n=== 用户补充建模提示使用规则 ===\n",
+            f"用户补充提示: {hint}",
+            f"冲突策略: {conflict_policy}",
+            (
+                "必须遵守：用户补充提示只用于解释建模意图、细节优先级和可接受的跳过范围；"
+                "当它与图纸解析事实、已裁决关键尺寸来源、主体方向或主体外形冲突时，"
+                "必须以图纸事实和 semantic_policy.dimension_plan 为准。"
+            ),
+            (
+                "如果补充提示要求跳过细节，可把对应细节写入 skipped_features；"
+                "不得因此跳过已可靠裁决且影响主体外形或主要体量的特征。"
+            ),
+        ])
 
     def _summarize_entities(self, entities: List[Dict]) -> str:
         """总结实体信息"""

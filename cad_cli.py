@@ -74,17 +74,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 处理模式:
-  默认模式      智能重建模式（AI视图识别 + 尺寸提取 + AI脚本建模）
-  --basic       兼容基础模式（legacy/basic，单轮廓平面拉伸）
+  默认模式      统一智能处理
+  --basic       兼容旧基础入口（已废弃；建议直接使用默认处理）
   --legacy-analysis
-               兼容分析模式（legacy/basic 建模 + AI几何关系分析；--analysis 是旧别名）
-  --intelligent 显式智能重建模式（与默认行为一致）
+               兼容旧分析入口（已废弃；--analysis 是旧别名）
+  --intelligent 兼容别名（与默认处理一致）
   --analysis-only 仅AI分析模式（生成分析报告和FreeCAD脚本，不建3D模型）
 
 示例:
   python cad_cli.py --file sample.dxf
-  python cad_cli.py --file sample.dxf --height 10 --legacy-analysis
-  python cad_cli.py --file sample.dxf --intelligent
   python cad_cli.py --file sample.dxf --analysis-only
   python cad_cli.py --dir examples/cad_files --output-dir my_output
   python cad_cli.py --list
@@ -98,13 +96,13 @@ def main():
 
     analysis_group = parser.add_mutually_exclusive_group()
     analysis_group.add_argument("--basic", "-B", action="store_true",
-                                help="使用兼容基础模式（legacy/basic 单轮廓平面拉伸）")
+                                help="兼容旧基础入口（已废弃；建议直接使用默认处理）")
     analysis_group.add_argument("--legacy-analysis", "--analysis", "-a",
                                 dest="legacy_analysis",
                                 action="store_true",
-                                help="使用兼容分析模式（legacy/basic 建模 + AI几何关系分析；--analysis 为旧别名）")
+                                help="兼容旧分析入口（已废弃；--analysis 为旧别名）")
     analysis_group.add_argument("--intelligent", "-I", action="store_true",
-                                help="启用智能分析（视图识别+尺寸提取+AI脚本建模）")
+                                help="兼容别名（与默认处理一致）")
     analysis_group.add_argument("--analysis-only", "-A", action="store_true",
                                 help="仅运行智能分析并保存报告，不生成3D模型")
 
@@ -164,11 +162,11 @@ def _process_single_file(args, config):
             sys.exit(1)
         return
 
-    mode_label = ("兼容基础模式 (legacy/basic)" if args.basic
-                  else ("兼容分析模式 (legacy/basic)" if args.legacy_analysis
-                        else "智能重建模式 (默认)"))
+    mode_label = ("兼容旧基础入口（已废弃）" if args.basic
+                  else ("兼容旧分析入口（已废弃）" if args.legacy_analysis
+                        else "统一智能处理"))
     logger.info(f"模式: {mode_label}")
-    if not args.intelligent:
+    if args.basic or args.legacy_analysis:
         logger.info(f"拉伸高度: {args.height}mm")
 
     pipeline = CADPipeline(
@@ -184,8 +182,16 @@ def _process_single_file(args, config):
     elif args.legacy_analysis:
         result = pipeline.process_file_legacy_analysis(args.file, extrude_height=args.height)
 
+    status = getattr(getattr(result, "status", None), "value", "")
     if result.success:
-        logger.info("\n✓ 处理成功!")
+        if status == "partial_completed":
+            logger.info("\n✓ 处理部分完成，已生成可检查的主体模型")
+            if getattr(result, "partial_completion_reason", None):
+                logger.info(f"  原因: {result.partial_completion_reason}")
+            for feature in getattr(result, "skipped_features", []) or []:
+                logger.info(f"  跳过细节: {feature}")
+        else:
+            logger.info("\n✓ 处理成功!")
         logger.info(f"  实体数: {result.entity_count}")
         for key, path in result.output_paths.items():
             logger.info(f"  {key}: {path}")

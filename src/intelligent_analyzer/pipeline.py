@@ -7,7 +7,7 @@
 当前职责是串联智能分析子过程，并把分析结果交给语义重建内核继续处理。
 """
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Mapping
 from pathlib import Path
 
 from .view_analyzer import EngineeringViewAnalyzer
@@ -16,9 +16,12 @@ from .dimension_extractor import DimensionExtractor
 from src.utils.stage_confirmation import (
     StageConfirmationStopped,
     StageReview,
+    ensure_stage_stop_message,
+    request_stage_confirmation,
     resolve_stage_confirmation,
 )
 from src.reconstruction import SemanticReconstructionPipeline
+from src.reconstruction.clarification_response import ClarificationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +157,7 @@ class IntelligentEngineeringAnalyzer:
     def continue_with_clarification(
         self,
         clarification_context: Dict[str, Any],
-        clarification_answers: Dict[str, Any],
+        clarification_answers: Mapping[str, Any] | ClarificationResponse,
     ) -> Dict[str, Any]:
         """复用首次分析结果，从语义裁决阶段继续。"""
         return self.reconstruction_pipeline.continue_with_clarification(
@@ -169,12 +172,16 @@ class IntelligentEngineeringAnalyzer:
             confirmation = resolve_stage_confirmation(getattr(self, "config", {}))
             self.stage_confirmation = confirmation
 
-        if not confirmation.should_continue(StageReview("view_analysis", {
+        view_review = StageReview("view_analysis", {
             "view_analysis": analysis_result.get("view_analysis", {}),
             "dimension_data": analysis_result.get("dimension_extraction", {}),
             "semantic_policy": analysis_result.get("semantic_policy", {}),
-        })):
-            raise StageConfirmationStopped("用户在 view_analysis 阶段确认后停止处理")
+        })
+        view_decision = request_stage_confirmation(confirmation, view_review)
+        if not view_decision.continue_processing:
+            raise StageConfirmationStopped(
+                ensure_stage_stop_message(view_decision, "view_analysis")
+            )
 
         clarification_questions = (
             analysis_result.get("semantic_policy", {}) or {}
@@ -183,11 +190,19 @@ class IntelligentEngineeringAnalyzer:
             return
 
         part_semantics = analysis_result.get("part_semantics")
-        if part_semantics and not confirmation.should_continue(StageReview("semantic_reconstruction", {
-            "part_semantics": part_semantics,
-            "semantic_policy": analysis_result.get("semantic_policy", {}),
-        })):
-            raise StageConfirmationStopped("用户在 semantic_reconstruction 阶段确认后停止处理")
+        if part_semantics:
+            semantic_review = StageReview("semantic_reconstruction", {
+                "part_semantics": part_semantics,
+                "semantic_policy": analysis_result.get("semantic_policy", {}),
+            })
+            semantic_decision = request_stage_confirmation(confirmation, semantic_review)
+            if not semantic_decision.continue_processing:
+                raise StageConfirmationStopped(
+                    ensure_stage_stop_message(
+                        semantic_decision,
+                        "semantic_reconstruction",
+                    )
+                )
 
     def _is_semantic_confidence_sufficient(self, part_semantics: Dict[str, Any]) -> bool:
         """兼容入口；语义置信度判断已迁入 reconstruction。"""

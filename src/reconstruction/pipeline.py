@@ -1,23 +1,32 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""语义重建管道，与图纸分析编排层解耦。"""
+"""Semantic reconstruction pipeline decoupled from drawing-analysis orchestration."""
 
 from typing import Any, Dict, Optional
 
 from .context import ReconstructionContextBuilder
+from .clarification_response import ClarificationResponse
 from .semantic_policy import SemanticPolicy
 from .semantics import PartSemanticGenerator
 from .instruction_generator import FreeCADInstructionGenerator
-from .modeling_path import PLANAR_EXTRUDE, choose_modeling_path
+from .modeling_path import default_modeling_path_registry
+from .path_clarification import (
+    apply_path_clarification_answers,
+    build_path_clarification_payload,
+    build_path_contract_pending_result,
+    needs_path_clarification,
+)
 from src.utils.stage_confirmation import (
     StageConfirmationStopped,
     StageReview,
+    ensure_stage_stop_message,
+    request_stage_confirmation,
     resolve_stage_confirmation,
 )
 
 
 class SemanticReconstructionPipeline:
-    """构建重建上下文、零件语义和可执行建模指令。"""
+    """Build reconstruction context, part semantics, and executable modeling instructions."""
 
     def __init__(self, api_key: str, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
@@ -25,6 +34,7 @@ class SemanticReconstructionPipeline:
         self.semantic_policy = SemanticPolicy()
         self.semantic_generator = PartSemanticGenerator(api_key, self.config)
         self.instruction_generator = FreeCADInstructionGenerator(api_key, self.config)
+        self.modeling_path_registry = default_modeling_path_registry()
         self.stage_confirmation = resolve_stage_confirmation(self.config)
 
     def run(
@@ -84,20 +94,21 @@ class SemanticReconstructionPipeline:
             "semantic_policy": policy_result,
         })
 
-        modeling_path_decision = choose_modeling_path(view_analysis, part_semantics)
+        modeling_path_decision = self._choose_modeling_path(view_analysis, part_semantics)
 
         if not self._is_semantic_confidence_sufficient(part_semantics):
             modeling_result = self._build_blocked_modeling_result(part_semantics)
-        elif modeling_path_decision["modeling_path"] == PLANAR_EXTRUDE:
-            modeling_result = self._build_planar_extrude_modeling_result(part_semantics)
+        elif needs_path_clarification(modeling_path_decision):
+            modeling_result = build_path_contract_pending_result(modeling_path_decision)
         else:
-            modeling_result = self.instruction_generator.generate(
-                enriched_geometry if local_relationships else geometry_data,
-                view_analysis,
-                dimension_data,
-                extrude_height,
-                reconstruction_context=adjudicated_context,
+            modeling_result = self._build_modeling_result_for_decision(
+                modeling_path_decision=modeling_path_decision,
                 part_semantics=part_semantics,
+                geometry_data=enriched_geometry if local_relationships else geometry_data,
+                view_analysis=view_analysis,
+                dimension_data=dimension_data,
+                extrude_height=extrude_height,
+                reconstruction_context=adjudicated_context,
                 file_path=file_path,
             )
 
@@ -108,18 +119,42 @@ class SemanticReconstructionPipeline:
             "part_semantics": part_semantics,
             "modeling_path_decision": modeling_path_decision,
             "modeling_instructions": modeling_result,
+            **self._path_clarification_payload(
+                modeling_result=modeling_result,
+                geometry_data=geometry_data,
+                view_analysis=view_analysis,
+                dimension_data=dimension_data,
+                local_relationships=local_relationships,
+                extrude_height=extrude_height,
+                file_path=file_path,
+                reconstruction_context=reconstruction_context,
+                policy_result=policy_result,
+                adjudicated_context=adjudicated_context,
+                part_semantics=part_semantics,
+                modeling_path_decision=modeling_path_decision,
+            ),
         }
 
     def continue_with_clarification(
         self,
         clarification_context: Dict[str, Any],
-        clarification_answers: Dict[str, Any],
+        clarification_answers: Dict[str, Any] | ClarificationResponse,
     ) -> Dict[str, Any]:
-        """复用已完成的解析/视图/尺寸结果，从裁决阶段继续。"""
+        """Continue from adjudication with completed parse, view, and dimension results."""
+        clarification_response = ClarificationResponse.from_input(
+            clarification_answers,
+            source_stage=clarification_context.get("clarification_stage", "semantic_policy"),
+        )
+        if clarification_context.get("clarification_stage") == "modeling_path":
+            return self._continue_with_path_clarification(
+                clarification_context,
+                clarification_response,
+            )
+
         reconstruction_context = clarification_context["reconstruction_context"]
         policy_result = self.semantic_policy.evaluate(
             reconstruction_context,
-            clarification_answers=clarification_answers,
+            clarification_answers=clarification_response,
         )
         adjudicated_context = policy_result["adjudicated_context"]
         summary_context = self.context_builder.build_summary(adjudicated_context)
@@ -144,22 +179,38 @@ class SemanticReconstructionPipeline:
             "part_semantics": part_semantics,
             "semantic_policy": policy_result,
         })
-        modeling_path_decision = choose_modeling_path(
+        modeling_path_decision = self._choose_modeling_path(
             clarification_context["view_analysis"],
             part_semantics,
         )
         if not self._is_semantic_confidence_sufficient(part_semantics):
             modeling_result = self._build_blocked_modeling_result(part_semantics)
-        elif modeling_path_decision["modeling_path"] == PLANAR_EXTRUDE:
-            modeling_result = self._build_planar_extrude_modeling_result(part_semantics)
+        elif needs_path_clarification(modeling_path_decision):
+            if clarification_response.user_modeling_hint:
+                modeling_path_decision = self._build_semantic_recovery_path_decision(
+                    modeling_path_decision
+                )
+                modeling_result = self._build_modeling_result_for_decision(
+                    modeling_path_decision=modeling_path_decision,
+                    part_semantics=part_semantics,
+                    geometry_data=clarification_context["geometry_data"],
+                    view_analysis=clarification_context["view_analysis"],
+                    dimension_data=clarification_context["dimension_data"],
+                    extrude_height=clarification_context["extrude_height"],
+                    reconstruction_context=clarification_context["adjudicated_context"],
+                    file_path=clarification_context.get("file_path"),
+                )
+            else:
+                modeling_result = build_path_contract_pending_result(modeling_path_decision)
         else:
-            modeling_result = self.instruction_generator.generate(
-                clarification_context["geometry_data"],
-                clarification_context["view_analysis"],
-                clarification_context["dimension_data"],
-                clarification_context["extrude_height"],
-                reconstruction_context=adjudicated_context,
+            modeling_result = self._build_modeling_result_for_decision(
+                modeling_path_decision=modeling_path_decision,
                 part_semantics=part_semantics,
+                geometry_data=clarification_context["geometry_data"],
+                view_analysis=clarification_context["view_analysis"],
+                dimension_data=clarification_context["dimension_data"],
+                extrude_height=clarification_context["extrude_height"],
+                reconstruction_context=adjudicated_context,
                 file_path=clarification_context.get("file_path"),
             )
         return {
@@ -169,6 +220,20 @@ class SemanticReconstructionPipeline:
             "part_semantics": part_semantics,
             "modeling_path_decision": modeling_path_decision,
             "modeling_instructions": modeling_result,
+            **self._path_clarification_payload(
+                modeling_result=modeling_result,
+                geometry_data=clarification_context["geometry_data"],
+                view_analysis=clarification_context["view_analysis"],
+                dimension_data=clarification_context["dimension_data"],
+                local_relationships=clarification_context.get("local_relationships"),
+                extrude_height=clarification_context["extrude_height"],
+                file_path=clarification_context.get("file_path"),
+                reconstruction_context=reconstruction_context,
+                policy_result=policy_result,
+                adjudicated_context=adjudicated_context,
+                part_semantics=part_semantics,
+                modeling_path_decision=modeling_path_decision,
+            ),
         }
 
     def _confirm_stage(self, stage: str, payload: Dict[str, Any]) -> None:
@@ -177,13 +242,59 @@ class SemanticReconstructionPipeline:
         if confirmation is None:
             confirmation = resolve_stage_confirmation(getattr(self, "config", {}))
             self.stage_confirmation = confirmation
-        if not confirmation.should_continue(StageReview(stage=stage, payload=payload)):
-            raise StageConfirmationStopped(f"用户在 {stage} 阶段确认后停止处理")
+        decision = request_stage_confirmation(
+            confirmation,
+            StageReview(stage=stage, payload=payload),
+        )
+        if not decision.continue_processing:
+            raise StageConfirmationStopped(ensure_stage_stop_message(decision, stage))
 
     def _is_semantic_confidence_sufficient(self, part_semantics: Dict[str, Any]) -> bool:
         confidence = float(part_semantics.get("confidence") or 0.0)
         threshold = float(self.config.get("semantic_min_confidence", 0.70))
         return confidence >= threshold
+
+    def _modeling_path_registry(self):
+        registry = getattr(self, "modeling_path_registry", None)
+        if registry is None:
+            registry = default_modeling_path_registry()
+            self.modeling_path_registry = registry
+        return registry
+
+    def _choose_modeling_path(
+        self,
+        view_analysis: Dict[str, Any],
+        part_semantics: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._modeling_path_registry().choose(view_analysis, part_semantics)
+
+    def _build_modeling_result_for_decision(
+        self,
+        *,
+        modeling_path_decision: Dict[str, Any],
+        part_semantics: Dict[str, Any],
+        geometry_data: Dict[str, Any],
+        view_analysis: Dict[str, Any],
+        dimension_data: Dict[str, Any],
+        extrude_height: float,
+        reconstruction_context: Dict[str, Any],
+        file_path: Optional[str],
+    ) -> Dict[str, Any]:
+        routed = self._modeling_path_registry().build_routed_modeling_result(
+            modeling_path_decision,
+            part_semantics,
+        )
+        if routed is not None:
+            return routed
+        return self.instruction_generator.generate(
+            geometry_data,
+            view_analysis,
+            dimension_data,
+            extrude_height,
+            reconstruction_context=reconstruction_context,
+            part_semantics=part_semantics,
+            file_path=file_path,
+        )
 
     def _build_blocked_modeling_result(self, part_semantics: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -193,7 +304,7 @@ class SemanticReconstructionPipeline:
             "instructions": [],
             "key_dimensions": part_semantics.get("key_dimensions", []),
             "warnings": [
-                "零件语义置信度不足，已停止自动建模",
+                "Part semantics confidence is insufficient; automatic modeling stopped.",
                 *list(part_semantics.get("uncertainties", []) or []),
                 *list(part_semantics.get("warnings", []) or []),
             ],
@@ -216,9 +327,19 @@ class SemanticReconstructionPipeline:
             "base_features": [],
             "additive_features": [],
             "subtractive_features": [],
+            "planar_modeling_semantics": {
+                "profile": None,
+                "extrusion_direction": "unknown",
+                "extrusion_depth": None,
+                "cut_features": [],
+                "dimension_bindings": [],
+                "uncertainties": ["semantic adjudication pending clarification"],
+            },
+            "revolve_modeling_semantics": None,
+            "preferred_modeling_path": None,
             "key_dimensions": [],
             "uncertainties": [
-                "语义裁决需要用户澄清后才能继续自动建模"
+                "semantic adjudication needs user clarification before automatic modeling can continue"
             ],
             "warnings": [],
         }
@@ -230,20 +351,131 @@ class SemanticReconstructionPipeline:
             "freecad_script": "",
             "instructions": [],
             "key_dimensions": [],
-            "warnings": ["语义裁决需要用户澄清后才能继续自动建模"],
+            "warnings": [
+                "semantic adjudication needs user clarification before automatic modeling can continue"
+            ],
             "blocked_by_clarification": True,
             "clarification_questions": policy_result["clarification_questions"],
         }
 
-    def _build_planar_extrude_modeling_result(self, part_semantics: Dict[str, Any]) -> Dict[str, Any]:
+    def _path_clarification_payload(
+        self,
+        *,
+        modeling_result: Dict[str, Any],
+        geometry_data: Dict[str, Any],
+        view_analysis: Dict[str, Any],
+        dimension_data: Dict[str, Any],
+        local_relationships: Optional[Dict[str, Any]],
+        extrude_height: float,
+        file_path: Optional[str],
+        reconstruction_context: Dict[str, Any],
+        policy_result: Dict[str, Any],
+        adjudicated_context: Dict[str, Any],
+        part_semantics: Dict[str, Any],
+        modeling_path_decision: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return build_path_clarification_payload(
+            modeling_result=modeling_result,
+            base_context=self._build_clarification_context(
+                geometry_data=geometry_data,
+                view_analysis=view_analysis,
+                dimension_data=dimension_data,
+                local_relationships=local_relationships,
+                extrude_height=extrude_height,
+                file_path=file_path,
+                reconstruction_context=reconstruction_context,
+            ),
+            policy_result=policy_result,
+            adjudicated_context=adjudicated_context,
+            part_semantics=part_semantics,
+            modeling_path_decision=modeling_path_decision,
+        )
+
+    def _continue_with_path_clarification(
+        self,
+        clarification_context: Dict[str, Any],
+        clarification_answers: Dict[str, Any] | ClarificationResponse,
+    ) -> Dict[str, Any]:
+        clarification_response = ClarificationResponse.from_input(
+            clarification_answers,
+            source_stage="modeling_path",
+        )
+        part_semantics = apply_path_clarification_answers(
+            clarification_context["part_semantics"],
+            clarification_response,
+        )
+        modeling_path_decision = self._choose_modeling_path(
+            clarification_context["view_analysis"],
+            part_semantics,
+        )
+
+        if not self._is_semantic_confidence_sufficient(part_semantics):
+            modeling_result = self._build_blocked_modeling_result(part_semantics)
+        elif needs_path_clarification(modeling_path_decision):
+            if clarification_response.user_modeling_hint:
+                modeling_path_decision = self._build_semantic_recovery_path_decision(
+                    modeling_path_decision
+                )
+                modeling_result = self._build_modeling_result_for_decision(
+                    modeling_path_decision=modeling_path_decision,
+                    part_semantics=part_semantics,
+                    geometry_data=clarification_context["geometry_data"],
+                    view_analysis=clarification_context["view_analysis"],
+                    dimension_data=clarification_context["dimension_data"],
+                    extrude_height=clarification_context["extrude_height"],
+                    reconstruction_context=clarification_context["adjudicated_context"],
+                    file_path=clarification_context.get("file_path"),
+                )
+            else:
+                modeling_result = build_path_contract_pending_result(modeling_path_decision)
+        else:
+            modeling_result = self._build_modeling_result_for_decision(
+                modeling_path_decision=modeling_path_decision,
+                part_semantics=part_semantics,
+                geometry_data=clarification_context["geometry_data"],
+                view_analysis=clarification_context["view_analysis"],
+                dimension_data=clarification_context["dimension_data"],
+                extrude_height=clarification_context["extrude_height"],
+                reconstruction_context=clarification_context["adjudicated_context"],
+                file_path=clarification_context.get("file_path"),
+            )
+
         return {
-            "analysis_summary": part_semantics.get("summary", ""),
-            "modeling_strategy": "由智能模式裁决为可平面拉伸图，转交基础拉伸执行路径",
-            "freecad_script": "",
-            "instructions": [],
-            "key_dimensions": part_semantics.get("key_dimensions", []),
-            "warnings": [],
-            "routed_to_planar_extrude": True,
+            "reconstruction_context": clarification_context["reconstruction_context"],
+            "semantic_policy": clarification_context["semantic_policy"],
+            "adjudicated_context": clarification_context["adjudicated_context"],
+            "part_semantics": part_semantics,
+            "modeling_path_decision": modeling_path_decision,
+            "modeling_instructions": modeling_result,
+            **self._path_clarification_payload(
+                modeling_result=modeling_result,
+                geometry_data=clarification_context["geometry_data"],
+                view_analysis=clarification_context["view_analysis"],
+                dimension_data=clarification_context["dimension_data"],
+                local_relationships=clarification_context.get("local_relationships"),
+                extrude_height=clarification_context["extrude_height"],
+                file_path=clarification_context.get("file_path"),
+                reconstruction_context=clarification_context["reconstruction_context"],
+                policy_result=clarification_context["semantic_policy"],
+                adjudicated_context=clarification_context["adjudicated_context"],
+                part_semantics=part_semantics,
+                modeling_path_decision=modeling_path_decision,
+            ),
+        }
+
+    @staticmethod
+    def _build_semantic_recovery_path_decision(
+        original_decision: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "modeling_path": "semantic_reconstruction",
+            "reason": (
+                "专用路径契约仍缺少字段，但用户已提供补充建模提示；"
+                "改交由语义重建路径结合图纸上下文继续尝试"
+            ),
+            "candidate_paths": original_decision.get("candidate_paths", []),
+            "fallback_from_path_clarification": True,
+            "original_modeling_path_decision": original_decision,
         }
 
     def _build_clarification_context(
@@ -266,3 +498,4 @@ class SemanticReconstructionPipeline:
             "file_path": file_path,
             "reconstruction_context": reconstruction_context,
         }
+

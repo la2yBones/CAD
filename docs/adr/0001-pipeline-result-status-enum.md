@@ -20,6 +20,7 @@
 | status | success | 含义 |
 |--------|---------|------|
 | `completed` | `True` | 正常完成 |
+| `partial_completed` | `True` | 生成了部分建模成果，模型主体可用但部分细节被跳过 |
 | `failed` | `False` | 不可恢复的失败 |
 | `needs_clarification` | `False` | 语义不足，等待用户输入后可继续 |
 | `stopped_by_user` | `False` | 用户在阶段确认点主动停止处理 |

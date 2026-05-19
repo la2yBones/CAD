@@ -1017,30 +1017,7 @@ class ProcessingPanel(ttk.Frame):
 
         row3 = ttk.Frame(param_frame)
         row3.pack(fill=tk.X, pady=(0, 8))
-        self.height_label = ttk.Label(row3, text="基础模式拉伸高度 (mm):")
-        self.height_label.pack(side=tk.LEFT, padx=(0, 5))
         self.height_var = tk.DoubleVar(value=self.app_config.get('processing', 'basic_default_height', default=10.0))
-        self.height_spinbox = ttk.Spinbox(
-            row3,
-            from_=0.5,
-            to=200,
-            increment=0.5,
-            textvariable=self.height_var,
-            width=8,
-        )
-        self.height_spinbox.pack(side=tk.LEFT)
-
-        ttk.Label(row3, text="处理模式:").pack(side=tk.LEFT, padx=(20, 5))
-        self.mode_var = tk.StringVar(value="intelligent")
-        self.mode_hint_var = tk.StringVar()
-        ttk.Radiobutton(row3, text="智能模式", variable=self.mode_var, value="intelligent").pack(side=tk.LEFT)
-        ttk.Radiobutton(row3, text="基础模式", variable=self.mode_var, value="basic").pack(side=tk.LEFT, padx=(10, 0))
-        self.mode_var.trace_add("write", self._sync_height_controls)
-        self._sync_height_controls()
-
-        self.mode_hint_label = ttk.Label(param_frame, textvariable=self.mode_hint_var, foreground="gray")
-        self.mode_hint_label.pack(fill=tk.X, pady=(4, 0))
-        self._sync_mode_hint()
 
         control_row = ttk.Frame(param_frame)
         control_row.pack(fill=tk.X)
@@ -1310,9 +1287,6 @@ class ProcessingPanel(ttk.Frame):
             return
 
         filepath = self.file_tree.item(selected[0], "values")[2]
-        mode = self.mode_var.get()
-        height = self.height_var.get()
-
         self._processing = True
         self._awaiting_clarification = False
         self._paused = False
@@ -1323,23 +1297,25 @@ class ProcessingPanel(ttk.Frame):
         self.cancel_btn.configure(state="normal")
         self.progress_var.set(0)
         self.progress_label.set("准备中...")
-        if mode == "basic":
-            logger.info(f"开始处理: {Path(filepath).name} (模式: {mode}, 拉伸高度: {height}mm)")
-        else:
-            logger.info(f"开始处理: {Path(filepath).name} (模式: {mode})")
+        logger.info(f"开始处理: {Path(filepath).name}")
 
-        thread = threading.Thread(target=self._run_processing, args=(filepath, mode, height), daemon=True)
+        output_dir = self.output_dir_var.get()
+        confirm_llm_stages = bool(self.stage_confirmation_var.get())
+        thread = threading.Thread(
+            target=self._run_processing,
+            args=(filepath, output_dir, confirm_llm_stages),
+            daemon=True,
+        )
         thread.start()
 
-    def _run_processing(self, filepath: str, mode: str, height: float):
+    def _run_processing(self, filepath: str, output_dir: str, confirm_llm_stages: bool):
         start_time = time.time()
         try:
             self._check_control_state("start")
-            config = self._load_config()
+            config = self._load_config(confirm_llm_stages=confirm_llm_stages)
             from src.batch_processor import CADPipeline
 
             input_dir = str(Path(filepath).parent)
-            output_dir = self.output_dir_var.get()
 
             self.pipeline = CADPipeline(config=config, input_dir=input_dir, output_dir=output_dir)
             self.pipeline.set_output_dir(output_dir)
@@ -1348,34 +1324,34 @@ class ProcessingPanel(ttk.Frame):
 
             self._check_control_state("pipeline-ready")
 
-            if mode != "basic":
-                if mode != "intelligent":
-                    logger.warning(f"未知处理模式 {mode!r}，默认使用智能模式")
-                logger.info("使用智能分析模式（AI视图校正 + AI脚本建模）")
-                self.pipeline.processor.process_with_intelligent_analysis = self._wrap_intelligent(
-                    self.pipeline.processor.process_with_intelligent_analysis)
-                self._check_control_state("before-intelligent-processing")
-                result = self.pipeline.process_file_intelligent(filepath)
-            else:
-                logger.info("使用基础模式（直接按平面图拉伸，不调用 AI 脚本建模）")
-                self._check_control_state("before-basic-processing")
-                result = self.pipeline.process_file(filepath, height, enable_analysis=False)
+            logger.info("使用统一智能处理入口")
+            self.pipeline.processor.process_with_intelligent_analysis = self._wrap_intelligent(
+                self.pipeline.processor.process_with_intelligent_analysis)
+            self._check_control_state("before-intelligent-processing")
+            result = self.pipeline.process_file_intelligent(filepath)
 
             self._update_progress(90, "完成，正在生成报告...")
 
             self._check_control_state("processing-finished")
             elapsed = time.time() - start_time
             if result.success:
-                result_mode = getattr(result, "mode", None) or mode
+                status_value = getattr(getattr(result, "status", None), "value", "")
+                result_mode = getattr(result, "mode", None) or "intelligent"
                 result_path = getattr(result, "modeling_path", None) or "unknown"
+                status_label = "部分完成" if status_value == "partial_completed" else "处理成功"
                 logger.info(
-                    f"处理成功 | 耗时: {elapsed:.1f}s | 实体数: {result.entity_count} | "
+                    f"{status_label} | 耗时: {elapsed:.1f}s | 实体数: {result.entity_count} | "
                     f"模式: {result_mode} | 建模路径: {result_path}"
                 )
+                if status_value == "partial_completed":
+                    logger.warning(f"部分完成原因: {getattr(result, 'partial_completion_reason', '')}")
+                    for feature in getattr(result, "skipped_features", []) or []:
+                        logger.warning(f"跳过细节: {feature}")
                 if result.output_paths:
                     for k, v in result.output_paths.items():
                         logger.info(f"输出产物 [{k}]: {v}")
-                self.after(0, lambda: self.progress_label.set(f"完成 ({elapsed:.1f}s)"))
+                label = "部分完成" if status_value == "partial_completed" else "完成"
+                self.after(0, lambda l=label: self.progress_label.set(f"{l} ({elapsed:.1f}s)"))
                 self.after(0, lambda: self.progress_var.set(100))
             elif getattr(result, "status", None) and getattr(result.status, "value", "") == "needs_clarification":
                 self._awaiting_clarification = True
@@ -1440,7 +1416,7 @@ class ProcessingPanel(ttk.Frame):
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(
             body,
-            text="系统需要先确认以下信息，才能继续智能建模：",
+            text="系统需要补充信息后再继续智能建模：",
             font=("", 10, "bold"),
         ).pack(anchor=tk.W, pady=(0, 10))
 
@@ -1449,6 +1425,22 @@ class ProcessingPanel(ttk.Frame):
             block = ttk.Frame(body)
             block.pack(fill=tk.X, pady=(0, 10))
             ttk.Label(block, text=question.get("text", "请补充信息")).pack(anchor=tk.W)
+            reason = str(question.get("reason") or "").strip()
+            if reason:
+                ttk.Label(
+                    block,
+                    text=f"为什么问：{reason}",
+                    foreground="#666666",
+                    wraplength=420,
+                ).pack(anchor=tk.W, pady=(2, 0))
+            example = str(question.get("example") or "").strip()
+            if example:
+                ttk.Label(
+                    block,
+                    text=f"示例：{example}",
+                    foreground="#666666",
+                    wraplength=420,
+                ).pack(anchor=tk.W, pady=(2, 0))
             kind = question.get("kind")
             options = question.get("options", []) or []
             if kind == "single_choice" and options:
@@ -1472,6 +1464,18 @@ class ProcessingPanel(ttk.Frame):
                 ttk.Entry(block, textvariable=var, width=28).pack(anchor=tk.W, pady=(4, 0))
             answer_vars[question.get("id")] = var
 
+        hint_block = ttk.Frame(body)
+        hint_block.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        ttk.Label(hint_block, text="补充给大模型的建模提示（可选）").pack(anchor=tk.W)
+        ttk.Label(
+            hint_block,
+            text="可说明建模意图、细节优先级或可跳过内容；图纸事实、标注尺寸和主体外形仍优先。",
+            foreground="#666666",
+            wraplength=420,
+        ).pack(anchor=tk.W, pady=(2, 0))
+        hint_text = tk.Text(hint_block, height=4, width=52, wrap=tk.WORD)
+        hint_text.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+
         action_row = ttk.Frame(body)
         action_row.pack(fill=tk.X, pady=(4, 0))
 
@@ -1481,9 +1485,20 @@ class ProcessingPanel(ttk.Frame):
                 for question_id, var in answer_vars.items()
                 if question_id and var.get().strip()
             }
-            if len(answers) != len(answer_vars):
-                messagebox.showinfo("还差一点", "请先回答所有问题。", parent=dialog)
+            hint = hint_text.get("1.0", tk.END).strip()
+            required_missing = [
+                question.get("id")
+                for question in questions
+                if question.get("required") and question.get("id") not in answers
+            ]
+            if required_missing:
+                messagebox.showinfo("还差一点", "请先回答必填问题。", parent=dialog)
                 return
+            if not answers and not hint:
+                messagebox.showinfo("还差一点", "请回答至少一个问题，或填写给大模型的补充提示。", parent=dialog)
+                return
+            if hint:
+                answers["user_modeling_hint"] = hint
             dialog.destroy()
             self._resume_after_clarification(result, answers, start_time)
 
@@ -1522,29 +1537,50 @@ class ProcessingPanel(ttk.Frame):
         y = parent_y + max((parent_height - height) // 2, 0)
         dialog.geometry(f"{width}x{height}+{x}+{y}")
 
-    def _confirm_llm_stage(self, stage: str, payload: Dict[str, Any]) -> bool:
+    def _confirm_llm_stage(self, stage: str, payload: Dict[str, Any]):
         """Worker-thread bridge for modal stage review in Tk's main thread."""
-        if not getattr(self, "stage_confirmation_var", None) or not self.stage_confirmation_var.get():
-            return True
+        from src.utils.stage_confirmation import (
+            StageConfirmationResult,
+            default_stage_stop_message,
+        )
+
         if self._cancel_event.is_set():
-            return False
+            return StageConfirmationResult(
+                continue_processing=False,
+                action="cancel",
+                message=default_stage_stop_message(stage),
+                stage=stage,
+            )
 
         completed = threading.Event()
-        outcome = {"continue": False}
+        outcome = {
+            "decision": StageConfirmationResult.stop(default_stage_stop_message(stage))
+        }
+        self.after(0, lambda: self.progress_label.set("等待阶段确认"))
         self.after(0, lambda: self._show_stage_confirmation_dialog(stage, payload, outcome, completed))
 
         while not completed.wait(0.1):
             if self._cancel_event.is_set():
-                return False
-        return bool(outcome["continue"])
+                return StageConfirmationResult(
+                    continue_processing=False,
+                    action="cancel",
+                    message=default_stage_stop_message(stage),
+                    stage=stage,
+                )
+        return outcome["decision"]
 
     def _show_stage_confirmation_dialog(
         self,
         stage: str,
         payload: Dict[str, Any],
-        outcome: Dict[str, bool],
+        outcome: Dict[str, Any],
         completed: threading.Event,
     ) -> None:
+        from src.utils.stage_confirmation import (
+            StageConfirmationResult,
+            default_stage_stop_message,
+        )
+
         stage_titles = {
             "view_analysis": "视图语义校正",
             "semantic_reconstruction": "零件语义重建",
@@ -1556,17 +1592,17 @@ class ProcessingPanel(ttk.Frame):
         dialog.transient(self.winfo_toplevel())
         dialog.grab_set()
         dialog.resizable(True, True)
-        dialog.minsize(520, 360)
+        dialog.minsize(460, 260)
 
         body = ttk.Frame(dialog, padding=14)
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(
             body,
-            text=f"{title}已完成，请查看汇报后继续。",
+            text=f"{title}已完成",
             font=("", 10, "bold"),
         ).pack(anchor=tk.W, pady=(0, 8))
 
-        report_text = tk.Text(body, height=14, width=72, wrap=tk.WORD)
+        report_text = tk.Text(body, height=9, width=62, wrap=tk.WORD)
         report_text.pack(fill=tk.BOTH, expand=True)
         report_text.insert("1.0", self._build_stage_report(stage, payload))
         report_text.configure(state="disabled")
@@ -1580,99 +1616,43 @@ class ProcessingPanel(ttk.Frame):
         action_row.pack(fill=tk.X, pady=(10, 0))
 
         def continue_stage():
-            outcome["continue"] = True
+            outcome["decision"] = StageConfirmationResult.continue_()
             completed.set()
             dialog.destroy()
 
         def stop_stage():
-            outcome["continue"] = False
+            outcome["decision"] = StageConfirmationResult.stop(
+                default_stage_stop_message(stage),
+                stage=stage,
+            )
             completed.set()
             dialog.destroy()
+
+        def close_if_cancelled():
+            if completed.is_set():
+                return
+            if self._cancel_event.is_set():
+                outcome["decision"] = StageConfirmationResult(
+                    continue_processing=False,
+                    action="cancel",
+                    message=default_stage_stop_message(stage),
+                    stage=stage,
+                )
+                completed.set()
+                dialog.destroy()
+                return
+            dialog.after(100, close_if_cancelled)
 
         ttk.Button(action_row, text="继续", command=continue_stage).pack(side=tk.RIGHT)
         ttk.Button(action_row, text="停止", command=stop_stage).pack(side=tk.RIGHT, padx=(0, 8))
         self._center_dialog(dialog)
         dialog.protocol("WM_DELETE_WINDOW", stop_stage)
+        dialog.after(100, close_if_cancelled)
 
     def _build_stage_report(self, stage: str, payload: Dict[str, Any]) -> str:
-        if stage == "view_analysis":
-            return self._build_view_stage_report(payload)
-        if stage == "semantic_reconstruction":
-            return self._build_semantic_stage_report(payload)
-        return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        from src.utils.stage_report import build_stage_report
 
-    def _build_view_stage_report(self, payload: Dict[str, Any]) -> str:
-        view = payload.get("view_analysis") or {}
-        dimensions = payload.get("dimension_data") or {}
-        policy = payload.get("semantic_policy") or {}
-        questions = policy.get("clarification_questions") or []
-
-        lines = [
-            "阶段：视图语义校正",
-            f"图纸类型：{view.get('drawing_type', 'unknown')}",
-            f"置信度：{view.get('confidence', 'unknown')}",
-            f"识别视图数：{len(view.get('views') or [])}",
-            f"尺寸标注数：{len(dimensions.get('dimensions') or dimensions.get('extracted_dimensions') or [])}",
-        ]
-        if questions:
-            lines.append(f"继续后将先补充信息：{len(questions)} 个追问")
-            lines.append("建议动作：继续后先回答追问，再决定是否进入下一阶段。")
-
-        warnings = view.get("warnings") or []
-        if warnings:
-            lines.extend(["", "Warnings:"])
-            lines.extend(f"- {item}" for item in warnings[:8])
-
-        views = view.get("views") or []
-        if views:
-            lines.extend(["", "视图摘要:"])
-            for item in views[:8]:
-                name = item.get("name") or item.get("view_name") or "unknown"
-                view_type = item.get("type") or item.get("view_type") or item.get("projection_type") or "unknown"
-                confidence = item.get("confidence", "unknown")
-                lines.append(f"- {name}: {view_type}, confidence={confidence}")
-
-        if questions:
-            lines.extend(["", "即将追问:"])
-            for question in questions[:5]:
-                lines.append(f"- {question.get('text', '请补充信息')}")
-        return "\n".join(lines)
-
-    def _build_semantic_stage_report(self, payload: Dict[str, Any]) -> str:
-        semantics = payload.get("part_semantics") or {}
-        policy = payload.get("semantic_policy") or {}
-        confidence = semantics.get("confidence", "unknown")
-        lines = [
-            "阶段：零件语义重建",
-            f"零件类型：{semantics.get('part_type', 'unknown')}",
-            f"置信度：{confidence}",
-            f"摘要：{semantics.get('summary', '')}",
-            f"尺寸来源：{semantics.get('dimension_source') or policy.get('dimension_source', 'unknown')}",
-        ]
-        try:
-            if float(confidence) < 0.7:
-                lines.append("建议动作：当前置信度较低，建议先检查汇报再决定是否继续。")
-        except (TypeError, ValueError):
-            pass
-
-        for title, key in (
-            ("关键尺寸", "key_dimensions"),
-            ("基础特征", "base_features"),
-            ("增材特征", "additive_features"),
-            ("减材特征", "subtractive_features"),
-            ("不确定点", "uncertainties"),
-            ("Warnings", "warnings"),
-        ):
-            items = semantics.get(key) or []
-            if not items:
-                continue
-            lines.extend(["", f"{title}:"])
-            for item in items[:8]:
-                if isinstance(item, dict):
-                    lines.append(f"- {json.dumps(item, ensure_ascii=False, default=str)}")
-                else:
-                    lines.append(f"- {item}")
-        return "\n".join(lines)
+        return build_stage_report(stage, payload)
 
     def _resume_after_clarification(self, result, answers: Dict[str, str], start_time: float):
         self._processing = True
@@ -1696,11 +1676,18 @@ class ProcessingPanel(ttk.Frame):
             resumed = self.pipeline.continue_file_with_clarification(result, answers)
             elapsed = time.time() - start_time
             if resumed.success:
-                logger.info(f"澄清后处理成功 | 总耗时: {elapsed:.1f}s | 实体数: {resumed.entity_count}")
+                status_value = getattr(getattr(resumed, "status", None), "value", "")
+                status_label = "澄清后部分完成" if status_value == "partial_completed" else "澄清后处理成功"
+                logger.info(f"{status_label} | 总耗时: {elapsed:.1f}s | 实体数: {resumed.entity_count}")
+                if status_value == "partial_completed":
+                    logger.warning(f"部分完成原因: {getattr(resumed, 'partial_completion_reason', '')}")
+                    for feature in getattr(resumed, "skipped_features", []) or []:
+                        logger.warning(f"跳过细节: {feature}")
                 if resumed.output_paths:
                     for k, v in resumed.output_paths.items():
                         logger.info(f"输出产物 [{k}]: {v}")
-                self.after(0, lambda: self.progress_label.set(f"完成 ({elapsed:.1f}s)"))
+                label = "部分完成" if status_value == "partial_completed" else "完成"
+                self.after(0, lambda l=label: self.progress_label.set(f"{l} ({elapsed:.1f}s)"))
                 self.after(0, lambda: self.progress_var.set(100))
             elif getattr(resumed, "status", None) and getattr(resumed.status, "value", "") == "needs_clarification":
                 self._awaiting_clarification = True
@@ -1754,23 +1741,7 @@ class ProcessingPanel(ttk.Frame):
             return result
         return wrapped
 
-    def _sync_height_controls(self, *_args):
-        visible = self.mode_var.get() == "basic"
-        if visible:
-            self.height_label.pack(side=tk.LEFT, padx=(0, 5))
-            self.height_spinbox.pack(side=tk.LEFT)
-        else:
-            self.height_label.pack_forget()
-            self.height_spinbox.pack_forget()
-        self._sync_mode_hint()
-
-    def _sync_mode_hint(self):
-        if self.mode_var.get() == "basic":
-            self.mode_hint_var.set("基础模式仅负责平面拉伸；多视图或复杂图纸请使用智能模式。")
-        else:
-            self.mode_hint_var.set("智能模式负责识别图纸类型并选择建模路径。")
-
-    def _load_config(self) -> Dict:
+    def _load_config(self, *, confirm_llm_stages: bool) -> Dict:
         config = {}
         try:
             from src.utils.config import load_config
@@ -1779,7 +1750,7 @@ class ProcessingPanel(ttk.Frame):
             pass
         config['cache_dir'] = self.app_config.get('cache', 'dir', default='.cache/analysis')
         config['cache_ttl'] = self.app_config.get('cache', 'default_ttl_days', default=7) * 86400
-        if getattr(self, "stage_confirmation_var", None) and self.stage_confirmation_var.get():
+        if confirm_llm_stages:
             from src.utils.stage_confirmation import CallbackStageConfirmation
             config.setdefault("api", {}).setdefault("deepseek", {})[
                 "_stage_confirmation"

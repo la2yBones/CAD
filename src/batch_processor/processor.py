@@ -12,6 +12,8 @@ from typing import Dict, Any, Optional, Tuple
 import logging
 import traceback
 
+from src.batch_processor.modeling_execution import IntelligentModelingExecutor
+from src.reconstruction.clarification_response import ClarificationResponse
 from src.utils.stage_confirmation import StageConfirmationStopped
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,7 @@ class PipelineStatus(str, Enum):
     """单文件处理流程的真实状态。"""
 
     COMPLETED = "completed"
+    PARTIAL_COMPLETED = "partial_completed"
     FAILED = "failed"
     NEEDS_CLARIFICATION = "needs_clarification"
     STOPPED_BY_USER = "stopped_by_user"
@@ -46,6 +49,11 @@ class CADProcessResult:
         self.intelligent_analysis: Optional[Dict] = None  # 智能分析结果
         self.clarification_questions: list[Dict[str, Any]] = []
         self.clarification_context: Optional[Dict[str, Any]] = None
+        self.completed_features: list[Dict[str, Any]] = []
+        self.skipped_features: list[Dict[str, Any]] = []
+        self.partial_completion_reason: Optional[str] = None
+        self.stage_stop_action: Optional[str] = None
+        self.stage_stop_stage: Optional[str] = None
         self.output_paths: Dict[str, str] = {}
         self.error_message: Optional[str] = None
         self.entity_count: int = 0
@@ -53,6 +61,22 @@ class CADProcessResult:
     def mark_completed(self) -> None:
         self.success = True
         self.status = PipelineStatus.COMPLETED
+        self.completed_features = []
+        self.skipped_features = []
+        self.partial_completion_reason = None
+
+    def mark_partial_completed(
+        self,
+        *,
+        skipped_features: Optional[list[Dict[str, Any]]] = None,
+        completed_features: Optional[list[Dict[str, Any]]] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        self.success = True
+        self.status = PipelineStatus.PARTIAL_COMPLETED
+        self.skipped_features = skipped_features or []
+        self.completed_features = completed_features or []
+        self.partial_completion_reason = reason or "模型主体已生成并导出，部分细节被跳过"
 
     def mark_failed(self, error_message: Optional[str] = None) -> None:
         self.success = False
@@ -70,10 +94,17 @@ class CADProcessResult:
         self.clarification_questions = questions
         self.clarification_context = clarification_context
 
-    def mark_stopped_by_user(self, message: Optional[str] = None) -> None:
+    def mark_stopped_by_user(
+        self,
+        message: Optional[str] = None,
+        action: Optional[str] = None,
+        stage: Optional[str] = None,
+    ) -> None:
         self.success = False
         self.status = PipelineStatus.STOPPED_BY_USER
         self.error_message = message or "用户停止处理"
+        self.stage_stop_action = action or "stop"
+        self.stage_stop_stage = stage
 
     def to_dict(self) -> Dict:
         return {
@@ -88,6 +119,11 @@ class CADProcessResult:
             'has_intelligent_analysis': self.intelligent_analysis is not None,
             'clarification_questions': self.clarification_questions,
             'has_clarification_context': self.clarification_context is not None,
+            'completed_features': self.completed_features,
+            'skipped_features': self.skipped_features,
+            'partial_completion_reason': self.partial_completion_reason,
+            'stage_stop_action': self.stage_stop_action,
+            'stage_stop_stage': self.stage_stop_stage,
         }
 
 
@@ -111,6 +147,7 @@ class CADProcessor:
         """初始化各个处理组件"""
         self._cad_parser = None
         self._modeler = None
+        self._modeling_executor = None
 
     def _get_parser(self):
         """获取或创建CAD解析器"""
@@ -125,6 +162,14 @@ class CADProcessor:
             from src.legacy.basic_modeling import FreeCADModeler
             self._modeler = FreeCADModeler
         return self._modeler
+
+    def _get_modeling_executor(self):
+        if getattr(self, "_modeling_executor", None) is None:
+            self._modeling_executor = IntelligentModelingExecutor(
+                self.config,
+                self._get_modeler,
+            )
+        return self._modeling_executor
 
     def _prepare_intelligent_view_context(
         self,
@@ -352,9 +397,9 @@ class CADProcessor:
                     )
                     result.intelligent_analysis = intelligent_analysis_result
 
-                    clarification_questions = (
-                        intelligent_analysis_result.get("semantic_policy", {}) or {}
-                    ).get("clarification_questions", [])
+                    clarification_questions = self._collect_clarification_questions(
+                        intelligent_analysis_result
+                    )
                     if clarification_questions:
                         result.mark_needs_clarification(
                             clarification_questions,
@@ -387,8 +432,17 @@ class CADProcessor:
                     )
                         
                 except StageConfirmationStopped as stopped:
-                    result.mark_stopped_by_user(str(stopped))
-                    logger.info(result.error_message)
+                    result.mark_stopped_by_user(
+                        str(stopped),
+                        action=getattr(stopped.result, "action", None),
+                        stage=getattr(stopped.result, "stage", None),
+                    )
+                    logger.info(
+                        "%s | action=%s | stage=%s",
+                        result.error_message,
+                        result.stage_stop_action,
+                        result.stage_stop_stage,
+                    )
                     return result
                 except Exception as e:
                     result.error_message = f"智能分析失败，未进入建模阶段: {e}"
@@ -420,8 +474,17 @@ class CADProcessor:
             )
 
         except StageConfirmationStopped as stopped:
-            result.mark_stopped_by_user(str(stopped))
-            logger.info(result.error_message)
+            result.mark_stopped_by_user(
+                str(stopped),
+                action=getattr(stopped.result, "action", None),
+                stage=getattr(stopped.result, "stage", None),
+            )
+            logger.info(
+                "%s | action=%s | stage=%s",
+                result.error_message,
+                result.stage_stop_action,
+                result.stage_stop_stage,
+            )
         except Exception as e:
             result.error_message = str(e)
             logger.error(f"智能分析处理失败: {e}")
@@ -429,42 +492,15 @@ class CADProcessor:
 
         return result
 
-    def _run_planar_extrude_for_intelligent_result(
-        self,
-        result: CADProcessResult,
-        geometry_data: Dict[str, Any],
-        output_structure: Dict[str, Path],
-        extrude_height: float,
-    ) -> CADProcessResult:
-        modeler_config = {}
-        if "freecad" in self.config:
-            modeler_config.update(self.config.get("freecad", {}))
-        modeler_config["default_extrude_height"] = extrude_height
-
-        modeler = self._get_modeler()(modeler_config)
-        modeler.generate(geometry_data, {})
-
-        if "model_step" in output_structure:
-            export_path = str(output_structure["model_step"])
-            export_success = modeler.export(export_path, "STEP")
-            if export_success and Path(export_path).exists():
-                result.output_paths["model_step"] = export_path
-                logger.info(f"STEP模型已确认保存: {export_path}")
-            else:
-                logger.warning(f"STEP模型可能未正确保存: {export_path}")
-
-        if "model_stl" in output_structure:
-            try:
-                stl_path = str(output_structure["model_stl"])
-                if modeler.export(stl_path, "STL") and Path(stl_path).exists():
-                    result.output_paths["model_stl"] = stl_path
-            except Exception as error:
-                logger.warning(f"STL导出失败: {error}")
-
-        modeler.close()
-        result.mark_completed()
-        logger.info(f"智能模式平面拉伸完成: {Path(result.input_file).name}")
-        return result
+    @staticmethod
+    def _collect_clarification_questions(intelligent_analysis_result: Dict[str, Any]) -> list[Dict[str, Any]]:
+        semantic_questions = (
+            intelligent_analysis_result.get("semantic_policy", {}) or {}
+        ).get("clarification_questions", [])
+        path_questions = (
+            intelligent_analysis_result.get("modeling_instructions", {}) or {}
+        ).get("clarification_questions", [])
+        return list(semantic_questions or []) + list(path_questions or [])
 
     def _execute_intelligent_modeling_path(
         self,
@@ -478,56 +514,21 @@ class CADProcessor:
         script_failure_prefix: str,
         completion_message: str,
     ) -> CADProcessResult:
-        modeling_path_decision = intelligent_analysis_result.get("modeling_path_decision", {}) or {}
-        if modeling_path_decision.get("modeling_path") == "planar_extrude":
-            result.modeling_path = "planar_extrude"
-            logger.info(
-                "智能模式已裁决为可平面拉伸图，转交基础拉伸执行路径"
-                f" | 原因: {modeling_path_decision.get('reason', '')}"
-            )
-            return self._run_planar_extrude_for_intelligent_result(
-                result,
-                geometry_data,
-                output_structure,
-                extrude_height,
-            )
-
-        modeling_instructions = intelligent_analysis_result.get("modeling_instructions", {}) or {}
-        ai_script_content = modeling_instructions.get("freecad_script")
-        if not ai_script_content:
-            result.mark_failed(missing_script_message)
-            logger.warning(result.error_message)
-            return result
-
-        logger.info("使用 AI 生成的 FreeCAD 脚本进行智能建模")
-        try:
-            from src.model_generator.ai_script_runner import AIScriptRunner
-            runner = AIScriptRunner(self.config)
-            step_path = str(output_structure["model_step"]) if "model_step" in output_structure else None
-            run_result = runner.run_script(ai_script_content, step_path)
-            if not run_result.get("success"):
-                result.mark_failed(
-                    f"{script_failure_prefix}: {run_result.get('error', '未知错误')}"
-                )
-                logger.warning(result.error_message)
-                return result
-
-            if run_result.get("step_path"):
-                result.output_paths["model_step"] = run_result["step_path"]
-            if run_result.get("fcstd_path"):
-                result.output_paths["model_fcstd"] = run_result["fcstd_path"]
-            result.mark_completed()
-            logger.info(completion_message)
-            return result
-        except Exception as error:
-            result.mark_failed(f"执行AI脚本出错，智能模式不会调用通用建模器兜底: {error}")
-            logger.warning(result.error_message)
-            return result
+        return self._get_modeling_executor().execute(
+            result=result,
+            intelligent_analysis_result=intelligent_analysis_result,
+            geometry_data=geometry_data,
+            output_structure=output_structure,
+            extrude_height=extrude_height,
+            missing_script_message=missing_script_message,
+            script_failure_prefix=script_failure_prefix,
+            completion_message=completion_message,
+        )
 
     def continue_with_clarification(
         self,
         result: CADProcessResult,
-        clarification_answers: Dict[str, Any],
+        clarification_answers: Dict[str, Any] | ClarificationResponse,
         output_structure: Dict[str, Path],
     ) -> CADProcessResult:
         """在用户补充答案后，从语义裁决阶段继续智能建模。"""
@@ -537,6 +538,13 @@ class CADProcessor:
 
         try:
             logger.info("收到用户澄清，继续智能建模")
+            clarification_response = ClarificationResponse.from_input(
+                clarification_answers,
+                source_stage=result.clarification_context.get(
+                    "clarification_stage",
+                    "semantic_policy",
+                ),
+            )
             api_key = self.config.get("api", {}).get("deepseek", {}).get("api_key", "")
             from src.intelligent_analyzer import IntelligentEngineeringAnalyzer
 
@@ -547,13 +555,11 @@ class CADProcessor:
             )
             resumed_analysis = analyzer.continue_with_clarification(
                 result.clarification_context,
-                clarification_answers,
+                clarification_response,
             )
             result.intelligent_analysis = resumed_analysis
 
-            clarification_questions = (
-                resumed_analysis.get("semantic_policy", {}) or {}
-            ).get("clarification_questions", [])
+            clarification_questions = self._collect_clarification_questions(resumed_analysis)
             if clarification_questions:
                 result.mark_needs_clarification(
                     clarification_questions,
@@ -573,8 +579,17 @@ class CADProcessor:
                 completion_message="用户澄清后的智能建模已完成",
             )
         except StageConfirmationStopped as stopped:
-            result.mark_stopped_by_user(str(stopped))
-            logger.info(result.error_message)
+            result.mark_stopped_by_user(
+                str(stopped),
+                action=getattr(stopped.result, "action", None),
+                stage=getattr(stopped.result, "stage", None),
+            )
+            logger.info(
+                "%s | action=%s | stage=%s",
+                result.error_message,
+                result.stage_stop_action,
+                result.stage_stop_stage,
+            )
             return result
         except Exception as error:
             result.mark_failed(f"用户澄清后的局部恢复失败: {error}")

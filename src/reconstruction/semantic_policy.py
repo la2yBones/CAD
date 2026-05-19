@@ -5,19 +5,24 @@ from __future__ import annotations
 
 from copy import deepcopy
 import re
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
+
+from .clarification_questions import clarification_question, choice_option
+from .clarification_response import ClarificationResponse, USER_MODELING_HINT_KEY
 
 
 class SemanticPolicy:
     """对尺寸来源和特征升级门槛做确定性裁决。"""
 
     UNKNOWN_ANSWER = "__unknown__"
+    USER_MODELING_HINT_KEY = USER_MODELING_HINT_KEY
 
     def evaluate(
         self,
         reconstruction_context: Dict[str, Any],
-        clarification_answers: Dict[str, Any] | None = None,
+        clarification_answers: Mapping[str, Any] | ClarificationResponse | None = None,
     ) -> Dict[str, Any]:
+        clarification_response = ClarificationResponse.from_input(clarification_answers)
         dimensions = reconstruction_context.get("dimensions", []) or []
         annotation_dimensions = [
             dimension for dimension in dimensions
@@ -39,16 +44,26 @@ class SemanticPolicy:
             annotation_dimensions,
             reconstruction_context,
         )
-        if clarification_answers:
+        user_modeling_hint = clarification_response.user_modeling_hint
+        if clarification_response.has_any_input():
             dimension_bindings = self._apply_clarification_answers(
                 dimension_bindings,
-                clarification_answers,
+                clarification_response,
             )
         dimension_plan = self._build_dimension_plan(dimension_bindings)
         clarification_questions = self._build_clarification_questions(
             dimension_bindings,
             reconstruction_context,
         )
+        if user_modeling_hint:
+            assumptions.append(
+                "用户提供了补充建模提示；该提示可用于解释建模意图和细节偏好，但不得覆盖图纸事实、关键尺寸来源、主体方向或主体外形。"
+            )
+            if clarification_questions:
+                assumptions.append(
+                    "未结构化回答的追问不再阻塞本次局部恢复；相关裸尺寸仍不得进入 key_dimensions，必要时应降级为部分建模成果或跳过细节。"
+                )
+                clarification_questions = []
         if any(binding["semantic_role"] == "unresolved_linear" for binding in dimension_bindings):
             assumptions.append(
                 "裸线性尺寸尚未完成语义绑定；在没有额外证据前，不得把它们擅自命名为总长、对边、对角、法兰直径或孔径。"
@@ -68,6 +83,8 @@ class SemanticPolicy:
             dimension_plan=dimension_plan,
             feature_constraints=feature_constraints,
             assumptions=assumptions,
+            user_modeling_hint=user_modeling_hint,
+            user_modeling_hint_policy=clarification_response.conflict_policy,
         )
 
         return {
@@ -89,6 +106,8 @@ class SemanticPolicy:
         dimension_plan: Dict[str, Any],
         feature_constraints: Dict[str, Any],
         assumptions: List[str],
+        user_modeling_hint: str = "",
+        user_modeling_hint_policy: str = "",
     ) -> Dict[str, Any]:
         context = deepcopy(reconstruction_context)
         context["context_version"] = "adjudicated_context_v1"
@@ -99,6 +118,13 @@ class SemanticPolicy:
             "feature_constraints": feature_constraints,
             "assumptions": assumptions,
         }
+        if user_modeling_hint:
+            context["semantic_policy"]["user_modeling_hint"] = user_modeling_hint
+            context["semantic_policy"]["user_modeling_hint_policy"] = (
+                user_modeling_hint_policy
+            )
+            context["user_modeling_hint"] = user_modeling_hint
+            context["user_modeling_hint_policy"] = user_modeling_hint_policy
 
         # 选择标注尺寸时，不再把可反推出测量尺寸的坐标细节暴露给 LLM。
         if dimension_source == "annotation":
@@ -108,6 +134,13 @@ class SemanticPolicy:
                 view.pop("entities", None)
 
         return context
+
+    @classmethod
+    def _extract_user_modeling_hint(
+        cls,
+        clarification_answers: Mapping[str, Any] | ClarificationResponse | None,
+    ) -> str:
+        return ClarificationResponse.from_input(clarification_answers).user_modeling_hint
 
     @classmethod
     def _build_dimension_bindings(
@@ -495,26 +528,28 @@ class SemanticPolicy:
     def _apply_clarification_answers(
         cls,
         bindings: List[Dict[str, Any]],
-        clarification_answers: Dict[str, Any],
+        clarification_answers: Mapping[str, Any] | ClarificationResponse,
     ) -> List[Dict[str, Any]]:
+        response = ClarificationResponse.from_input(clarification_answers)
         resolved = deepcopy(bindings)
         answer_to_role = {
             "bind_profile_length": "profile_length",
             "bind_profile_height": "profile_height",
         }
         for question_id, role in answer_to_role.items():
-            if question_id not in clarification_answers:
+            if question_id not in response:
                 continue
-            if cls._is_unknown_answer(clarification_answers[question_id]):
+            answer = response.get(question_id)
+            if cls._is_unknown_answer(answer):
                 cls._exclude_unresolved_for_question(resolved, question_id)
                 continue
             cls._bind_selected_value(
                 resolved,
                 role=role,
-                selected_value=clarification_answers[question_id],
+                selected_value=answer,
             )
 
-        for question_id, answer in clarification_answers.items():
+        for question_id, answer in response.answers.items():
             if not question_id.startswith("resolve_"):
                 continue
             if cls._is_unknown_answer(answer):
@@ -606,19 +641,21 @@ class SemanticPolicy:
             values = cls._unique_values(binding.get("value") for binding in role_bindings)
             if len(values) <= 1:
                 continue
-            questions.append({
-                "id": f"resolve_{role}",
-                "text": f"{role} 出现多个互相冲突的标注值，请确认建模应采用哪一个。",
-                "kind": "single_choice",
-                "options": [
-                    {
-                        "label": cls._format_dimension_value(value),
-                        "value": cls._format_dimension_value(value),
-                    }
+            role_label = cls._role_display_label(role)
+            questions.append(clarification_question(
+                question_id=f"resolve_{role}",
+                text=f"图纸里有多个值都可能表示{role_label}，请确认建模采用哪一个。",
+                kind="single_choice",
+                options=[
+                    choice_option(
+                        cls._format_dimension_value(value),
+                        cls._format_dimension_value(value),
+                    )
                     for value in values
                 ],
-                "reason": "同一关键尺寸角色存在多个不同标注值，继续自动建模会改变关键尺寸。",
-            })
+                reason=f"{role_label}会影响主体尺寸；不确认时系统不会强行选择其中一个。",
+                example="选择图纸上真正表示该尺寸的标注值；看不出来可在补充提示里说明。",
+            ))
         return questions
 
     @classmethod
@@ -645,16 +682,16 @@ class SemanticPolicy:
             return []
 
         unresolved_options = [
-            {
-                "label": cls._binding_label(binding),
-                "value": cls._format_dimension_value(binding["value"]),
-            }
+            choice_option(
+                cls._binding_label(binding),
+                cls._format_dimension_value(binding["value"]),
+            )
             for binding in unresolved
         ]
-        unresolved_options.append({
-            "label": "我不确定 / 这些都不要绑定为总长",
-            "value": cls.UNKNOWN_ANSWER,
-        })
+        unresolved_options.append(choice_option(
+            "我不确定 / 这些都不要绑定为总长",
+            cls.UNKNOWN_ANSWER,
+        ))
 
         questions: List[Dict[str, Any]] = []
         required_roles = (
@@ -663,14 +700,25 @@ class SemanticPolicy:
         for role, label in required_roles:
             if role in bound_roles:
                 continue
-            questions.append({
-                "id": f"bind_{role}",
-                "text": f"请看图纸标注：哪一个值表示{label}？如果你也看不出来，选择“不确定”。",
-                "kind": "single_choice",
-                "options": unresolved_options,
-                "reason": "多视图重建缺少这个关键尺寸；不确定时不会强行把某个裸尺寸绑定为总长。",
-            })
+            questions.append(clarification_question(
+                question_id=f"bind_{role}",
+                text=f"请确认哪个标注值表示{label}。如果你也看不出来，选择“不确定”。",
+                kind="single_choice",
+                options=unresolved_options,
+                reason="多视图重建缺少这个关键尺寸；不确定时不会强行把某个裸尺寸绑定为总长。",
+                example="选择图纸上表示总尺寸的值；不确定就选“不确定”。",
+            ))
         return questions
+
+    @staticmethod
+    def _role_display_label(role: str) -> str:
+        labels = {
+            "profile_length": "主视图水平总尺寸",
+            "profile_height": "主视图竖向总尺寸",
+            "projected_profile_horizontal_extent": "投影视图水平外形尺寸",
+            "projected_profile_vertical_extent": "投影视图竖向外形尺寸",
+        }
+        return labels.get(role, "关键尺寸")
 
     @staticmethod
     def _unique_values(values: Sequence[Any]) -> List[float]:

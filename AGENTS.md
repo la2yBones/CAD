@@ -10,9 +10,9 @@
 
 核心定位：
 
-- **基础模式**：不调用 AI，按单一闭合轮廓进行通用平面拉伸建模。
-- **智能模式**：调用 DeepSeek V4 Pro 进行视图语义校正、尺寸提取和 FreeCAD 脚本生成。
-- **保护策略**：检测到二视图/三视图且未获得可靠 AI 多视图建模脚本时，阻止普通平面拉伸，避免生成错误模型。
+- **统一智能处理**：所有图纸都先由 DeepSeek V4 Pro 参与理解，再由系统选择后续建模路径。
+- **平面拉伸路径**：面向已确认可平面拉伸图的内部专用路径。
+- **语义重建路径**：面向复杂图纸的兜底建模路径。
 
 运行环境：
 
@@ -32,8 +32,9 @@
 | 术语 | 含义 |
 |---|---|
 | CAD 解析 | 将 DXF/DWG 文件转换为标准化 `geometry_data` |
-| 基础模式 | 不调用 AI 的通用 FreeCAD 建模流程 |
-| 智能模式 | 使用 DeepSeek、智能分析管道和 AI 脚本优先建模的流程 |
+| 智能处理 | 面向用户的统一处理入口 |
+| 平面拉伸路径 | 已确认可平面拉伸图使用的内部专用建模路径 |
+| 语义重建路径 | 无法归入专用路径时使用的兜底建模路径 |
 | 智能分析 | 视图识别、尺寸提取、LLM 视图校正、本地关系分析和建模指令生成 |
 | 预览缓存 | CAD 预览 PNG 缓存，默认 `.cache/previews` |
 | 分析缓存 | 智能分析结果缓存，默认 `.cache/analysis` |
@@ -63,7 +64,7 @@
 | 建模指令生成代理 | `src/reconstruction/instruction_generator.py` | 启用 | DeepSeek 生成 FreeCAD 建模指令和脚本 |
 | 兼容导出代理 | `src/compat/` | 启用 | 集中承接旧 import 路径，主路径只保留轻量入口 |
 | FreeCAD 桥接代理 | `src/model_generator/freecad_bridge.py` | 启用 | direct/subprocess 模式检测和脚本执行 |
-| 通用建模代理 | `src/legacy/basic_modeling/generator.py` | 启用 | 基础模式的平面轮廓建模和 STEP/STL/FCStd 导出 |
+| 通用建模代理 | `src/legacy/basic_modeling/generator.py` | 启用 | 平面拉伸路径的轮廓建模和 STEP/STL/FCStd 导出 |
 | AI 脚本运行代理 | `src/model_generator/ai_script_runner.py` | 启用 | AI FreeCAD 脚本执行和产物收集 |
 | 分析缓存代理 | `src/utils/cache.py` | 启用 | 智能分析缓存读写、失效和统计 |
 | 预览缓存代理 | `src/utils/preview_cache.py` | 启用 | CAD 预览图稳定路径生成 |
@@ -76,24 +77,7 @@
 
 ## 4. 核心交互流程
 
-### 4.1 基础模式
-
-```text
-CLI/GUI
-  -> CADPipeline
-  -> CADFileManager.resolve_file_path()
-  -> CADPipeline.process_file_basic()
-  -> CADParser.parse()
-  -> CADParser.export_json()
-  -> CADParser.visualize()
-  -> FreeCADModeler.generate()
-  -> FreeCADModeler.export()
-  -> CADProcessResult
-```
-
-基础模式不需要 API Key，默认输入已经是可平面拉伸图；它不再负责视图类型裁决。
-
-### 4.2 智能模式
+### 4.1 统一智能处理
 
 ```text
 CLI/GUI
@@ -110,15 +94,18 @@ CLI/GUI
           -> SemanticPolicy.evaluate()
           -> PartSemanticGenerator.generate()
           -> choose_modeling_path()
-          -> FreeCADInstructionGenerator.generate() 或 planar_extrude 路由
-  -> AIScriptRunner.run_script() 或基础拉伸执行路径
-  -> FreeCADBridge.execute_script()
+          -> FreeCADInstructionGenerator.generate() 或专用路径路由
+  -> IntelligentModelingExecutor.execute()
+      -> FreeCADModeler 平面拉伸执行路径
+      -> revolve_executor 回转体执行路径
+      -> AIScriptRunner.run_script()
+          -> FreeCADBridge.execute_script()
   -> CADProcessResult
 ```
 
-智能模式需要有效 `DEEPSEEK_API_KEY`。LLM 视图校正失败时可回退本地规则；语义重建内核会依据分析结果给出建模路径裁决，智能模式再执行对应路径。
+统一智能处理需要有效 `DEEPSEEK_API_KEY`。LLM 视图校正失败时可回退本地规则；语义重建内核会依据分析结果给出建模路径裁决，后续再执行对应路径。
 
-### 4.3 仅分析模式
+### 4.2 仅分析模式
 
 ```text
 cad_cli.py --analysis-only
@@ -228,7 +215,7 @@ view_result = LLMViewAnalyzer(api_key, api_config).refine_view_analysis(
 - 将几何数据、视图分析和尺寸结果发送给 DeepSeek。
 - 生成 `analysis_summary`、`modeling_strategy`、`freecad_script`、`instructions`、`key_dimensions` 和 `warnings`。
 - 根据 `llm_performance_mode` 控制 thinking 开关。
-- 在需要语义重建时生成 FreeCAD 建模指令；若图纸被裁决为可平面拉伸图，则由智能模式选择对应执行路径。
+- 在需要语义重建时生成 FreeCAD 建模指令；若图纸被裁决为可平面拉伸图，则由统一智能处理选择对应执行路径。
 
 禁止：
 

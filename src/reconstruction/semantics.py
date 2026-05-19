@@ -69,6 +69,22 @@ class PartSemanticGenerator:
   "subtractive_features": [
     {"kind": "through_hole|blind_hole|counterbore|slot|cutout|other", "description": "说明", "dimensions": {}, "evidence": []}
   ],
+  "planar_modeling_semantics": {
+    "profile": {"kind": "profile_extrusion|plate", "description": "外轮廓摘要"} 或 null,
+    "extrusion_direction": "X|Y|Z|unknown",
+    "extrusion_depth": 数值或 null,
+    "cut_features": [],
+    "dimension_bindings": [],
+    "uncertainties": []
+  },
+  "revolve_modeling_semantics": {
+    "axis_point": [0, 0, 0],
+    "axis_direction": [0, 0, 1],
+    "profile_points": [[0, 0, 0], [0, 0, 0]],
+    "angle_degrees": 360,
+    "uncertainties": []
+  } 或 null,
+  "preferred_modeling_path": "planar_extrude|revolve|null",
   "key_dimensions": [
     {"name": "尺寸名", "value": 数值, "unit": "mm"}
   ],
@@ -99,6 +115,9 @@ key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；
   "base_features": [{"kind": "...", "description": "一句话"}],
   "additive_features": [{"kind": "...", "description": "一句话", "dimensions": {}}],
   "subtractive_features": [{"kind": "...", "description": "一句话", "dimensions": {}}],
+  "planar_modeling_semantics": {"profile": null, "extrusion_direction": "unknown", "extrusion_depth": null, "cut_features": [], "dimension_bindings": [], "uncertainties": []},
+  "revolve_modeling_semantics": null,
+  "preferred_modeling_path": null,
   "key_dimensions": [{"name": "尺寸名", "value": 数值, "unit": "mm"}],
   "uncertainties": ["短句"],
   "warnings": ["短句"]
@@ -147,11 +166,12 @@ key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；
         max_tokens = int(self.config.get("semantic_max_tokens", 30000))
         temperature = 0.0 if use_retry else float(self.config.get("semantic_temperature", 0.2))
 
+        user_content = self._build_user_content(context)
         request_payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
+                {"role": "user", "content": user_content},
             ],
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -204,6 +224,46 @@ key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；
                         "error": str(error)}
             return self._fallback_semantics(str(error))
 
+    def _build_user_content(self, context: Dict[str, Any]) -> str:
+        parts = [
+            "请根据以下 reconstruction_context 生成结构化零件语义：",
+            json.dumps(context, ensure_ascii=False, indent=2),
+        ]
+        hint_section = self._build_user_modeling_hint_section(context)
+        if hint_section:
+            parts.append(hint_section)
+        return "\n\n".join(parts)
+
+    def _build_user_modeling_hint_section(self, context: Dict[str, Any]) -> str:
+        semantic_policy = context.get("semantic_policy", {}) or {}
+        hint = (
+            context.get("user_modeling_hint")
+            or semantic_policy.get("user_modeling_hint")
+            or ""
+        )
+        hint = str(hint).strip()
+        if not hint:
+            return ""
+        conflict_policy = (
+            context.get("user_modeling_hint_policy")
+            or semantic_policy.get("user_modeling_hint_policy")
+            or "drawing_facts_override_user_hint"
+        )
+        return "\n".join([
+            "=== 用户补充建模提示使用规则 ===",
+            f"用户补充提示: {hint}",
+            f"冲突策略: {conflict_policy}",
+            (
+                "必须遵守：补充提示用于帮助解释建模意图、细节优先级和可接受的跳过范围；"
+                "如果它与 CAD 解析事实、标注尺寸、semantic_policy.dimension_plan、主体方向或主体外形冲突，"
+                "必须以图纸事实和已裁决语义为准。"
+            ),
+            (
+                "如果补充提示表达了用户希望优先得到部分成果，可在 uncertainties/warnings 中记录被跳过的细节风险，"
+                "但不得把主体级硬约束改写成用户自然语言。"
+            ),
+        ])
+
     def _fallback_semantics(self, error: str) -> Dict[str, Any]:
         return {
             "part_type": "unknown",
@@ -220,6 +280,16 @@ key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；
             "base_features": [],
             "additive_features": [],
             "subtractive_features": [],
+            "planar_modeling_semantics": {
+                "profile": None,
+                "extrusion_direction": "unknown",
+                "extrusion_depth": None,
+                "cut_features": [],
+                "dimension_bindings": [],
+                "uncertainties": ["语义生成失败"],
+            },
+            "revolve_modeling_semantics": None,
+            "preferred_modeling_path": None,
             "key_dimensions": [],
             "uncertainties": ["语义生成失败"],
             "warnings": [error],

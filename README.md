@@ -118,20 +118,14 @@ sequenceDiagram
     User->>FM: 选择/扫描 DXF/DWG 图纸
     FM->>Parser: validate + parse(file)
     Parser->>Parser: DXF → ezdxf 解析<br/>DWG → LibreDWG 转 DXF 后解析
-    %% 分支：基础模式 / 智能模式
-    alt 基础模式
-        Parser-->>Basic: 已知可平面拉伸图
+    Parser-->>IA: 完整几何与图层数据
+    IA->>IA: 视图初判 → 尺寸提取 → 视图语义校正
+    IA->>Recon: 语义裁决 → 零件语义 → 建模路径裁决
+    alt 可平面拉伸图
+        Recon-->>Basic: planar_extrude
         Basic->>FC: 执行平面拉伸
-    else 智能模式
-        Parser-->>IA: 完整几何与图层数据
-        IA->>IA: 视图初判 → 尺寸提取 → 视图语义校正
-        IA->>Recon: 语义裁决 → 零件语义 → 建模路径裁决
-        alt 可平面拉伸图
-            Recon-->>Basic: planar_extrude
-            Basic->>FC: 执行平面拉伸
-        else 需要语义重建
-            Recon-->>FC: semantic_reconstruction 脚本
-        end
+    else 需要语义重建
+        Recon-->>FC: semantic_reconstruction 脚本
     end
 
     %% 结果返回

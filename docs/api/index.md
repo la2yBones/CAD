@@ -156,7 +156,7 @@ basic = pipeline.process_file_basic("sample.dxf")
 
 - direct 模式：在 FreeCAD Python 内直接导入并执行
 - subprocess 模式：通过 FreeCAD 自带 `python.exe` 执行脚本
-- 优先使用配置路径，其次自动扫描 Windows 常见安装位置
+- 优先使用项目级 `tools/freecad/*/bin/python.exe` 增强包，其次使用配置路径，再扫描 Windows 常见安装位置
 
 `.env` 推荐配置：
 

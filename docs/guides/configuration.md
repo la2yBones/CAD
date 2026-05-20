@@ -80,8 +80,17 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 `FreeCADBridge` 的查找顺序：
 
 1. 当前 Python 是否为 FreeCAD Python，若是则使用 direct 模式。
-2. 配置中的 `freecad.bin_path`，通常来自 `FREECAD_BIN_PATH`。
-3. Windows 常见安装位置自动扫描，例如 `C:\Program Files\FreeCAD 1.0\bin\python.exe`。
+2. 项目级 FreeCAD 增强包：`tools/freecad/*/bin/python.exe`。
+3. 配置中的 `freecad.bin_path`，通常来自 `FREECAD_BIN_PATH`。
+4. Windows 常见安装位置自动扫描，例如 `C:\Program Files\FreeCAD 1.0\bin\python.exe`。
+
+如果希望获得接近内置的自动建模体验，可以下载 FreeCAD 便携包并解压为：
+
+```text
+tools/freecad/FreeCAD-1.0.x/bin/python.exe
+```
+
+仓库只提交 `tools/freecad/README.md` 和占位文件，不提交完整 FreeCAD 本体。
 
 如果自动发现失败，请显式设置：
 

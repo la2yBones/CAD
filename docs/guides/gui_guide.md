@@ -18,9 +18,19 @@ GUI 默认扫描 `examples/cad_files`，输出写入 `examples/output`。
 
 | 区域 | 功能 |
 |---|---|
-| 左侧控制区 | 选择目录、刷新列表、预览选中文件、选择处理模式 |
+| 顶部设置 | 配置 DeepSeek API Key、FreeCAD 路径、默认输出目录、缓存目录和逐阶段确认开关 |
+| 左侧控制区 | 设置处理参数、控制处理流程、在 CAD 文件列表中选择输入目录并刷新/预览文件 |
 | 右侧预览区 | 显示 CAD 图纸 PNG 预览 |
 | 底部日志区 | 显示处理进度、错误信息、输出目录 |
+
+## 设置入口
+
+顶部菜单左侧的“设置”用于修改运行配置和系统设置：
+
+- DeepSeek API Key 与 FreeCAD bin 目录写入项目根目录 `.env`。
+- 默认输出目录、分析缓存目录和“逐阶段确认”写入 `config/gui_config.json`。
+- FreeCAD 增强包仍可放在 `tools/freecad/FreeCAD-1.0.x/bin/python.exe`，优先级高于设置窗口中的 `FREECAD_BIN_PATH`。
+- 保存后，新配置会在下一次处理任务中生效。
 
 ## 预览行为
 

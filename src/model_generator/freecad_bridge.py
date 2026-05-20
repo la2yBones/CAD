@@ -49,6 +49,14 @@ class FreeCADBridge:
         except ImportError:
             pass
 
+        for candidate in self._find_project_freecad_candidates():
+            if Path(candidate).exists():
+                self.freecad_python = candidate
+                self.freecad_available = True
+                self.mode = "subprocess"
+                logger.info(f"FreeCAD subprocess 模式（项目增强包）: {candidate}")
+                return
+
         fc_config = self.config.get("freecad", {})
         if not isinstance(fc_config, dict):
             fc_config = {}
@@ -75,8 +83,23 @@ class FreeCADBridge:
         self.freecad_available = False
         self.mode = "unavailable"
         logger.warning(
-            "FreeCAD 不可用。请安装 FreeCAD 1.0+，并在 .env 中设置 'FREECAD_BIN_PATH'"
+            "FreeCAD 不可用。请将 FreeCAD 增强包放入 tools/freecad/，"
+            "或安装 FreeCAD 1.0+ 并在 .env 中设置 'FREECAD_BIN_PATH'"
         )
+
+    @staticmethod
+    def _find_project_freecad_candidates(project_root: Optional[Path] = None) -> list:
+        root = Path(project_root) if project_root else Path(__file__).resolve().parents[2]
+        bundle_root = root / "tools" / "freecad"
+        if not bundle_root.exists():
+            return []
+        candidates = [
+            path
+            for path in bundle_root.glob("*/bin/python.exe")
+            if path.is_file()
+        ]
+        candidates.sort(key=lambda path: path.parent.parent.name, reverse=True)
+        return [str(path) for path in candidates]
 
     @staticmethod
     def _find_freecad_candidates() -> list:

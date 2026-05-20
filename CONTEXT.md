@@ -89,4 +89,5 @@
 | 分析缓存 | `.cache/analysis` 下的智能分析结果缓存，按文件+参数幂等。 |
 | LLM 遥测 | LLM 调用耗时、token 记录，默认写入 `.cache/llm_telemetry/`。 |
 | FreeCAD 桥接 | 检测 direct/subprocess 模式，在 FreeCAD Python 中执行建模脚本。 |
+| FreeCAD 增强包 | 可选放入项目目录的 FreeCAD 便携运行时，用于让系统优先使用项目级 `tools/freecad/.../bin/python.exe` 执行自动建模；它不等同于仓库默认提交 FreeCAD 本体，也不替代用户通过 `FREECAD_BIN_PATH` 指向系统安装。 |
 | AI 脚本运行器 | 执行 LLM 生成的 FreeCAD 脚本并收集 STEP/FCStd 产物。 |

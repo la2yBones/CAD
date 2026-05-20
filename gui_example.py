@@ -161,6 +161,211 @@ class AppConfig:
         self.save()
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+ENV_PATH = PROJECT_ROOT / ".env"
+
+
+def read_project_env(env_path: Path = ENV_PATH) -> Dict[str, str]:
+    """Read simple KEY=VALUE pairs from the project .env file."""
+    if not env_path.exists():
+        return {}
+    values: Dict[str, str] = {}
+    with open(env_path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def write_project_env(updates: Dict[str, str], env_path: Path = ENV_PATH) -> None:
+    """Update simple KEY=VALUE entries while preserving comments and unknown keys."""
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    seen = set()
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    updated_lines = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or "=" not in raw:
+            updated_lines.append(raw)
+            continue
+        key, _, _ = raw.partition("=")
+        key = key.strip()
+        if key in updates:
+            updated_lines.append(f"{key}={updates[key]}")
+            seen.add(key)
+        else:
+            updated_lines.append(raw)
+
+    for key, value in updates.items():
+        if key not in seen:
+            updated_lines.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(updated_lines).rstrip() + "\n", encoding="utf-8")
+
+
+class SettingsDialog(tk.Toplevel):
+    """Application settings dialog for environment and GUI preferences."""
+
+    def __init__(
+        self,
+        parent,
+        app_config: AppConfig,
+        on_saved: Optional[Callable[[], None]] = None,
+    ):
+        super().__init__(parent)
+        self.app_config = app_config
+        self.on_saved = on_saved
+        self.title("设置")
+        self.geometry("620x420")
+        self.minsize(560, 360)
+        self.transient(parent)
+        self.grab_set()
+
+        env_values = read_project_env()
+        self.api_key_var = tk.StringVar(value=env_values.get("DEEPSEEK_API_KEY", ""))
+        self.freecad_path_var = tk.StringVar(value=env_values.get("FREECAD_BIN_PATH", ""))
+        self.output_dir_var = tk.StringVar(
+            value=self.app_config.get("output", "base_dir", default="examples/output")
+        )
+        self.cache_dir_var = tk.StringVar(
+            value=self.app_config.get("cache", "dir", default=".cache/analysis")
+        )
+        self.confirm_stage_var = tk.BooleanVar(
+            value=bool(self.app_config.get("processing", "confirm_llm_stages", default=True))
+        )
+        self._build_ui()
+        self._center_on_parent(parent)
+
+    def _center_on_parent(self, parent):
+        self.update_idletasks()
+        parent.update_idletasks()
+
+        width = self.winfo_width()
+        height = self.winfo_height()
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+
+        x = parent_x + max((parent_width - width) // 2, 0)
+        y = parent_y + max((parent_height - height) // 2, 0)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _build_ui(self):
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        runtime_tab = ttk.Frame(notebook, padding=10)
+        system_tab = ttk.Frame(notebook, padding=10)
+        notebook.add(runtime_tab, text="运行配置")
+        notebook.add(system_tab, text="系统设置")
+
+        self._build_runtime_tab(runtime_tab)
+        self._build_system_tab(system_tab)
+
+        button_row = ttk.Frame(self)
+        button_row.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ttk.Button(button_row, text="保存", command=self._save).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(button_row, text="取消", command=self.destroy).pack(side=tk.RIGHT)
+
+    def _build_runtime_tab(self, parent):
+        parent.columnconfigure(1, weight=1)
+
+        ttk.Label(parent, text="DeepSeek API Key:").grid(row=0, column=0, sticky=tk.W, pady=6)
+        api_entry = ttk.Entry(parent, textvariable=self.api_key_var, show="*", width=48)
+        api_entry.grid(row=0, column=1, sticky="ew", pady=6)
+        ttk.Button(
+            parent,
+            text="显示/隐藏",
+            command=lambda: api_entry.configure(show="" if api_entry.cget("show") else "*"),
+        ).grid(row=0, column=2, padx=(6, 0), pady=6)
+
+        ttk.Label(parent, text="FreeCAD bin 目录:").grid(row=1, column=0, sticky=tk.W, pady=6)
+        ttk.Entry(parent, textvariable=self.freecad_path_var).grid(
+            row=1, column=1, sticky="ew", pady=6
+        )
+        ttk.Button(parent, text="选择...", command=self._choose_freecad_dir).grid(
+            row=1, column=2, padx=(6, 0), pady=6
+        )
+
+        hint = (
+            "FreeCAD 增强包也可放在 tools/freecad/FreeCAD-1.0.x/bin/python.exe；"
+            "该路径会优先于这里配置的系统安装路径。"
+        )
+        ttk.Label(parent, text=hint, foreground="gray", wraplength=520).grid(
+            row=2, column=0, columnspan=3, sticky=tk.W, pady=(4, 0)
+        )
+
+    def _build_system_tab(self, parent):
+        parent.columnconfigure(1, weight=1)
+
+        ttk.Label(parent, text="默认输出目录:").grid(row=0, column=0, sticky=tk.W, pady=6)
+        ttk.Entry(parent, textvariable=self.output_dir_var).grid(row=0, column=1, sticky="ew", pady=6)
+        ttk.Button(parent, text="选择...", command=self._choose_output_dir).grid(
+            row=0, column=2, padx=(6, 0), pady=6
+        )
+
+        ttk.Label(parent, text="分析缓存目录:").grid(row=1, column=0, sticky=tk.W, pady=6)
+        ttk.Entry(parent, textvariable=self.cache_dir_var).grid(row=1, column=1, sticky="ew", pady=6)
+        ttk.Button(parent, text="选择...", command=self._choose_cache_dir).grid(
+            row=1, column=2, padx=(6, 0), pady=6
+        )
+
+        ttk.Checkbutton(
+            parent,
+            text="智能处理时逐阶段确认大模型结果",
+            variable=self.confirm_stage_var,
+        ).grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(12, 4))
+
+    def _choose_freecad_dir(self):
+        path = filedialog.askdirectory(title="选择 FreeCAD bin 目录")
+        if path:
+            self.freecad_path_var.set(path)
+
+    def _choose_output_dir(self):
+        path = filedialog.askdirectory(title="选择默认输出目录")
+        if path:
+            self.output_dir_var.set(path)
+
+    def _choose_cache_dir(self):
+        path = filedialog.askdirectory(title="选择分析缓存目录")
+        if path:
+            self.cache_dir_var.set(path)
+
+    def _save(self):
+        api_key = self.api_key_var.get().strip()
+        freecad_path = self.freecad_path_var.get().strip()
+        output_dir = self.output_dir_var.get().strip() or "examples/output"
+        cache_dir = self.cache_dir_var.get().strip() or ".cache/analysis"
+
+        try:
+            write_project_env({
+                "DEEPSEEK_API_KEY": api_key,
+                "FREECAD_BIN_PATH": freecad_path,
+            })
+            self.app_config.set("output", "base_dir", value=output_dir)
+            self.app_config.set("cache", "dir", value=cache_dir)
+            self.app_config.set(
+                "processing",
+                "confirm_llm_stages",
+                value=bool(self.confirm_stage_var.get()),
+            )
+        except Exception as e:
+            messagebox.showerror("保存失败", f"保存设置时出错：\n{e}")
+            return
+
+        if self.on_saved:
+            self.on_saved()
+        messagebox.showinfo("设置已保存", "设置已保存，新的 API Key 和 FreeCAD 路径会在下次处理时生效。")
+        self.destroy()
+
+
 class CacheManagerPanel(ttk.Frame):
     """缓存管理面板"""
 
@@ -993,27 +1198,14 @@ class ProcessingPanel(ttk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        # 文件选择
-        top_frame = ttk.LabelFrame(self, text="文件选择", padding=10)
-        top_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
-
-        row1 = ttk.Frame(top_frame)
-        row1.pack(fill=tk.X, pady=(0, 5))
-        ttk.Label(row1, text="输入目录:").pack(side=tk.LEFT, padx=(0, 5))
         self.input_dir_var = tk.StringVar(value="examples/cad_files")
-        ttk.Entry(row1, textvariable=self.input_dir_var, width=50).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row1, text="浏览", command=self._browse_input).pack(side=tk.LEFT, padx=(5, 0))
-
-        row2 = ttk.Frame(top_frame)
-        row2.pack(fill=tk.X, pady=(0, 5))
-        ttk.Label(row2, text="输出目录:").pack(side=tk.LEFT, padx=(0, 5))
-        self.output_dir_var = tk.StringVar(value="examples/output")
-        ttk.Entry(row2, textvariable=self.output_dir_var, width=50).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row2, text="浏览", command=self._browse_output).pack(side=tk.LEFT, padx=(5, 0))
+        self.output_dir_var = tk.StringVar(
+            value=self.app_config.get('output', 'base_dir', default="examples/output")
+        )
 
         # 参数配置与处理控制
         param_frame = ttk.LabelFrame(self, text="参数配置 / 处理控制", padding=10)
-        param_frame.pack(fill=tk.X, padx=10, pady=5)
+        param_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
 
         row3 = ttk.Frame(param_frame)
         row3.pack(fill=tk.X, pady=(0, 8))
@@ -1061,6 +1253,14 @@ class ProcessingPanel(ttk.Frame):
         # 文件列表
         list_frame = ttk.LabelFrame(self, text="CAD 文件列表", padding=10)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        input_row = ttk.Frame(list_frame)
+        input_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(input_row, text="输入目录:").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Entry(input_row, textvariable=self.input_dir_var, width=42).pack(
+            side=tk.LEFT, fill=tk.X, expand=True
+        )
+        ttk.Button(input_row, text="浏览", command=self._browse_input).pack(side=tk.LEFT, padx=(5, 0))
 
         list_toolbar = ttk.Frame(list_frame)
         list_toolbar.pack(fill=tk.X, pady=(0, 8))
@@ -1796,6 +1996,8 @@ class CADApplication(tk.Tk):
     def _build_menu(self):
         menubar = tk.Menu(self)
 
+        menubar.add_command(label="设置", command=self._open_settings)
+
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="打开 STEP 模型...", command=self._open_step_model, accelerator="Ctrl+O")
         file_menu.add_command(label="打开输出目录...", command=self._open_output_dir, accelerator="Ctrl+D")
@@ -1822,6 +2024,23 @@ class CADApplication(tk.Tk):
 
         self.bind_all("<Control-o>", lambda e: self._open_step_model())
         self.bind_all("<Control-d>", lambda e: self._open_output_dir())
+
+    def _open_settings(self):
+        SettingsDialog(self, self.app_config, on_saved=self._apply_settings_changed)
+
+    def _apply_settings_changed(self):
+        if hasattr(self, "processing_panel"):
+            output_dir = self.app_config.get("output", "base_dir", default="examples/output")
+            if hasattr(self.processing_panel, "output_dir_var"):
+                self.processing_panel.output_dir_var.set(output_dir)
+            if hasattr(self.processing_panel, "stage_confirmation_var"):
+                self.processing_panel.stage_confirmation_var.set(
+                    bool(self.app_config.get("processing", "confirm_llm_stages", default=True))
+                )
+        if hasattr(self, "cache_panel"):
+            self.cache_panel._cache = None
+            self.cache_panel.refresh()
+        self._init_pipeline()
 
     def _build_ui(self):
         main_paned = ttk.PanedWindow(self, orient=tk.VERTICAL)

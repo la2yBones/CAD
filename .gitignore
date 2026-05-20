@@ -63,6 +63,11 @@ examples/output/
 output/
 dist/
 
+# Optional local FreeCAD runtime bundle
+tools/freecad/*
+!tools/freecad/.gitkeep
+!tools/freecad/README.md
+
 # 缓存
 .cache/
 *.cache

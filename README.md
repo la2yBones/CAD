@@ -82,6 +82,14 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 # LIBREDWG_PATH=D:\Code\libredwg-0.13.4.8160-win64
 ```
 
+FreeCAD 也可以作为可选增强包放入项目目录：
+
+```text
+tools/freecad/FreeCAD-1.0.x/bin/python.exe
+```
+
+系统会优先使用该项目级增强包；仓库默认不提交完整 FreeCAD 本体。
+
 运行测试：
 
 ```powershell

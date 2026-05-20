@@ -12,6 +12,7 @@ import csv
 import threading
 import time
 import queue
+import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Callable
@@ -818,6 +819,7 @@ class LLMTelemetryPanel(ttk.Frame):
         self.app_config = app_config
         self.records: List[Dict] = []
         self._record_by_item: Dict[str, Dict] = {}
+        self._records_by_group_item: Dict[str, List[Dict]] = {}
         self._last_signature = ""
         self._build_ui()
         self._poll()
@@ -844,10 +846,12 @@ class LLMTelemetryPanel(ttk.Frame):
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         columns = ("time", "drawing", "stage", "model", "status", "prompt", "completion", "total", "rate", "duration")
-        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="tree headings", height=8)
+        self.tree.heading("#0", text="图纸 / 阶段")
+        self.tree.column("#0", width=190, minwidth=140)
         headings = {
             "time": "时间",
-            "drawing": "图纸名称",
+            "drawing": "调用数",
             "stage": "阶段",
             "model": "模型",
             "status": "状态",
@@ -859,7 +863,7 @@ class LLMTelemetryPanel(ttk.Frame):
         }
         widths = {
             "time": 155,
-            "drawing": 150,
+            "drawing": 65,
             "stage": 145,
             "model": 130,
             "status": 65,
@@ -933,11 +937,22 @@ class LLMTelemetryPanel(ttk.Frame):
             messagebox.showerror("清空失败", f"清空大模型调用记录时出错:\n{e}")
 
     def _selected_records(self) -> List[Dict]:
-        return [
-            self._record_by_item[item]
-            for item in self.tree.selection()
-            if item in self._record_by_item
-        ]
+        records: List[Dict] = []
+        seen_call_ids = set()
+        for item in self.tree.selection():
+            item_records = []
+            if item in self._record_by_item:
+                item_records = [self._record_by_item[item]]
+            elif item in self._records_by_group_item:
+                item_records = self._records_by_group_item[item]
+
+            for record in item_records:
+                call_id = str(record.get("call_id") or id(record))
+                if call_id in seen_call_ids:
+                    continue
+                seen_call_ids.add(call_id)
+                records.append(record)
+        return records
 
     def delete_selected_records(self):
         selected_records = self._selected_records()
@@ -995,23 +1010,146 @@ class LLMTelemetryPanel(ttk.Frame):
         for item in self.tree.get_children():
             self.tree.delete(item)
         self._record_by_item.clear()
+        self._records_by_group_item.clear()
 
-        for record in reversed(self.records):
-            tokens = record.get("tokens") or {}
-            values = (
-                self._display_timestamp(record.get("timestamp", "")),
-                self._display_drawing_name(record),
-                self._display_stage(record.get("stage", "")),
-                record.get("model", ""),
-                self._display_status(record.get("status", "")),
-                tokens.get("prompt_tokens", 0),
-                tokens.get("completion_tokens", 0),
-                tokens.get("total_tokens", 0),
-                record.get("token_rate_completion_per_second", 0.0),
-                record.get("duration_seconds", 0.0),
+        for group in reversed(self._build_processing_groups(self.records)):
+            records = group["records"]
+            latest = records[-1]
+            totals = self._sum_tokens(records)
+            duration = sum(float(record.get("duration_seconds") or 0.0) for record in records)
+            status_values = [str(record.get("status") or "") for record in records]
+            status = "error" if "error" in status_values else status_values[0]
+            parent_values = (
+                self._display_timestamp(latest.get("timestamp", "")),
+                len(records),
+                f"{len(records)} 个阶段",
+                latest.get("model", ""),
+                self._display_status(status),
+                totals["prompt_tokens"],
+                totals["completion_tokens"],
+                totals["total_tokens"],
+                self._group_token_rate(totals["completion_tokens"], duration),
+                round(duration, 3),
             )
-            item = self.tree.insert("", tk.END, values=values)
-            self._record_by_item[item] = record
+            parent = self.tree.insert(
+                "",
+                tk.END,
+                text=group["label"],
+                values=parent_values,
+                open=False,
+            )
+            self._records_by_group_item[parent] = records
+
+            for record in reversed(records):
+                tokens = record.get("tokens") or {}
+                values = (
+                    self._display_timestamp(record.get("timestamp", "")),
+                    "",
+                    self._display_stage(record.get("stage", "")),
+                    record.get("model", ""),
+                    self._display_status(record.get("status", "")),
+                    tokens.get("prompt_tokens", 0),
+                    tokens.get("completion_tokens", 0),
+                    tokens.get("total_tokens", 0),
+                    record.get("token_rate_completion_per_second", 0.0),
+                    record.get("duration_seconds", 0.0),
+                )
+                item = self.tree.insert(
+                    parent,
+                    tk.END,
+                    text=self._display_stage(record.get("stage", "")),
+                    values=values,
+                )
+                self._record_by_item[item] = record
+
+    def _build_processing_groups(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        groups: List[Dict[str, Any]] = []
+        active_by_file: Dict[str, Dict[str, Any]] = {}
+        last_stage_by_file: Dict[str, set[str]] = {}
+        run_groups: Dict[str, Dict[str, Any]] = {}
+
+        for record in records:
+            run_id = str(record.get("processing_run_id") or "").strip()
+            file_key = self._record_file_key(record)
+            if run_id:
+                group_key = f"run:{run_id}"
+                group = run_groups.get(group_key)
+                if group is None:
+                    group = self._new_record_group(record)
+                    group["run_id"] = run_id
+                    run_groups[group_key] = group
+                    groups.append(group)
+                group["records"].append(record)
+                continue
+
+            group = active_by_file.get(file_key)
+            stage = str(record.get("stage") or "")
+            stages_seen = last_stage_by_file.setdefault(file_key, set())
+            should_start_new = (
+                group is None
+                or self._record_gap_seconds(group["records"][-1], record) > 120
+                or (stage in stages_seen and stage in {"view_analysis", "semantic_reconstruction", "modeling_generation"})
+            )
+            if should_start_new:
+                group = self._new_record_group(record)
+                groups.append(group)
+                active_by_file[file_key] = group
+                stages_seen = set()
+                last_stage_by_file[file_key] = stages_seen
+
+            group["records"].append(record)
+            if stage:
+                stages_seen.add(stage)
+        return groups
+
+    def _new_record_group(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "label": self._display_drawing_name(record) or "未关联图纸",
+            "file_path": record.get("file_path"),
+            "records": [],
+            "run_id": record.get("processing_run_id"),
+        }
+
+    def _record_file_key(self, record: Dict[str, Any]) -> str:
+        file_path = str(record.get("file_path") or "").strip()
+        if file_path:
+            return f"file:{file_path.lower()}"
+        drawing = self._display_drawing_name(record)
+        if drawing:
+            return f"drawing:{drawing.lower()}"
+        return "unknown"
+
+    def _record_gap_seconds(self, previous: Dict[str, Any], current: Dict[str, Any]) -> float:
+        previous_time = self._parse_record_time(previous.get("timestamp"))
+        current_time = self._parse_record_time(current.get("timestamp"))
+        if not previous_time or not current_time:
+            return 0.0
+        return abs((current_time - previous_time).total_seconds())
+
+    @staticmethod
+    def _parse_record_time(timestamp: Any) -> Optional[datetime]:
+        raw = str(timestamp or "")
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _sum_tokens(records: List[Dict]) -> Dict[str, int]:
+        totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        for record in records:
+            tokens = record.get("tokens") or {}
+            for key in totals:
+                totals[key] += int(tokens.get(key) or 0)
+        return totals
+
+    @staticmethod
+    def _group_token_rate(completion_tokens: int, duration: float) -> float:
+        if duration <= 0:
+            return 0.0
+        return round(completion_tokens / duration, 2)
 
     def _display_timestamp(self, timestamp: Any) -> str:
         raw = str(timestamp or "")
@@ -1052,8 +1190,11 @@ class LLMTelemetryPanel(ttk.Frame):
         selected = self.tree.selection()
         if not selected:
             return
-        record = self._record_by_item.get(selected[0])
+        item = selected[0]
+        record = self._record_by_item.get(item)
         if not record:
+            if item in self._records_by_group_item:
+                self.tree.item(item, open=not bool(self.tree.item(item, "open")))
             return
 
         detail_win = tk.Toplevel(self)
@@ -1094,6 +1235,7 @@ class LLMTelemetryPanel(ttk.Frame):
             "provider": record.get("provider"),
             "model": record.get("model"),
             "file_path": record.get("file_path"),
+            "processing_run_id": record.get("processing_run_id"),
             "status": record.get("status"),
             "duration_seconds": record.get("duration_seconds"),
             "tokens": record.get("tokens"),
@@ -1177,15 +1319,145 @@ class ProcessingCancelled(RuntimeError):
     """Raised when the GUI user requests cooperative cancellation."""
 
 
+class PendingClarificationPanel(ttk.Frame):
+    """GUI view for persisted batch clarification items."""
+
+    def __init__(self, parent, on_resume: Callable[[Dict[str, Any]], None], **kwargs):
+        super().__init__(parent, **kwargs)
+        self.on_resume = on_resume
+        from src.batch_processor import PendingClarificationStore
+        self.pending_store = PendingClarificationStore()
+        self._checked_pending_items = set()
+        self._build_ui()
+
+    def _build_ui(self):
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill=tk.X, pady=(0, 8))
+        toolbar.grid_columnconfigure(2, weight=1)
+        ttk.Button(toolbar, text="全选", width=8, command=self._select_all).grid(row=0, column=0, sticky=tk.W)
+        ttk.Button(toolbar, text="清空选择", width=10, command=self._clear_selection).grid(row=0, column=1, sticky=tk.W, padx=(8, 0))
+        ttk.Button(toolbar, text="刷新", width=10, command=self.refresh).grid(row=0, column=3, sticky=tk.E, padx=(0, 8))
+        ttk.Button(toolbar, text="继续选中", width=12, command=self._resume_selected).grid(row=0, column=4, sticky=tk.E)
+
+        columns = ("checked", "file", "questions", "updated", "path")
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=6, selectmode="extended")
+        self.tree.heading("checked", text="选择")
+        self.tree.heading("file", text="图纸")
+        self.tree.heading("questions", text="问题数")
+        self.tree.heading("updated", text="更新时间")
+        self.tree.heading("path", text="路径")
+        self.tree.column("checked", width=34, anchor=tk.CENTER, stretch=False)
+        self.tree.column("file", width=120)
+        self.tree.column("questions", width=55, anchor=tk.CENTER)
+        self.tree.column("updated", width=130)
+        self.tree.column("path", width=240)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.LEFT, fill=tk.Y, pady=(0, 8))
+        self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<Double-1>", lambda _event: self._resume_selected())
+
+    def refresh(self):
+        checked_ids = set(self._checked_pending_items)
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self._checked_pending_items.clear()
+        for item in self.pending_store.list_pending():
+            input_file = item.get("input_file", "")
+            pending_id = item.get("pending_id")
+            checked = pending_id in checked_ids
+            self.tree.insert(
+                "",
+                tk.END,
+                iid=pending_id,
+                values=(
+                    "☑" if checked else "☐",
+                    Path(input_file).name,
+                    len(item.get("clarification_questions") or []),
+                    item.get("updated_at", ""),
+                    input_file,
+                ),
+            )
+            if checked:
+                self._checked_pending_items.add(pending_id)
+
+    def _on_tree_click(self, event):
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) != "#1":
+            return
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return "break"
+        self._toggle_checked(item)
+        return "break"
+
+    def _toggle_checked(self, item: str):
+        values = list(self.tree.item(item, "values"))
+        if len(values) < 5:
+            return
+        if item in self._checked_pending_items:
+            self._checked_pending_items.remove(item)
+            values[0] = "☐"
+        else:
+            self._checked_pending_items.add(item)
+            values[0] = "☑"
+        self.tree.item(item, values=values)
+
+    def _select_all(self):
+        children = self.tree.get_children()
+        self._checked_pending_items = set(children)
+        for item in children:
+            values = list(self.tree.item(item, "values"))
+            if values:
+                values[0] = "☑"
+                self.tree.item(item, values=values)
+
+    def _clear_selection(self):
+        for item in list(self._checked_pending_items):
+            if item in self.tree.get_children():
+                values = list(self.tree.item(item, "values"))
+                if values:
+                    values[0] = "☐"
+                    self.tree.item(item, values=values)
+        self._checked_pending_items.clear()
+        self.tree.selection_remove(self.tree.selection())
+
+    def _selected_pending_ids(self) -> List[str]:
+        checked = [item for item in self._checked_pending_items if item in self.tree.get_children()]
+        if checked:
+            return checked
+        return list(self.tree.selection())
+
+    def _resume_selected(self):
+        selected = self._selected_pending_ids()
+        if not selected:
+            messagebox.showinfo("请选择待恢复任务", "请先选择一条待恢复图纸任务。")
+            return
+        if len(selected) > 1:
+            messagebox.showinfo("一次恢复一条", "待恢复任务需要逐条补充信息，请先只选择一条任务。")
+            return
+        item = self.pending_store.load(selected[0])
+        if not item:
+            messagebox.showwarning("待恢复任务不存在", "该待恢复任务可能已被处理或移除。")
+            self.refresh()
+            return
+        self.on_resume(item)
+
+
 class ProcessingPanel(ttk.Frame):
     """处理面板 — 文件选择、参数配置、处理控制"""
 
     def __init__(self, parent, app_config: AppConfig, on_open_step: Callable, on_open_output: Callable,
+                 on_pending_changed: Optional[Callable[[], None]] = None,
                  preview_fig=None, preview_canvas=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.app_config = app_config
         self.on_open_step = on_open_step
         self.on_open_output = on_open_output
+        self.on_pending_changed = on_pending_changed
         self.preview_fig = preview_fig
         self.preview_canvas = preview_canvas
         self.pipeline = None
@@ -1195,6 +1467,9 @@ class ProcessingPanel(ttk.Frame):
         self._cancel_event = threading.Event()
         self._pause_event = threading.Event()
         self._pause_event.set()
+        from src.batch_processor import PendingClarificationStore
+        self.pending_store = PendingClarificationStore()
+        self._checked_file_items = set()
         self._build_ui()
 
     def _build_ui(self):
@@ -1251,7 +1526,7 @@ class ProcessingPanel(ttk.Frame):
         ).pack(side=tk.LEFT)
 
         # 文件列表
-        list_frame = ttk.LabelFrame(self, text="CAD 文件列表", padding=10)
+        list_frame = ttk.LabelFrame(self, text="图纸任务", padding=10)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         input_row = ttk.Frame(list_frame)
@@ -1262,24 +1537,33 @@ class ProcessingPanel(ttk.Frame):
         )
         ttk.Button(input_row, text="浏览", command=self._browse_input).pack(side=tk.LEFT, padx=(5, 0))
 
-        list_toolbar = ttk.Frame(list_frame)
-        list_toolbar.pack(fill=tk.X, pady=(0, 8))
-        ttk.Button(list_toolbar, text="预览选中", width=12, command=self._preview_selected).pack(
-            side=tk.RIGHT
-        )
-        ttk.Button(list_toolbar, text="刷新列表", width=12, command=self._refresh_files).pack(
-            side=tk.RIGHT, padx=(0, 8)
-        )
+        self.task_notebook = ttk.Notebook(list_frame)
+        self.task_notebook.pack(fill=tk.BOTH, expand=True)
 
-        content_row = ttk.Frame(list_frame)
+        cad_tab = ttk.Frame(self.task_notebook)
+        pending_tab = ttk.Frame(self.task_notebook)
+        self.task_notebook.add(cad_tab, text="CAD 文件")
+        self.task_notebook.add(pending_tab, text="待恢复任务")
+
+        list_toolbar = ttk.Frame(cad_tab)
+        list_toolbar.pack(fill=tk.X, pady=(0, 8))
+        list_toolbar.grid_columnconfigure(2, weight=1)
+        ttk.Button(list_toolbar, text="全选", width=8, command=self._select_all_files).grid(row=0, column=0, sticky=tk.W)
+        ttk.Button(list_toolbar, text="清空选择", width=10, command=self._clear_file_selection).grid(row=0, column=1, sticky=tk.W, padx=(8, 0))
+        ttk.Button(list_toolbar, text="刷新", width=10, command=self._refresh_files).grid(row=0, column=3, sticky=tk.E, padx=(0, 8))
+        ttk.Button(list_toolbar, text="预览选中", width=12, command=self._preview_selected).grid(row=0, column=4, sticky=tk.E)
+
+        content_row = ttk.Frame(cad_tab)
         content_row.pack(fill=tk.BOTH, expand=True)
 
-        columns = ("filename", "type", "path")
-        self.file_tree = ttk.Treeview(content_row, columns=columns, show="headings", height=6)
+        columns = ("checked", "filename", "type", "path")
+        self.file_tree = ttk.Treeview(content_row, columns=columns, show="headings", height=6, selectmode="extended")
         self.file_tree.configure(height=6)
+        self.file_tree.heading("checked", text="选择")
         self.file_tree.heading("filename", text="文件名")
         self.file_tree.heading("type", text="类型")
         self.file_tree.heading("path", text="路径")
+        self.file_tree.column("checked", width=34, anchor=tk.CENTER, stretch=False)
         self.file_tree.column("filename", width=120)
         self.file_tree.column("type", width=45)
         self.file_tree.column("path", width=240)
@@ -1290,7 +1574,14 @@ class ProcessingPanel(ttk.Frame):
         fsb.pack(side=tk.LEFT, fill=tk.Y)
 
         self.file_tree.bind("<<TreeviewSelect>>", self._on_file_selected)
+        self.file_tree.bind("<Button-1>", self._on_file_tree_click)
         self.file_tree.bind("<Double-1>", lambda _event: self._preview_selected())
+
+        self.pending_panel = PendingClarificationPanel(
+            pending_tab,
+            on_resume=self.resume_pending_item,
+        )
+        self.pending_panel.pack(fill=tk.BOTH, expand=True)
 
     def _browse_input(self):
         path = filedialog.askdirectory(title="选择输入目录", initialdir=self.input_dir_var.get())
@@ -1304,8 +1595,14 @@ class ProcessingPanel(ttk.Frame):
             self.output_dir_var.set(path)
 
     def _refresh_files(self):
+        checked_paths = {
+            self.file_tree.item(item, "values")[3]
+            for item in self._checked_file_items
+            if item in self.file_tree.get_children()
+        }
         for item in self.file_tree.get_children():
             self.file_tree.delete(item)
+        self._checked_file_items.clear()
         input_dir = Path(self.input_dir_var.get())
         if not input_dir.exists():
             return
@@ -1322,10 +1619,110 @@ class ProcessingPanel(ttk.Frame):
             cad_files.append(f)
 
         for f in sorted(cad_files, key=lambda path: path.name.lower()):
-            self.file_tree.insert("", tk.END, values=(f.name, f.suffix.upper(), str(f)))
+            checked = str(f) in checked_paths
+            item = self.file_tree.insert("", tk.END, values=("☑" if checked else "☐", f.name, f.suffix.upper(), str(f)))
+            if checked:
+                self._checked_file_items.add(item)
 
     def _on_file_selected(self, event):
         pass
+
+    def _on_file_tree_click(self, event):
+        if self.file_tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.file_tree.identify_column(event.x) != "#1":
+            return
+        item = self.file_tree.identify_row(event.y)
+        if not item:
+            return "break"
+        self._toggle_file_checked(item)
+        return "break"
+
+    def _toggle_file_checked(self, item: str):
+        values = list(self.file_tree.item(item, "values"))
+        if len(values) < 4:
+            return
+        if item in self._checked_file_items:
+            self._checked_file_items.remove(item)
+            values[0] = "☐"
+        else:
+            self._checked_file_items.add(item)
+            values[0] = "☑"
+        self.file_tree.item(item, values=values)
+
+    def _select_all_files(self):
+        children = self.file_tree.get_children()
+        if children:
+            self._checked_file_items = set(children)
+            for item in children:
+                values = list(self.file_tree.item(item, "values"))
+                if values:
+                    values[0] = "☑"
+                    self.file_tree.item(item, values=values)
+
+    def _clear_file_selection(self):
+        for item in list(self._checked_file_items):
+            if item in self.file_tree.get_children():
+                values = list(self.file_tree.item(item, "values"))
+                if values:
+                    values[0] = "☐"
+                    self.file_tree.item(item, values=values)
+        self._checked_file_items.clear()
+        self.file_tree.selection_remove(self.file_tree.selection())
+
+    def _selected_file_paths(self) -> List[str]:
+        paths = []
+        selected_items = list(self._checked_file_items) or list(self.file_tree.selection())
+        for item in selected_items:
+            if item not in self.file_tree.get_children():
+                continue
+            values = self.file_tree.item(item, "values")
+            if len(values) >= 4:
+                paths.append(values[3])
+        return paths
+
+    def resume_pending_item(self, item: Dict[str, Any]) -> None:
+        if self._processing:
+            messagebox.showinfo("任务正在处理中", "请等待当前处理任务结束后再恢复该图纸。")
+            return
+
+        input_file = item.get("input_file", "")
+        if not input_file:
+            messagebox.showwarning("待恢复任务无效", "该待恢复任务缺少输入图纸路径。")
+            return
+
+        try:
+            config = self._load_config(confirm_llm_stages=bool(self.stage_confirmation_var.get()))
+            self._attach_processing_run_id(
+                config,
+                item.get("pending_id") or self._new_processing_run_id(input_file),
+            )
+            from src.batch_processor import CADPipeline, CADProcessResult
+
+            output_dir = item.get("output_dir") or self.output_dir_var.get()
+            self.pipeline = CADPipeline(
+                config=config,
+                input_dir=str(Path(input_file).parent),
+                output_dir=output_dir,
+            )
+            self.pipeline.set_output_dir(output_dir)
+
+            result = CADProcessResult(
+                success=False,
+                input_file=input_file,
+                mode=item.get("mode", "intelligent"),
+            )
+            result.mark_needs_clarification(
+                item.get("clarification_questions") or [],
+                item.get("clarification_context"),
+            )
+            self.output_dir_var.set(output_dir)
+            self.progress_label.set("等待补充")
+            logger.info(f"恢复图纸任务: {Path(input_file).name}")
+            self._show_clarification_dialog(result, time.time(), pending_id=item.get("pending_id"))
+        except Exception as e:
+            logger.error(f"打开待恢复任务失败: {e}")
+            messagebox.showerror("打开待恢复任务失败", f"无法恢复该图纸任务：\n{e}")
 
     def _preview_selected(self):
         selected = self.file_tree.selection()
@@ -1343,7 +1740,8 @@ class ProcessingPanel(ttk.Frame):
             )
             return
 
-        filepath = self.file_tree.item(selected[0], "values")[2]
+        values = self.file_tree.item(selected[0], "values")
+        filepath = values[3] if len(values) >= 4 else values[2]
         title = Path(filepath).stem
         preview_path = self._find_preview(filepath)
 
@@ -1478,15 +1876,16 @@ class ProcessingPanel(ttk.Frame):
             )
             return
 
-        selected = self.file_tree.selection()
-        if not selected:
+        selected_paths = self._selected_file_paths()
+        if not selected_paths:
             messagebox.showinfo(
                 "请选择要处理的图纸",
-                "请先在 CAD 文件列表中选择一张图纸，再点击“开始处理”。"
+                "请先在 CAD 文件列表中选择一张或多张图纸，再点击“开始处理”。"
             )
             return
 
-        filepath = self.file_tree.item(selected[0], "values")[2]
+        file_count = len(selected_paths)
+        filepath = selected_paths[0]
         self._processing = True
         self._awaiting_clarification = False
         self._paused = False
@@ -1497,22 +1896,137 @@ class ProcessingPanel(ttk.Frame):
         self.cancel_btn.configure(state="normal")
         self.progress_var.set(0)
         self.progress_label.set("准备中...")
-        logger.info(f"开始处理: {Path(filepath).name}")
+        if file_count == 1:
+            logger.info(f"开始处理: {Path(filepath).name}")
+        else:
+            logger.info(f"开始批量处理: {file_count} 张图纸")
 
         output_dir = self.output_dir_var.get()
-        confirm_llm_stages = bool(self.stage_confirmation_var.get())
-        thread = threading.Thread(
-            target=self._run_processing,
-            args=(filepath, output_dir, confirm_llm_stages),
-            daemon=True,
-        )
+        if file_count == 1:
+            confirm_llm_stages = bool(self.stage_confirmation_var.get())
+            thread = threading.Thread(
+                target=self._run_processing,
+                args=(filepath, output_dir, confirm_llm_stages),
+                daemon=True,
+            )
+        else:
+            thread = threading.Thread(
+                target=self._run_batch_processing,
+                args=(selected_paths, output_dir),
+                daemon=True,
+            )
         thread.start()
+
+    def _run_batch_processing(self, filepaths: List[str], output_dir: str):
+        start_time = time.time()
+        totals = {
+            "completed": 0,
+            "partial_completed": 0,
+            "failed": 0,
+            "needs_clarification": 0,
+            "stopped_by_user": 0,
+        }
+        try:
+            config = self._load_config(confirm_llm_stages=False)
+            from src.batch_processor import CADPipeline
+
+            total = len(filepaths)
+            for index, filepath in enumerate(filepaths, start=1):
+                self._check_control_state(f"batch-{index}-start")
+                name = Path(filepath).name
+                percent = max(1, int(((index - 1) / total) * 100))
+                self._update_progress(percent, f"批量 {index}/{total}")
+                logger.info(f"批量处理 {index}/{total}: {name}")
+                self._attach_processing_run_id(config, self._new_processing_run_id(filepath))
+
+                pipeline = CADPipeline(
+                    config=config,
+                    input_dir=str(Path(filepath).parent),
+                    output_dir=output_dir,
+                )
+                pipeline.set_output_dir(output_dir)
+                self.pipeline = pipeline
+                pipeline.processor.process_with_intelligent_analysis = self._wrap_intelligent(
+                    pipeline.processor.process_with_intelligent_analysis
+                )
+
+                result = pipeline.process_file_intelligent(filepath, float(self.height_var.get()))
+                status_value = getattr(getattr(result, "status", None), "value", "")
+                if result.success:
+                    bucket = "partial_completed" if status_value == "partial_completed" else "completed"
+                    totals[bucket] += 1
+                    logger.info(f"批量完成: {name} | 状态: {status_value or 'completed'}")
+                    if status_value == "partial_completed":
+                        logger.warning(f"部分完成原因: {getattr(result, 'partial_completion_reason', '')}")
+                elif status_value == "needs_clarification":
+                    try:
+                        self.pending_store.save(
+                            result,
+                            output_dir=output_dir,
+                            extrude_height=float(self.height_var.get()),
+                            mode="intelligent",
+                        )
+                        totals["needs_clarification"] += 1
+                        logger.info(f"已保存为待恢复任务: {name} | 问题数: {len(result.clarification_questions)}")
+                        if self.on_pending_changed:
+                            self.after(0, self.on_pending_changed)
+                    except Exception as pending_error:
+                        totals["failed"] += 1
+                        logger.error(f"待恢复任务保存失败: {name} | {pending_error}")
+                elif status_value == "stopped_by_user":
+                    totals["stopped_by_user"] += 1
+                    logger.info(f"批量项已停止: {name} | {result.error_message}")
+                else:
+                    totals["failed"] += 1
+                    logger.error(f"批量失败: {name} | {result.error_message}")
+
+            elapsed = time.time() - start_time
+            message = (
+                f"批量处理完成，用时 {elapsed:.1f}s。\n\n"
+                f"完成: {totals['completed']}\n"
+                f"部分完成: {totals['partial_completed']}\n"
+                f"待恢复: {totals['needs_clarification']}\n"
+                f"失败: {totals['failed']}\n"
+                f"已停止: {totals['stopped_by_user']}"
+            )
+            logger.info(
+                "批量处理完成 | "
+                f"完成 {totals['completed']} | 部分完成 {totals['partial_completed']} | "
+                f"待恢复 {totals['needs_clarification']} | 失败 {totals['failed']} | "
+                f"已停止 {totals['stopped_by_user']}"
+            )
+            self.after(0, lambda: self.progress_var.set(100))
+            self.after(0, lambda: self.progress_label.set("批量完成"))
+            self.after(0, lambda m=message: messagebox.showinfo("批量处理完成", m))
+            if self.on_pending_changed:
+                self.after(0, self.on_pending_changed)
+        except ProcessingCancelled:
+            elapsed = time.time() - start_time
+            logger.warning(f"批量处理已取消 | 耗时: {elapsed:.1f}s")
+            self.after(0, lambda: self.progress_label.set("已取消"))
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"批量处理异常 | 耗时: {elapsed:.1f}s | {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.after(0, lambda: messagebox.showerror(
+                "批量处理异常",
+                f"批量处理时发生未预期错误：\n{e}"
+            ))
+        finally:
+            self._processing = False
+            self._paused = False
+            self._pause_event.set()
+            self.after(0, lambda: self.process_btn.configure(state="normal", text="开始处理"))
+            self.after(0, lambda: self.pause_btn.configure(state="disabled", text="暂停"))
+            self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
 
     def _run_processing(self, filepath: str, output_dir: str, confirm_llm_stages: bool):
         start_time = time.time()
         try:
             self._check_control_state("start")
             config = self._load_config(confirm_llm_stages=confirm_llm_stages)
+            self._attach_processing_run_id(config, self._new_processing_run_id(filepath))
             from src.batch_processor import CADPipeline
 
             input_dir = str(Path(filepath).parent)
@@ -1528,7 +2042,7 @@ class ProcessingPanel(ttk.Frame):
             self.pipeline.processor.process_with_intelligent_analysis = self._wrap_intelligent(
                 self.pipeline.processor.process_with_intelligent_analysis)
             self._check_control_state("before-intelligent-processing")
-            result = self.pipeline.process_file_intelligent(filepath)
+            result = self.pipeline.process_file_intelligent(filepath, float(self.height_var.get()))
 
             self._update_progress(90, "完成，正在生成报告...")
 
@@ -1600,7 +2114,7 @@ class ProcessingPanel(ttk.Frame):
             self.after(0, lambda: self.pause_btn.configure(state="disabled", text="暂停"))
             self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
 
-    def _show_clarification_dialog(self, result, start_time: float):
+    def _show_clarification_dialog(self, result, start_time: float, pending_id: Optional[str] = None):
         questions = result.clarification_questions or []
         if not questions:
             messagebox.showwarning("需要澄清", "当前任务需要澄清，但没有可展示的问题。")
@@ -1700,7 +2214,7 @@ class ProcessingPanel(ttk.Frame):
             if hint:
                 answers["user_modeling_hint"] = hint
             dialog.destroy()
-            self._resume_after_clarification(result, answers, start_time)
+            self._resume_after_clarification(result, answers, start_time, pending_id=pending_id)
 
         def cancel_dialog():
             self._awaiting_clarification = False
@@ -1854,7 +2368,13 @@ class ProcessingPanel(ttk.Frame):
 
         return build_stage_report(stage, payload)
 
-    def _resume_after_clarification(self, result, answers: Dict[str, str], start_time: float):
+    def _resume_after_clarification(
+        self,
+        result,
+        answers: Dict[str, str],
+        start_time: float,
+        pending_id: Optional[str] = None,
+    ):
         self._processing = True
         self._awaiting_clarification = False
         self.process_btn.configure(state="disabled", text="处理中...")
@@ -1865,12 +2385,18 @@ class ProcessingPanel(ttk.Frame):
 
         thread = threading.Thread(
             target=self._run_clarification_resume,
-            args=(result, answers, start_time),
+            args=(result, answers, start_time, pending_id),
             daemon=True,
         )
         thread.start()
 
-    def _run_clarification_resume(self, result, answers: Dict[str, str], start_time: float):
+    def _run_clarification_resume(
+        self,
+        result,
+        answers: Dict[str, str],
+        start_time: float,
+        pending_id: Optional[str] = None,
+    ):
         try:
             self._check_control_state("before-clarification-resume")
             resumed = self.pipeline.continue_file_with_clarification(result, answers)
@@ -1886,14 +2412,27 @@ class ProcessingPanel(ttk.Frame):
                 if resumed.output_paths:
                     for k, v in resumed.output_paths.items():
                         logger.info(f"输出产物 [{k}]: {v}")
+                if pending_id:
+                    self.pending_store.mark_resolved(pending_id)
+                    if self.on_pending_changed:
+                        self.after(0, self.on_pending_changed)
                 label = "部分完成" if status_value == "partial_completed" else "完成"
                 self.after(0, lambda l=label: self.progress_label.set(f"{l} ({elapsed:.1f}s)"))
                 self.after(0, lambda: self.progress_var.set(100))
             elif getattr(resumed, "status", None) and getattr(resumed.status, "value", "") == "needs_clarification":
                 self._awaiting_clarification = True
                 logger.info("澄清后仍需补充信息")
+                if pending_id:
+                    self.pending_store.save(
+                        resumed,
+                        output_dir=str(self.pipeline.file_manager.base_output_dir),
+                        extrude_height=float(self.height_var.get()),
+                        mode="intelligent",
+                    )
+                    if self.on_pending_changed:
+                        self.after(0, self.on_pending_changed)
                 self.after(0, lambda: self.progress_label.set("等待澄清"))
-                self.after(0, lambda r=resumed, s=start_time: self._show_clarification_dialog(r, s))
+                self.after(0, lambda r=resumed, s=start_time, p=pending_id: self._show_clarification_dialog(r, s, p))
                 return
             elif getattr(resumed, "status", None) and getattr(resumed.status, "value", "") == "stopped_by_user":
                 logger.info(f"用户停止处理 | 总耗时: {elapsed:.1f}s | {resumed.error_message}")
@@ -1956,6 +2495,12 @@ class ProcessingPanel(ttk.Frame):
                 "_stage_confirmation"
             ] = CallbackStageConfirmation(self._confirm_llm_stage)
         return config
+
+    def _new_processing_run_id(self, filepath: str) -> str:
+        return f"gui_{Path(filepath).stem}_{uuid.uuid4().hex[:12]}"
+
+    def _attach_processing_run_id(self, config: Dict[str, Any], run_id: str) -> None:
+        config.setdefault("api", {}).setdefault("deepseek", {})["_processing_run_id"] = run_id
 
     def _update_progress(self, value: float, text: str):
         self.after(0, lambda: self.progress_var.set(value))
@@ -2078,6 +2623,7 @@ class CADApplication(tk.Tk):
             self.app_config,
             on_open_step=self._open_step_model,
             on_open_output=self._open_output_dir,
+            on_pending_changed=self._refresh_pending,
             preview_fig=self.preview_fig,
             preview_canvas=self.preview_canvas,
         )
@@ -2133,9 +2679,14 @@ class CADApplication(tk.Tk):
     def _refresh_all(self):
         self.processing_panel._refresh_files()
         self.cache_panel.refresh()
+        self._refresh_pending()
 
     def _refresh_cache(self):
         self.cache_panel.refresh()
+
+    def _refresh_pending(self):
+        if hasattr(self, "processing_panel") and hasattr(self.processing_panel, "pending_panel"):
+            self.processing_panel.pending_panel.refresh()
 
     def _open_step_model(self):
         """打开 STEP 模型文件"""

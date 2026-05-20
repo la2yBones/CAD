@@ -18,11 +18,17 @@ logger = logging.getLogger(__name__)
 class LLMTelemetryStore:
     """Append-only JSONL store for large-model request/response metrics."""
 
-    def __init__(self, telemetry_dir: str = ".cache/llm_telemetry", max_detail_chars: Optional[int] = None):
+    def __init__(
+        self,
+        telemetry_dir: str = ".cache/llm_telemetry",
+        max_detail_chars: Optional[int] = None,
+        processing_run_id: Optional[str] = None,
+    ):
         self.telemetry_dir = Path(telemetry_dir)
         self.telemetry_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.telemetry_dir / "llm_calls.jsonl"
         self.max_detail_chars = max_detail_chars
+        self.processing_run_id = processing_run_id
 
     def start_call(
         self,
@@ -40,6 +46,7 @@ class LLMTelemetryStore:
             provider=provider,
             request=request,
             file_path=file_path,
+            processing_run_id=self.processing_run_id,
         )
 
     def append(self, record: Dict[str, Any]) -> None:
@@ -104,6 +111,7 @@ class LLMCallSpan:
         provider: str,
         request: Dict[str, Any],
         file_path: Optional[str],
+        processing_run_id: Optional[str],
     ):
         self.store = store
         self.stage = stage
@@ -111,6 +119,7 @@ class LLMCallSpan:
         self.provider = provider
         self.request = request
         self.file_path = file_path
+        self.processing_run_id = processing_run_id
         self.call_id = str(uuid.uuid4())
         self.started_at = time.perf_counter()
         self.started_iso = datetime.now(timezone.utc).isoformat()
@@ -133,6 +142,7 @@ class LLMCallSpan:
             "provider": self.provider,
             "model": self.model,
             "file_path": self.file_path,
+            "processing_run_id": self.processing_run_id,
             "status": "error" if error else "ok",
             "duration_seconds": round(duration, 4),
             "tokens": usage,
@@ -153,7 +163,10 @@ def default_llm_telemetry_store(config: Optional[Dict[str, Any]] = None) -> LLMT
         or config.get("telemetry_dir")
         or ".cache/llm_telemetry"
     )
-    return LLMTelemetryStore(str(telemetry_dir))
+    return LLMTelemetryStore(
+        str(telemetry_dir),
+        processing_run_id=config.get("_processing_run_id") or config.get("processing_run_id"),
+    )
 
 
 def summarize_records(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:

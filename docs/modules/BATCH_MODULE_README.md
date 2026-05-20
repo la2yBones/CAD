@@ -13,7 +13,8 @@ src/batch_processor/
 ├── __init__.py
 ├── file_manager.py      # CADFileManager
 ├── processor.py         # CADProcessor / CADProcessResult
-└── pipeline.py          # CADPipeline
+├── pipeline.py          # CADPipeline
+└── pending_store.py     # PendingClarificationStore
 ```
 
 ## 组件职责
@@ -24,6 +25,7 @@ src/batch_processor/
 | `CADProcessor` | 单文件解析、分析、建模、导出和多视图保护 |
 | `CADPipeline` | 对外单文件、多文件、目录处理接口 |
 | `CADProcessResult` | 标准处理结果对象 |
+| `PendingClarificationStore` | 持久化批量处理中等待恢复的 `needs_clarification` 项 |
 
 ## CLI 使用
 
@@ -72,6 +74,21 @@ examples/output/<图纸名>/
 ## 进度回调
 
 `process_multiple_files_basic()`、`process_directory_basic()`、`process_multiple_files_intelligent()` 和 `process_directory_intelligent()` 支持 `progress_callback(current, total, result)`，GUI 可用该回调更新进度。
+
+## 待恢复任务
+
+GUI 批量处理多张选中图纸时，如果单张图纸返回 `needs_clarification`，界面会把它保存为待恢复任务，然后继续处理下一张图纸。默认存储目录为 `.cache/batch_pending`。
+
+每个待恢复任务保存：
+
+- 输入图纸路径。
+- 输出目录。
+- 拉伸高度和处理模式。
+- 结构化追问清单。
+- 澄清上下文。
+- 创建和更新时间。
+
+调用方可通过 `list_pending()` 展示待恢复任务列表，通过 `load(pending_id)` 读取记录，通过 `mark_resolved(pending_id)` 在恢复成功后隐藏该项。
 
 ## 错误处理
 

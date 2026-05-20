@@ -1,0 +1,19 @@
+{
+  "cache": {
+    "dir": ".cache/analysis",
+    "default_ttl_days": 7,
+    "max_size_mb": 500
+  },
+  "output": {
+    "base_dir": "examples/output"
+  },
+  "processing": {
+    "basic_default_height": 10.0,
+    "intelligent_mode": true,
+    "confirm_llm_stages": true
+  },
+  "log": {
+    "max_display": 2000,
+    "auto_scroll": true
+  }
+}

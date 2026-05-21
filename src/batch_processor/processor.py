@@ -14,6 +14,7 @@ import traceback
 
 from src.batch_processor.modeling_execution import IntelligentModelingExecutor
 from src.reconstruction.clarification_response import ClarificationResponse
+from src.utils.config import get_analysis_cache_settings
 from src.utils.stage_confirmation import StageConfirmationStopped
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,15 @@ class CADProcessor:
         self._modeler = None
         self._modeling_executor = None
 
+    def _notify_progress_stage(self, stage: str, text: str) -> None:
+        callback = self.config.get("_progress_callback")
+        if not callback:
+            return
+        try:
+            callback(stage, text)
+        except Exception as error:
+            logger.debug(f"进度回调失败: {error}")
+
     def _get_parser(self):
         """获取或创建CAD解析器"""
         if self._cad_parser is None:
@@ -170,6 +180,9 @@ class CADProcessor:
                 self._get_modeler,
             )
         return self._modeling_executor
+
+    def _analysis_cache_settings(self) -> Dict[str, Any]:
+        return get_analysis_cache_settings(self.config)
 
     def _prepare_intelligent_view_context(
         self,
@@ -277,12 +290,13 @@ class CADProcessor:
                 if api_key and api_key != "your-deepseek-api-key-here":
                     try:
                         from src.intelligent_analyzer import IntelligentEngineeringAnalyzer
+                        cache_settings = self._analysis_cache_settings()
                         analyzer = IntelligentEngineeringAnalyzer(
                             api_key,
                             self.config.get("api", {}).get("deepseek", {}),
-                            enable_cache=True,
-                            cache_dir=self.config.get('cache_dir', '.cache/analysis'),
-                            cache_ttl=self.config.get('cache_ttl', 3600 * 24 * 7)
+                            enable_cache=cache_settings["enabled"],
+                            cache_dir=cache_settings["cache_dir"],
+                            cache_ttl=cache_settings["default_ttl"]
                         )
                         intelligent_analysis_result = analyzer.analyze_full(
                             geometry_data,
@@ -358,6 +372,7 @@ class CADProcessor:
             logger.info(f"开始智能分析处理: {Path(file_path).name}")
 
             # 1. 解析CAD
+            self._notify_progress_stage("parsing", "解析中")
             parser = self._get_parser()(file_path, self.config.get("dxf_parser", {}))
             geometry_data = parser.parse()
             result.geometry_data = geometry_data
@@ -382,13 +397,15 @@ class CADProcessor:
 
             if api_key and api_key != "your-deepseek-api-key-here":
                 try:
+                    self._notify_progress_stage("ai_analysis", "AI 分析中")
                     from src.intelligent_analyzer import IntelligentEngineeringAnalyzer
+                    cache_settings = self._analysis_cache_settings()
                     analyzer = IntelligentEngineeringAnalyzer(
                         api_key,
                         self.config.get("api", {}).get("deepseek", {}),
-                        enable_cache=True,
-                        cache_dir=self.config.get('cache_dir', '.cache/analysis'),
-                        cache_ttl=self.config.get('cache_ttl', 3600 * 24 * 7)
+                        enable_cache=cache_settings["enabled"],
+                        cache_dir=cache_settings["cache_dir"],
+                        cache_ttl=cache_settings["default_ttl"]
                     )
                     intelligent_analysis_result = analyzer.analyze_full(
                         geometry_data, 
@@ -409,6 +426,7 @@ class CADProcessor:
                         return result
 
                     # 保存分析结果
+                    self._notify_progress_stage("finalizing", "保存分析结果")
                     output_dir = output_structure.get('directory', Path('.') / 'output')
                     base_name = Path(file_path).stem
                     analyzer.save_results(intelligent_analysis_result, str(output_dir), base_name)
@@ -462,7 +480,8 @@ class CADProcessor:
                 logger.warning(result.error_message)
                 return result
 
-            return self._execute_intelligent_modeling_path(
+            self._notify_progress_stage("modeling", "建模中")
+            modeled_result = self._execute_intelligent_modeling_path(
                 result=result,
                 intelligent_analysis_result=result.intelligent_analysis,
                 geometry_data=geometry_data,
@@ -472,6 +491,14 @@ class CADProcessor:
                 script_failure_prefix="AI脚本执行失败，智能模式不会调用通用建模器兜底",
                 completion_message=f"智能分析处理完成: {Path(file_path).name}",
             )
+            self._attach_partial_modeling_clarification(
+                modeled_result,
+                result.intelligent_analysis,
+                geometry_data=geometry_data,
+                extrude_height=extrude_height,
+                file_path=file_path,
+            )
+            return modeled_result
 
         except StageConfirmationStopped as stopped:
             result.mark_stopped_by_user(
@@ -500,7 +527,34 @@ class CADProcessor:
         path_questions = (
             intelligent_analysis_result.get("modeling_instructions", {}) or {}
         ).get("clarification_questions", [])
-        return list(semantic_questions or []) + list(path_questions or [])
+        return CADProcessor._deduplicate_clarification_questions(
+            list(semantic_questions or []) + list(path_questions or [])
+        )
+
+    @staticmethod
+    def _deduplicate_clarification_questions(questions: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        deduplicated = []
+        seen_keys = set()
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+
+            question_id = str(question.get("id") or "").strip().lower()
+            question_text = str(question.get("text") or question.get("question") or "")
+            normalized_text = " ".join(question_text.split()).lower()
+
+            keys = []
+            if question_id:
+                keys.append(f"id:{question_id}")
+            if normalized_text:
+                keys.append(f"text:{normalized_text}")
+
+            if keys and any(key in seen_keys for key in keys):
+                continue
+
+            seen_keys.update(keys)
+            deduplicated.append(question)
+        return deduplicated
 
     def _execute_intelligent_modeling_path(
         self,
@@ -568,7 +622,8 @@ class CADProcessor:
                 logger.info("用户澄清后仍存在未决问题，继续等待输入")
                 return result
 
-            return self._execute_intelligent_modeling_path(
+            self._notify_progress_stage("modeling", "建模中")
+            modeled_result = self._execute_intelligent_modeling_path(
                 result=result,
                 intelligent_analysis_result=resumed_analysis,
                 geometry_data=result.clarification_context["geometry_data"],
@@ -578,6 +633,14 @@ class CADProcessor:
                 script_failure_prefix="用户澄清后的 AI 脚本执行失败",
                 completion_message="用户澄清后的智能建模已完成",
             )
+            self._attach_partial_modeling_clarification(
+                modeled_result,
+                resumed_analysis,
+                geometry_data=result.clarification_context["geometry_data"],
+                extrude_height=result.clarification_context["extrude_height"],
+                file_path=result.clarification_context.get("file_path", result.input_file),
+            )
+            return modeled_result
         except StageConfirmationStopped as stopped:
             result.mark_stopped_by_user(
                 str(stopped),
@@ -595,6 +658,87 @@ class CADProcessor:
             result.mark_failed(f"用户澄清后的局部恢复失败: {error}")
             logger.error(traceback.format_exc())
             return result
+
+    def _attach_partial_modeling_clarification(
+        self,
+        result: CADProcessResult,
+        intelligent_analysis_result: Optional[Dict[str, Any]],
+        *,
+        geometry_data: Dict[str, Any],
+        extrude_height: float,
+        file_path: str,
+    ) -> None:
+        if result.status != PipelineStatus.PARTIAL_COMPLETED:
+            return
+        if not result.skipped_features:
+            return
+        if result.clarification_questions and result.clarification_context:
+            return
+
+        skipped_text = self._format_skipped_features_for_question(result.skipped_features)
+        result.clarification_questions = [
+            {
+                "id": "user_modeling_hint",
+                "kind": "text",
+                "text": (
+                    "主体模型已生成，但以下细节被跳过。请补充这些细节的建模要求，"
+                    "系统会基于当前图纸上下文重新生成模型。"
+                ),
+                "reason": skipped_text,
+                "required": True,
+                "example": "例如：R15 是螺栓头部承面，可用绕轴回转圆弧面表达；其余圆角可以跳过。",
+            }
+        ]
+        result.clarification_context = self._build_partial_modeling_clarification_context(
+            intelligent_analysis_result or {},
+            geometry_data=geometry_data,
+            extrude_height=extrude_height,
+            file_path=file_path,
+            result=result,
+        )
+
+    @staticmethod
+    def _format_skipped_features_for_question(skipped_features: list[Dict[str, Any]]) -> str:
+        lines = []
+        for index, feature in enumerate(skipped_features[:6], start=1):
+            name = str(feature.get("name") or feature.get("kind") or f"细节{index}")
+            reason = str(feature.get("reason") or feature.get("risk") or "未说明原因")
+            lines.append(f"{index}. {name}: {reason}")
+        if len(skipped_features) > 6:
+            lines.append(f"... 另有 {len(skipped_features) - 6} 项细节")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_partial_modeling_clarification_context(
+        intelligent_analysis_result: Dict[str, Any],
+        *,
+        geometry_data: Dict[str, Any],
+        extrude_height: float,
+        file_path: str,
+        result: CADProcessResult,
+    ) -> Dict[str, Any]:
+        existing_context = intelligent_analysis_result.get("clarification_context")
+        if existing_context:
+            context = dict(existing_context)
+        else:
+            context = {
+                "geometry_data": geometry_data,
+                "view_analysis": intelligent_analysis_result.get("view_analysis", {}),
+                "dimension_data": intelligent_analysis_result.get("dimension_extraction", {}),
+                "local_relationships": intelligent_analysis_result.get("local_relationships"),
+                "extrude_height": extrude_height,
+                "file_path": file_path,
+                "reconstruction_context": intelligent_analysis_result.get("reconstruction_context", {}),
+            }
+        context.update({
+            "clarification_stage": "semantic_policy",
+            "partial_modeling_recovery": True,
+            "previous_modeling_instructions": intelligent_analysis_result.get("modeling_instructions", {}),
+            "previous_output_paths": dict(result.output_paths),
+            "skipped_features": list(result.skipped_features),
+            "partial_completion_reason": result.partial_completion_reason,
+        })
+        return context
 
     def process_from_geometry_data(self, geometry_data: Dict,
                                    output_structure: Dict[str, Path],

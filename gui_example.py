@@ -1064,13 +1064,12 @@ class LLMTelemetryPanel(ttk.Frame):
 
     def _build_processing_groups(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         groups: List[Dict[str, Any]] = []
-        active_by_file: Dict[str, Dict[str, Any]] = {}
-        last_stage_by_file: Dict[str, set[str]] = {}
+        active_by_key: Dict[str, Dict[str, Any]] = {}
         run_groups: Dict[str, Dict[str, Any]] = {}
 
         for record in records:
             run_id = str(record.get("processing_run_id") or "").strip()
-            file_key = self._record_file_key(record)
+            group_keys = self._record_group_keys(record)
             if run_id:
                 group_key = f"run:{run_id}"
                 group = run_groups.get(group_key)
@@ -1082,9 +1081,9 @@ class LLMTelemetryPanel(ttk.Frame):
                 group["records"].append(record)
                 continue
 
-            group = active_by_file.get(file_key)
+            group = next((active_by_key.get(key) for key in group_keys if key in active_by_key), None)
             stage = str(record.get("stage") or "")
-            stages_seen = last_stage_by_file.setdefault(file_key, set())
+            stages_seen = set(group.get("_stages_seen", set())) if group else set()
             should_start_new = (
                 group is None
                 or self._record_gap_seconds(group["records"][-1], record) > 120
@@ -1093,13 +1092,17 @@ class LLMTelemetryPanel(ttk.Frame):
             if should_start_new:
                 group = self._new_record_group(record)
                 groups.append(group)
-                active_by_file[file_key] = group
+                for key in group_keys:
+                    active_by_key[key] = group
                 stages_seen = set()
-                last_stage_by_file[file_key] = stages_seen
+            else:
+                for key in group_keys:
+                    active_by_key[key] = group
 
             group["records"].append(record)
             if stage:
                 stages_seen.add(stage)
+            group["_stages_seen"] = stages_seen
         return groups
 
     def _new_record_group(self, record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1110,14 +1113,25 @@ class LLMTelemetryPanel(ttk.Frame):
             "run_id": record.get("processing_run_id"),
         }
 
-    def _record_file_key(self, record: Dict[str, Any]) -> str:
+    def _record_group_keys(self, record: Dict[str, Any]) -> List[str]:
+        keys: List[str] = []
         file_path = str(record.get("file_path") or "").strip()
         if file_path:
-            return f"file:{file_path.lower()}"
+            keys.append(f"file:{self._normalize_record_file_path(file_path)}")
         drawing = self._display_drawing_name(record)
         if drawing:
-            return f"drawing:{drawing.lower()}"
-        return "unknown"
+            keys.append(f"drawing:{drawing.lower()}")
+        return keys or ["unknown"]
+
+    @staticmethod
+    def _normalize_record_file_path(file_path: str) -> str:
+        try:
+            path = Path(file_path)
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            return str(path.resolve()).lower()
+        except Exception:
+            return str(file_path).replace("/", "\\").lower()
 
     def _record_gap_seconds(self, previous: Dict[str, Any], current: Dict[str, Any]) -> float:
         previous_time = self._parse_record_time(previous.get("timestamp"))
@@ -1319,6 +1333,163 @@ class ProcessingCancelled(RuntimeError):
     """Raised when the GUI user requests cooperative cancellation."""
 
 
+class BatchProgressWindow:
+    """Non-modal batch progress board for the current GUI session."""
+
+    STAGE_RANGES = {
+        "queued": (0, 0, 1.0),
+        "preparing": (0, 10, 4.0),
+        "parsing": (10, 25, 8.0),
+        "ai_analysis": (25, 75, 300.0),
+        "modeling": (75, 90, 20.0),
+        "finalizing": (90, 95, 5.0),
+        "done": (100, 100, 1.0),
+    }
+
+    def __init__(
+        self,
+        parent,
+        items: Dict[str, Dict[str, Any]],
+        *,
+        output_dir: str,
+        on_closed: Callable[[], None],
+    ):
+        self.parent = parent
+        self.items = items
+        self.output_dir = output_dir
+        self.on_closed = on_closed
+        self.rows: Dict[str, Dict[str, Any]] = {}
+        self.window = tk.Toplevel(parent)
+        self.window.title("批量处理进度")
+        self.window.geometry("860x420")
+        self.window.minsize(760, 320)
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+        self._build_ui()
+        self.refresh_all()
+        self._tick()
+
+    def _build_ui(self):
+        header = ttk.Frame(self.window, padding=(10, 10, 10, 6))
+        header.pack(fill=tk.X)
+        ttk.Label(header, text="批量处理进度", font=("", 10, "bold")).pack(side=tk.LEFT)
+        ttk.Button(header, text="打开输出目录", width=14, command=self._open_output_dir).pack(side=tk.RIGHT)
+        ttk.Button(header, text="关闭", width=10, command=self.close).pack(side=tk.RIGHT, padx=(0, 8))
+
+        columns = ttk.Frame(self.window, padding=(10, 0, 10, 0))
+        columns.pack(fill=tk.X)
+        for index, width in enumerate((180, 90, 210, 230, 80)):
+            columns.grid_columnconfigure(index, minsize=width)
+        ttk.Label(columns, text="图纸").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(columns, text="状态").grid(row=0, column=1, sticky=tk.W)
+        ttk.Label(columns, text="进度").grid(row=0, column=2, sticky=tk.W)
+        ttk.Label(columns, text="当前阶段 / 结果").grid(row=0, column=3, sticky=tk.W)
+        ttk.Label(columns, text="耗时").grid(row=0, column=4, sticky=tk.W)
+
+        body = ttk.Frame(self.window, padding=(10, 4, 10, 10))
+        body.pack(fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(body, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.rows_frame = ttk.Frame(self.canvas)
+        self.rows_frame.bind(
+            "<Configure>",
+            lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+        )
+        self.canvas.create_window((0, 0), window=self.rows_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def refresh_all(self):
+        for item_id in list(self.items):
+            self._ensure_row(item_id)
+        self.refresh()
+
+    def refresh(self):
+        for item_id, row in self.rows.items():
+            item = self.items.get(item_id)
+            if not item:
+                continue
+            row["status"].set(item.get("status", ""))
+            row["stage"].set(item.get("message") or item.get("stage_text", ""))
+            row["elapsed"].set(self._elapsed_text(item))
+            row["progress"].set(self._progress_for(item))
+
+    def _ensure_row(self, item_id: str):
+        if item_id in self.rows:
+            return
+        item = self.items[item_id]
+        row_index = len(self.rows)
+        frame = ttk.Frame(self.rows_frame)
+        frame.grid(row=row_index, column=0, sticky="ew", pady=2)
+        for index, width in enumerate((180, 90, 210, 230, 80)):
+            frame.grid_columnconfigure(index, minsize=width)
+
+        status_var = tk.StringVar(value=item.get("status", ""))
+        stage_var = tk.StringVar(value=item.get("stage_text", ""))
+        elapsed_var = tk.StringVar(value="0.0s")
+        progress_var = tk.DoubleVar(value=0.0)
+
+        ttk.Label(frame, text=item.get("name", ""), width=22).grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(frame, textvariable=status_var, width=10).grid(row=0, column=1, sticky=tk.W)
+        ttk.Progressbar(frame, variable=progress_var, maximum=100, length=190).grid(row=0, column=2, sticky=tk.W)
+        ttk.Label(frame, textvariable=stage_var, width=28).grid(row=0, column=3, sticky=tk.W)
+        ttk.Label(frame, textvariable=elapsed_var, width=9).grid(row=0, column=4, sticky=tk.W)
+        self.rows[item_id] = {
+            "status": status_var,
+            "stage": stage_var,
+            "elapsed": elapsed_var,
+            "progress": progress_var,
+        }
+
+    def _progress_for(self, item: Dict[str, Any]) -> float:
+        if item.get("finished"):
+            return 100.0
+        stage = item.get("stage", "queued")
+        start, end, expected = self.STAGE_RANGES.get(stage, self.STAGE_RANGES["queued"])
+        if start == end:
+            return float(start)
+        elapsed = max(time.time() - float(item.get("stage_started_at") or time.time()), 0.0)
+        ratio = min(elapsed / expected, 0.98)
+        return round(start + (end - start) * ratio, 1)
+
+    @staticmethod
+    def _elapsed_text(item: Dict[str, Any]) -> str:
+        started_at = item.get("started_at")
+        ended_at = item.get("ended_at")
+        if not started_at:
+            return ""
+        end = float(ended_at or time.time())
+        return f"{max(end - float(started_at), 0.0):.1f}s"
+
+    def _tick(self):
+        if not self.exists():
+            return
+        self.refresh()
+        self.window.after(500, self._tick)
+
+    def _open_output_dir(self):
+        try:
+            path = Path(self.output_dir or ".")
+            path.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(path))
+        except Exception as e:
+            messagebox.showerror("打开输出目录失败", f"无法打开输出目录：\n{e}", parent=self.window)
+
+    def exists(self) -> bool:
+        return bool(getattr(self, "window", None)) and self.window.winfo_exists()
+
+    def focus(self):
+        if self.exists():
+            self.window.deiconify()
+            self.window.lift()
+            self.window.focus_force()
+
+    def close(self):
+        if self.exists():
+            self.window.destroy()
+        self.on_closed()
+
+
 class PendingClarificationPanel(ttk.Frame):
     """GUI view for persisted batch clarification items."""
 
@@ -1337,7 +1508,8 @@ class PendingClarificationPanel(ttk.Frame):
         ttk.Button(toolbar, text="全选", width=8, command=self._select_all).grid(row=0, column=0, sticky=tk.W)
         ttk.Button(toolbar, text="清空选择", width=10, command=self._clear_selection).grid(row=0, column=1, sticky=tk.W, padx=(8, 0))
         ttk.Button(toolbar, text="刷新", width=10, command=self.refresh).grid(row=0, column=3, sticky=tk.E, padx=(0, 8))
-        ttk.Button(toolbar, text="继续选中", width=12, command=self._resume_selected).grid(row=0, column=4, sticky=tk.E)
+        ttk.Button(toolbar, text="删除选中", width=12, command=self._delete_selected).grid(row=0, column=4, sticky=tk.E, padx=(0, 8))
+        ttk.Button(toolbar, text="继续选中", width=12, command=self._resume_selected).grid(row=0, column=5, sticky=tk.E)
 
         columns = ("checked", "file", "questions", "updated", "path")
         self.tree = ttk.Treeview(self, columns=columns, show="headings", height=6, selectmode="extended")
@@ -1358,15 +1530,18 @@ class PendingClarificationPanel(ttk.Frame):
         scrollbar.pack(side=tk.LEFT, fill=tk.Y, pady=(0, 8))
         self.tree.bind("<Button-1>", self._on_tree_click)
         self.tree.bind("<Double-1>", lambda _event: self._resume_selected())
+        self.tree.bind("<Delete>", lambda _event: self._delete_selected())
 
     def refresh(self):
         checked_ids = set(self._checked_pending_items)
+        pending_ids = set()
         for item in self.tree.get_children():
             self.tree.delete(item)
         self._checked_pending_items.clear()
         for item in self.pending_store.list_pending():
             input_file = item.get("input_file", "")
             pending_id = item.get("pending_id")
+            pending_ids.add(pending_id)
             checked = pending_id in checked_ids
             self.tree.insert(
                 "",
@@ -1382,6 +1557,7 @@ class PendingClarificationPanel(ttk.Frame):
             )
             if checked:
                 self._checked_pending_items.add(pending_id)
+        self._checked_pending_items.intersection_update(pending_ids)
 
     def _on_tree_click(self, event):
         if self.tree.identify_region(event.x, event.y) != "cell":
@@ -1446,6 +1622,22 @@ class PendingClarificationPanel(ttk.Frame):
             return
         self.on_resume(item)
 
+    def _delete_selected(self):
+        selected = self._selected_pending_ids()
+        if not selected:
+            messagebox.showinfo("请选择待恢复任务", "请先选择要删除的待恢复任务。")
+            return
+        if not messagebox.askyesno("删除待恢复任务", f"确定删除选中的 {len(selected)} 条待恢复任务吗？"):
+            return
+
+        deleted = 0
+        for pending_id in selected:
+            if self.pending_store.mark_deleted(pending_id):
+                deleted += 1
+        self._checked_pending_items.difference_update(selected)
+        self.refresh()
+        messagebox.showinfo("删除完成", f"已删除 {deleted} 条待恢复任务。")
+
 
 class ProcessingPanel(ttk.Frame):
     """处理面板 — 文件选择、参数配置、处理控制"""
@@ -1470,6 +1662,11 @@ class ProcessingPanel(ttk.Frame):
         from src.batch_processor import PendingClarificationStore
         self.pending_store = PendingClarificationStore()
         self._checked_file_items = set()
+        self._batch_progress_items: Dict[str, Dict[str, Any]] = {}
+        self._batch_progress_window: Optional[BatchProgressWindow] = None
+        self._batch_output_dir = ""
+        self._batch_progress_button = None
+        self._active_batch_item_id: Optional[str] = None
         self._build_ui()
 
     def _build_ui(self):
@@ -1488,7 +1685,7 @@ class ProcessingPanel(ttk.Frame):
 
         control_row = ttk.Frame(param_frame)
         control_row.pack(fill=tk.X)
-        control_row.grid_columnconfigure(3, weight=1, minsize=60)
+        control_row.grid_columnconfigure(4, weight=1, minsize=60)
 
         self.process_btn = ttk.Button(control_row, text="开始处理", width=12, command=self._start_processing)
         self.process_btn.grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
@@ -1499,13 +1696,22 @@ class ProcessingPanel(ttk.Frame):
         self.cancel_btn = ttk.Button(control_row, text="取消", width=8, command=self._cancel_processing, state="disabled")
         self.cancel_btn.grid(row=0, column=2, sticky=tk.W, padx=(0, 10))
 
+        self._batch_progress_button = ttk.Button(
+            control_row,
+            text="查看批量进度",
+            width=14,
+            command=self._show_batch_progress_window,
+            state="disabled",
+        )
+        self._batch_progress_button.grid(row=0, column=3, sticky=tk.W, padx=(0, 10))
+
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(control_row, variable=self.progress_var, maximum=100, length=120)
-        self.progress_bar.grid(row=0, column=3, sticky=tk.EW, padx=(0, 10))
+        self.progress_bar.grid(row=0, column=4, sticky=tk.EW, padx=(0, 10))
 
         self.progress_label = tk.StringVar(value="就绪")
         ttk.Label(control_row, textvariable=self.progress_label, foreground="gray", width=12).grid(
-            row=0, column=4, sticky=tk.W
+            row=0, column=5, sticky=tk.W
         )
 
         secondary_row = ttk.Frame(param_frame)
@@ -1681,6 +1887,26 @@ class ProcessingPanel(ttk.Frame):
                 paths.append(values[3])
         return paths
 
+    def _save_recovery_item(self, result, output_dir: str) -> bool:
+        try:
+            if not getattr(result, "clarification_questions", None):
+                return False
+            if not getattr(result, "clarification_context", None):
+                return False
+            self.pending_store.save_recovery(
+                result,
+                output_dir=output_dir,
+                extrude_height=float(self.height_var.get()),
+                mode=getattr(result, "mode", None) or "intelligent",
+            )
+            if self.on_pending_changed:
+                self.after(0, self.on_pending_changed)
+            self.after(0, self.pending_panel.refresh)
+            return True
+        except Exception as pending_error:
+            logger.warning(f"保存待恢复任务失败: {pending_error}")
+            return False
+
     def resume_pending_item(self, item: Dict[str, Any]) -> None:
         if self._processing:
             messagebox.showinfo("任务正在处理中", "请等待当前处理任务结束后再恢复该图纸。")
@@ -1692,6 +1918,7 @@ class ProcessingPanel(ttk.Frame):
             return
 
         try:
+            self._reset_processing_controls()
             config = self._load_config(confirm_llm_stages=bool(self.stage_confirmation_var.get()))
             self._attach_processing_run_id(
                 config,
@@ -1868,6 +2095,89 @@ class ProcessingPanel(ttk.Frame):
         if stage:
             logger.debug(f"继续处理阶段: {stage}")
 
+    def _prepare_batch_progress(self, filepaths: List[str], output_dir: str):
+        self._batch_output_dir = output_dir
+        self._batch_progress_items = {}
+        now = time.time()
+        for filepath in filepaths:
+            self._batch_progress_items[filepath] = {
+                "name": Path(filepath).name,
+                "path": filepath,
+                "status": "排队中",
+                "stage": "queued",
+                "stage_text": "排队中",
+                "message": "",
+                "stage_started_at": now,
+                "started_at": None,
+                "ended_at": None,
+                "finished": False,
+            }
+        if self._batch_progress_button is not None:
+            self._batch_progress_button.configure(state="normal")
+        self._show_batch_progress_window()
+
+    def _show_batch_progress_window(self):
+        if not self._batch_progress_items:
+            messagebox.showinfo("暂无批量进度", "当前还没有可查看的批量处理进度。")
+            return
+        if self._batch_progress_window and self._batch_progress_window.exists():
+            self._batch_progress_window.focus()
+            return
+        self._batch_progress_window = BatchProgressWindow(
+            self,
+            self._batch_progress_items,
+            output_dir=self._batch_output_dir or self.output_dir_var.get(),
+            on_closed=self._on_batch_progress_closed,
+        )
+
+    def _on_batch_progress_closed(self):
+        self._batch_progress_window = None
+
+    def _set_batch_item_stage(self, item_id: Optional[str], stage: str, status: str, text: str):
+        if not item_id:
+            return
+
+        def update():
+            item = self._batch_progress_items.get(item_id)
+            if not item or item.get("finished"):
+                return
+            now = time.time()
+            if item.get("stage") != stage:
+                item["stage_started_at"] = now
+            if item.get("started_at") is None:
+                item["started_at"] = now
+            item["stage"] = stage
+            item["status"] = status
+            item["stage_text"] = text
+            item["message"] = text
+            if self._batch_progress_window and self._batch_progress_window.exists():
+                self._batch_progress_window.refresh_all()
+
+        self.after(0, update)
+
+    def _finish_batch_item(self, item_id: str, status: str, message: str):
+        def update():
+            item = self._batch_progress_items.get(item_id)
+            if not item:
+                return
+            item["stage"] = "done"
+            item["status"] = status
+            item["stage_text"] = message
+            item["message"] = message
+            item["finished"] = True
+            item["ended_at"] = time.time()
+            if item.get("started_at") is None:
+                item["started_at"] = item["ended_at"]
+            if self._batch_progress_window and self._batch_progress_window.exists():
+                self._batch_progress_window.refresh_all()
+
+        self.after(0, update)
+
+    def _cancel_unfinished_batch_items(self):
+        for item_id, item in list(self._batch_progress_items.items()):
+            if not item.get("finished"):
+                self._finish_batch_item(item_id, "已取消", "批量处理已取消")
+
     def _start_processing(self):
         if self._processing:
             messagebox.showinfo(
@@ -1910,6 +2220,7 @@ class ProcessingPanel(ttk.Frame):
                 daemon=True,
             )
         else:
+            self._prepare_batch_progress(selected_paths, output_dir)
             thread = threading.Thread(
                 target=self._run_batch_processing,
                 args=(selected_paths, output_dir),
@@ -1938,6 +2249,8 @@ class ProcessingPanel(ttk.Frame):
                 self._update_progress(percent, f"批量 {index}/{total}")
                 logger.info(f"批量处理 {index}/{total}: {name}")
                 self._attach_processing_run_id(config, self._new_processing_run_id(filepath))
+                self._active_batch_item_id = filepath
+                self._set_batch_item_stage(filepath, "preparing", "处理中", "准备中")
 
                 pipeline = CADPipeline(
                     config=config,
@@ -1946,11 +2259,9 @@ class ProcessingPanel(ttk.Frame):
                 )
                 pipeline.set_output_dir(output_dir)
                 self.pipeline = pipeline
-                pipeline.processor.process_with_intelligent_analysis = self._wrap_intelligent(
-                    pipeline.processor.process_with_intelligent_analysis
-                )
 
                 result = pipeline.process_file_intelligent(filepath, float(self.height_var.get()))
+                self._set_batch_item_stage(filepath, "finalizing", "收尾中", "保存结果")
                 status_value = getattr(getattr(result, "status", None), "value", "")
                 if result.success:
                     bucket = "partial_completed" if status_value == "partial_completed" else "completed"
@@ -1958,9 +2269,17 @@ class ProcessingPanel(ttk.Frame):
                     logger.info(f"批量完成: {name} | 状态: {status_value or 'completed'}")
                     if status_value == "partial_completed":
                         logger.warning(f"部分完成原因: {getattr(result, 'partial_completion_reason', '')}")
+                        pending_saved = self._save_recovery_item(result, output_dir)
+                        if pending_saved:
+                            totals["needs_clarification"] += 1
+                            self._finish_batch_item(filepath, "部分完成/待恢复", "主体模型已生成，等待补充跳过细节")
+                        else:
+                            self._finish_batch_item(filepath, "部分完成", getattr(result, "partial_completion_reason", "") or "主体模型已生成，部分细节跳过")
+                    else:
+                        self._finish_batch_item(filepath, "完成", "处理完成")
                 elif status_value == "needs_clarification":
                     try:
-                        self.pending_store.save(
+                        self.pending_store.save_recovery(
                             result,
                             output_dir=output_dir,
                             extrude_height=float(self.height_var.get()),
@@ -1968,17 +2287,22 @@ class ProcessingPanel(ttk.Frame):
                         )
                         totals["needs_clarification"] += 1
                         logger.info(f"已保存为待恢复任务: {name} | 问题数: {len(result.clarification_questions)}")
+                        self._finish_batch_item(filepath, "待恢复", f"需要补充 {len(result.clarification_questions)} 项信息")
                         if self.on_pending_changed:
                             self.after(0, self.on_pending_changed)
                     except Exception as pending_error:
                         totals["failed"] += 1
                         logger.error(f"待恢复任务保存失败: {name} | {pending_error}")
+                        self._finish_batch_item(filepath, "失败", f"待恢复任务保存失败: {pending_error}")
                 elif status_value == "stopped_by_user":
                     totals["stopped_by_user"] += 1
                     logger.info(f"批量项已停止: {name} | {result.error_message}")
+                    self._finish_batch_item(filepath, "已停止", result.error_message or "用户停止处理")
                 else:
                     totals["failed"] += 1
                     logger.error(f"批量失败: {name} | {result.error_message}")
+                    self._finish_batch_item(filepath, "失败", result.error_message or "处理失败")
+                self._active_batch_item_id = None
 
             elapsed = time.time() - start_time
             message = (
@@ -2003,17 +2327,20 @@ class ProcessingPanel(ttk.Frame):
         except ProcessingCancelled:
             elapsed = time.time() - start_time
             logger.warning(f"批量处理已取消 | 耗时: {elapsed:.1f}s")
+            self._cancel_unfinished_batch_items()
             self.after(0, lambda: self.progress_label.set("已取消"))
         except Exception as e:
             elapsed = time.time() - start_time
             logger.error(f"批量处理异常 | 耗时: {elapsed:.1f}s | {e}")
             import traceback
             logger.error(traceback.format_exc())
+            self._cancel_unfinished_batch_items()
             self.after(0, lambda: messagebox.showerror(
                 "批量处理异常",
                 f"批量处理时发生未预期错误：\n{e}"
             ))
         finally:
+            self._active_batch_item_id = None
             self._processing = False
             self._paused = False
             self._pause_event.set()
@@ -2061,6 +2388,8 @@ class ProcessingPanel(ttk.Frame):
                     logger.warning(f"部分完成原因: {getattr(result, 'partial_completion_reason', '')}")
                     for feature in getattr(result, "skipped_features", []) or []:
                         logger.warning(f"跳过细节: {feature}")
+                    if self._save_recovery_item(result, self.output_dir_var.get()):
+                        logger.info("部分完成任务已加入待恢复列表，补充信息后可重新生成模型")
                 if result.output_paths:
                     for k, v in result.output_paths.items():
                         logger.info(f"输出产物 [{k}]: {v}")
@@ -2256,13 +2585,14 @@ class ProcessingPanel(ttk.Frame):
         from src.utils.stage_confirmation import (
             StageConfirmationResult,
             default_stage_stop_message,
+            stage_display_name,
         )
 
         if self._cancel_event.is_set():
             return StageConfirmationResult(
                 continue_processing=False,
                 action="cancel",
-                message=default_stage_stop_message(stage),
+                message=f"用户在 {stage_display_name(stage)} 阶段取消处理",
                 stage=stage,
             )
 
@@ -2271,17 +2601,47 @@ class ProcessingPanel(ttk.Frame):
             "decision": StageConfirmationResult.stop(default_stage_stop_message(stage))
         }
         self.after(0, lambda: self.progress_label.set("等待阶段确认"))
-        self.after(0, lambda: self._show_stage_confirmation_dialog(stage, payload, outcome, completed))
+        self.after(
+            0,
+            lambda: self._show_stage_confirmation_dialog_safely(
+                stage,
+                payload,
+                outcome,
+                completed,
+            ),
+        )
 
         while not completed.wait(0.1):
             if self._cancel_event.is_set():
                 return StageConfirmationResult(
                     continue_processing=False,
                     action="cancel",
-                    message=default_stage_stop_message(stage),
+                    message=f"用户在 {stage_display_name(stage)} 阶段取消处理",
                     stage=stage,
                 )
         return outcome["decision"]
+
+    def _show_stage_confirmation_dialog_safely(
+        self,
+        stage: str,
+        payload: Dict[str, Any],
+        outcome: Dict[str, Any],
+        completed: threading.Event,
+    ) -> None:
+        """Show the stage dialog without leaving the worker thread waiting forever."""
+        try:
+            self._show_stage_confirmation_dialog(stage, payload, outcome, completed)
+        except Exception as error:
+            from src.utils.stage_confirmation import StageConfirmationResult, stage_display_name
+
+            logger.exception(f"阶段确认窗口创建失败: {stage}")
+            outcome["decision"] = StageConfirmationResult(
+                continue_processing=False,
+                action="stop",
+                message=f"{stage_display_name(stage)}确认窗口创建失败: {error}",
+                stage=stage,
+            )
+            completed.set()
 
     def _show_stage_confirmation_dialog(
         self,
@@ -2293,6 +2653,7 @@ class ProcessingPanel(ttk.Frame):
         from src.utils.stage_confirmation import (
             StageConfirmationResult,
             default_stage_stop_message,
+            stage_display_name,
         )
 
         stage_titles = {
@@ -2349,7 +2710,7 @@ class ProcessingPanel(ttk.Frame):
                 outcome["decision"] = StageConfirmationResult(
                     continue_processing=False,
                     action="cancel",
-                    message=default_stage_stop_message(stage),
+                    message=f"用户在 {stage_display_name(stage)} 阶段取消处理",
                     stage=stage,
                 )
                 completed.set()
@@ -2360,6 +2721,10 @@ class ProcessingPanel(ttk.Frame):
         ttk.Button(action_row, text="继续", command=continue_stage).pack(side=tk.RIGHT)
         ttk.Button(action_row, text="停止", command=stop_stage).pack(side=tk.RIGHT, padx=(0, 8))
         self._center_dialog(dialog)
+        dialog.lift()
+        dialog.focus_force()
+        dialog.after(50, lambda: dialog.attributes("-topmost", True))
+        dialog.after(300, lambda: dialog.attributes("-topmost", False))
         dialog.protocol("WM_DELETE_WINDOW", stop_stage)
         dialog.after(100, close_if_cancelled)
 
@@ -2375,6 +2740,7 @@ class ProcessingPanel(ttk.Frame):
         start_time: float,
         pending_id: Optional[str] = None,
     ):
+        self._reset_processing_controls()
         self._processing = True
         self._awaiting_clarification = False
         self.process_btn.configure(state="disabled", text="处理中...")
@@ -2390,6 +2756,11 @@ class ProcessingPanel(ttk.Frame):
         )
         thread.start()
 
+    def _reset_processing_controls(self) -> None:
+        self._cancel_event.clear()
+        self._paused = False
+        self._pause_event.set()
+
     def _run_clarification_resume(
         self,
         result,
@@ -2401,8 +2772,9 @@ class ProcessingPanel(ttk.Frame):
             self._check_control_state("before-clarification-resume")
             resumed = self.pipeline.continue_file_with_clarification(result, answers)
             elapsed = time.time() - start_time
-            if resumed.success:
-                status_value = getattr(getattr(resumed, "status", None), "value", "")
+            status_value = getattr(getattr(resumed, "status", None), "value", "")
+            resolved_statuses = {"completed", "partial_completed"}
+            if resumed.success or status_value in resolved_statuses:
                 status_label = "澄清后部分完成" if status_value == "partial_completed" else "澄清后处理成功"
                 logger.info(f"{status_label} | 总耗时: {elapsed:.1f}s | 实体数: {resumed.entity_count}")
                 if status_value == "partial_completed":
@@ -2413,9 +2785,27 @@ class ProcessingPanel(ttk.Frame):
                     for k, v in resumed.output_paths.items():
                         logger.info(f"输出产物 [{k}]: {v}")
                 if pending_id:
-                    self.pending_store.mark_resolved(pending_id)
+                    if (
+                        status_value == "partial_completed"
+                        and getattr(resumed, "clarification_questions", None)
+                        and getattr(resumed, "clarification_context", None)
+                    ):
+                        self.pending_store.save_recovery(
+                            resumed,
+                            output_dir=str(self.pipeline.file_manager.base_output_dir),
+                            extrude_height=float(self.height_var.get()),
+                            mode="intelligent",
+                        )
+                        logger.info(f"待恢复任务已更新，仍可继续补充后重新生成: {pending_id}")
+                    else:
+                        resolved_item = self.pending_store.mark_resolved(pending_id)
+                        if resolved_item:
+                            logger.info(f"待恢复任务已标记为已解决: {pending_id}")
+                        else:
+                            logger.warning(f"待恢复任务标记已解决失败，未找到任务: {pending_id}")
                     if self.on_pending_changed:
                         self.after(0, self.on_pending_changed)
+                    self.after(0, self.pending_panel.refresh)
                 label = "部分完成" if status_value == "partial_completed" else "完成"
                 self.after(0, lambda l=label: self.progress_label.set(f"{l} ({elapsed:.1f}s)"))
                 self.after(0, lambda: self.progress_var.set(100))
@@ -2423,7 +2813,7 @@ class ProcessingPanel(ttk.Frame):
                 self._awaiting_clarification = True
                 logger.info("澄清后仍需补充信息")
                 if pending_id:
-                    self.pending_store.save(
+                    self.pending_store.save_recovery(
                         resumed,
                         output_dir=str(self.pipeline.file_manager.base_output_dir),
                         extrude_height=float(self.height_var.get()),
@@ -2487,14 +2877,29 @@ class ProcessingPanel(ttk.Frame):
             config = load_config()
         except Exception:
             pass
-        config['cache_dir'] = self.app_config.get('cache', 'dir', default='.cache/analysis')
-        config['cache_ttl'] = self.app_config.get('cache', 'default_ttl_days', default=7) * 86400
+        cache_config = config.setdefault('cache', {})
+        cache_config['cache_dir'] = self.app_config.get('cache', 'dir', default='.cache/analysis')
+        cache_config['default_ttl'] = self.app_config.get('cache', 'default_ttl_days', default=7) * 86400
+        config['cache_dir'] = cache_config['cache_dir']
+        config['cache_ttl'] = cache_config['default_ttl']
         if confirm_llm_stages:
             from src.utils.stage_confirmation import CallbackStageConfirmation
             config.setdefault("api", {}).setdefault("deepseek", {})[
                 "_stage_confirmation"
             ] = CallbackStageConfirmation(self._confirm_llm_stage)
+        config["_progress_callback"] = self._handle_processing_stage
         return config
+
+    def _handle_processing_stage(self, stage: str, text: str):
+        self._set_batch_item_stage(self._active_batch_item_id, stage, "处理中", text)
+        stage_progress = {
+            "parsing": 10,
+            "ai_analysis": 30,
+            "modeling": 70,
+            "finalizing": 90,
+        }
+        if stage in stage_progress:
+            self._update_progress(stage_progress[stage], f"{text}...")
 
     def _new_processing_run_id(self, filepath: str) -> str:
         return f"gui_{Path(filepath).stem}_{uuid.uuid4().hex[:12]}"

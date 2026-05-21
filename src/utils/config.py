@@ -80,3 +80,35 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         return {}
 
     return _resolve_env_vars(raw_config, dotenv_vars)
+
+
+def get_analysis_cache_settings(
+    config: Optional[Dict[str, Any]] = None,
+    *,
+    cache_dir: Optional[str] = None,
+    cache_ttl: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Return canonical analysis-cache settings with legacy fallback support."""
+    config = config or {}
+    cache_config = config.get("cache") if isinstance(config.get("cache"), dict) else {}
+
+    resolved_dir = (
+        cache_dir
+        or cache_config.get("cache_dir")
+        or cache_config.get("dir")
+        or config.get("cache_dir")
+        or ".cache/analysis"
+    )
+    resolved_ttl = (
+        cache_ttl
+        or cache_config.get("default_ttl")
+        or config.get("cache_ttl")
+        or 3600 * 24 * 7
+    )
+    enabled = cache_config.get("enable", config.get("enable_cache", True))
+
+    return {
+        "enabled": bool(enabled),
+        "cache_dir": resolved_dir,
+        "default_ttl": int(resolved_ttl),
+    }

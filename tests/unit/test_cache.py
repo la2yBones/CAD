@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from src.utils.cache import AnalysisCache
+from src.utils.config import get_analysis_cache_settings
 
 
 class TestAnalysisCache(unittest.TestCase):
@@ -29,6 +30,31 @@ class TestAnalysisCache(unittest.TestCase):
 
             self.assertEqual(1, len(entries))
             self.assertNotIn("extrude_height", entries[0])
+
+    def test_cache_settings_prefer_canonical_nested_config(self):
+        settings = get_analysis_cache_settings({
+            "cache": {
+                "enable": False,
+                "cache_dir": ".cache/from-nested",
+                "default_ttl": 123,
+            },
+            "cache_dir": ".cache/from-legacy",
+            "cache_ttl": 456,
+        })
+
+        self.assertFalse(settings["enabled"])
+        self.assertEqual(".cache/from-nested", settings["cache_dir"])
+        self.assertEqual(123, settings["default_ttl"])
+
+    def test_cache_settings_keep_legacy_top_level_fallback(self):
+        settings = get_analysis_cache_settings({
+            "cache_dir": ".cache/from-legacy",
+            "cache_ttl": 456,
+        })
+
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(".cache/from-legacy", settings["cache_dir"])
+        self.assertEqual(456, settings["default_ttl"])
 
 
 if __name__ == "__main__":

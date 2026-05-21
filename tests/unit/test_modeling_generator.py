@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+from types import SimpleNamespace
 
 from src.intelligent_analyzer.modeling_generator import FreeCADInstructionGenerator
 from src.intelligent_analyzer.pipeline import IntelligentEngineeringAnalyzer
@@ -148,6 +149,46 @@ class TestModelingGenerator(unittest.TestCase):
         retry_prompt = constraints.retry_prompt("原始提示", "radius_surface")
         self.assertIn("Shape.revolve()", retry_prompt)
         self.assertIn("球面/承面", retry_prompt)
+
+    def test_modeling_generation_does_not_retry_when_required_feature_is_skipped(self):
+        generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
+        generator.config = {}
+        generator.model = "deepseek-v4-pro"
+        generator.constraints = ModelingConstraints()
+        generator.MAX_PROMPT_CHARS = 10000
+        calls = []
+        first_result = {
+            "analysis_summary": "六角头螺栓，包含R15圆弧面",
+            "modeling_strategy": "忽略圆角细节",
+            "freecad_script": "runtime_warnings.append('R15圆角未实现')",
+            "warnings": ["R15未实现"],
+        }
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            message = SimpleNamespace(content="{}", reasoning_content=None)
+            choice = SimpleNamespace(message=message, finish_reason="stop")
+            return SimpleNamespace(choices=[choice])
+
+        generator._create_chat_completion = fake_completion
+        generator._extract_json = lambda content: first_result
+
+        result = generator.generate(
+            {"entities": []},
+            reconstruction_context={
+                "semantic_policy": {
+                    "dimension_plan": {
+                        "allowed_dimensions": [
+                            {"text": "R15", "value": 15.0, "role": "radius"}
+                        ]
+                    }
+                }
+            },
+            part_semantics={"part_type": "六角头螺栓", "summary": "R15圆弧面/承面"},
+        )
+
+        self.assertEqual(first_result, result)
+        self.assertEqual(1, len(calls))
 
     def test_low_semantic_confidence_blocks_modeling(self):
         analyzer = IntelligentEngineeringAnalyzer.__new__(IntelligentEngineeringAnalyzer)

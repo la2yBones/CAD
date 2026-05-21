@@ -56,6 +56,24 @@ class TestPendingClarificationStore(unittest.TestCase):
             self.assertEqual(first["created_at"], second["created_at"])
             self.assertEqual(12.0, store.load(first["pending_id"])["extrude_height"])
 
+    def test_load_deduplicates_existing_pending_questions(self):
+        with TemporaryDirectory() as tmpdir:
+            store = PendingClarificationStore(tmpdir)
+            result = CADProcessResult(success=False, input_file="drawing.dxf")
+            result.mark_needs_clarification(
+                [
+                    {"id": "depth", "text": "请补充拉伸深度"},
+                    {"id": "depth", "text": "请补充拉伸深度"},
+                ],
+                {"session_id": "clar_1"},
+            )
+
+            item = store.save(result, output_dir="out", extrude_height=10.0)
+            loaded = store.load(item["pending_id"])
+
+            self.assertEqual(["depth"], [q["id"] for q in loaded["clarification_questions"]])
+            self.assertEqual("drawing.dxf 需要补充 1 项信息", loaded["summary"])
+
     def test_mark_resolved_hides_item_from_pending_list(self):
         with TemporaryDirectory() as tmpdir:
             store = PendingClarificationStore(tmpdir)
@@ -71,6 +89,45 @@ class TestPendingClarificationStore(unittest.TestCase):
             self.assertEqual("resolved", resolved["status"])
             self.assertEqual([], store.list_pending())
             self.assertEqual("resolved", store.load(item["pending_id"])["status"])
+
+    def test_save_recovery_accepts_partial_completed_result(self):
+        with TemporaryDirectory() as tmpdir:
+            store = PendingClarificationStore(tmpdir)
+            result = CADProcessResult(success=False, input_file="drawing.dxf")
+            result.mark_partial_completed(
+                skipped_features=[{"name": "R15", "reason": "need user hint"}],
+                reason="主体模型已生成，R15 跳过",
+            )
+            result.clarification_questions = [
+                {"id": "user_modeling_hint", "text": "请补充 R15 建模要求"}
+            ]
+            result.clarification_context = {"partial_modeling_recovery": True}
+            result.output_paths = {"model_step": "out/drawing.step"}
+
+            item = store.save_recovery(result, output_dir="out", extrude_height=10.0)
+            loaded = store.load(item["pending_id"])
+
+            self.assertEqual("needs_clarification", loaded["status"])
+            self.assertEqual("partial_completed", loaded["source_status"])
+            self.assertEqual("R15", loaded["skipped_features"][0]["name"])
+            self.assertEqual("out/drawing.step", loaded["output_paths"]["model_step"])
+            self.assertEqual([item["pending_id"]], [entry["pending_id"] for entry in store.list_pending()])
+
+    def test_mark_deleted_hides_item_without_removing_file(self):
+        with TemporaryDirectory() as tmpdir:
+            store = PendingClarificationStore(tmpdir)
+            result = CADProcessResult(success=False, input_file="drawing.dxf")
+            result.mark_needs_clarification(
+                [{"id": "depth", "text": "请补充拉伸深度"}],
+                {"session_id": "clar_1"},
+            )
+
+            item = store.save(result, output_dir="out", extrude_height=10.0)
+            deleted = store.mark_deleted(item["pending_id"])
+
+            self.assertEqual("deleted", deleted["status"])
+            self.assertEqual([], store.list_pending())
+            self.assertTrue(Path(tmpdir, f"{item['pending_id']}.json").exists())
 
     def test_save_rejects_non_clarification_result(self):
         with TemporaryDirectory() as tmpdir:

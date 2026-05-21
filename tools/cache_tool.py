@@ -11,7 +11,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.utils.cache import AnalysisCache
-from src.utils import setup_logging, load_config
+from src.utils import get_analysis_cache_settings, setup_logging, load_config
 import logging
 
 
@@ -34,9 +34,10 @@ def main():
     logger = logging.getLogger(__name__)
 
     config = load_config()
+    cache_settings = get_analysis_cache_settings(config, cache_dir=args.cache_dir)
     cache = AnalysisCache(
-        cache_dir=args.cache_dir or config.get('cache_dir', '.cache/analysis'),
-        default_ttl=config.get('cache_ttl', 3600 * 24 * 7)
+        cache_dir=cache_settings["cache_dir"],
+        default_ttl=cache_settings["default_ttl"],
     )
 
     if args.command == "stats":

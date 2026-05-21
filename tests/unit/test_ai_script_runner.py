@@ -75,6 +75,18 @@ class TestAIScriptRunner(unittest.TestCase):
         self.assertIn("建模约束校验", result["error"])
         self.assertTrue(result["validation_errors"])
 
+    def test_modeling_constraints_allow_json_for_partial_metadata(self):
+        result = ModelingConstraints().validate_script(
+            "\n".join([
+                "import FreeCAD",
+                "import Part",
+                "import json",
+                "print('PARTIAL_MODELING_RESULT:' + json.dumps({}))",
+            ])
+        )
+
+        self.assertTrue(result.is_ok)
+
     def test_bridge_copy_failure_is_reported(self):
         runner = AIScriptRunner.__new__(AIScriptRunner)
 

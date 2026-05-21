@@ -91,14 +91,26 @@ class StageConfirmationStopped(RuntimeError):
         super().__init__(result.message)
 
 
+STAGE_DISPLAY_NAMES = {
+    "view_analysis": "视图语义校正",
+    "semantic_reconstruction": "零件语义重建",
+}
+
+
+def stage_display_name(stage: str) -> str:
+    return STAGE_DISPLAY_NAMES.get(stage, stage)
+
+
 def default_stage_stop_message(stage: str) -> str:
-    return f"用户在 {stage} 阶段确认后停止处理"
+    return f"用户在 {stage_display_name(stage)} 阶段确认后停止处理"
 
 
 def ensure_stage_stop_message(
     result: StageConfirmationResult,
     stage: str,
 ) -> StageConfirmationResult:
+    if result.continue_processing:
+        return result
     if result.message and result.stage:
         return result
     return StageConfirmationResult(

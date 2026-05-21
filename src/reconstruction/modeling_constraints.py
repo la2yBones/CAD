@@ -106,7 +106,7 @@ class ModelingConstraints:
 - 网络请求
 - shell 调用"""
 
-    ALLOWED_IMPORTS = {"FreeCAD", "Part", "math"}
+    ALLOWED_IMPORTS = {"FreeCAD", "Part", "math", "json"}
     FORBIDDEN_IMPORTS = {
         "os",
         "sys",

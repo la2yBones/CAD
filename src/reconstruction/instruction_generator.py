@@ -227,26 +227,10 @@ JSON 必须包含以下字段：
             result = self._extract_json(content)
             retry_reason = self.constraints.retry_reason(result, reconstruction_context, part_semantics)
             if retry_reason:
-                logger.warning(f"建模指令跳过了已裁决特征，使用强化约束重试: {retry_reason}")
-                response = self._create_chat_completion(
-                    file_path=file_path,
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": self.MODELING_SYSTEM_PROMPT
-                        },
-                        {"role": "user", "content": self.constraints.retry_prompt(prompt, retry_reason)}
-                    ],
-                    max_tokens=max_tokens,
-                    extra_body=extra_body
+                logger.info(
+                    "建模指令检测到已裁决特征被跳过，不再触发强化约束重试: %s",
+                    retry_reason,
                 )
-                retry_content = response.choices[0].message.content or ""
-                if not retry_content:
-                    retry_reasoning = getattr(response.choices[0].message, 'reasoning_content', None)
-                    retry_content = retry_reasoning or ""
-                if retry_content:
-                    result = self._extract_json(retry_content)
             logger.info("建模指令生成成功")
             return result
 

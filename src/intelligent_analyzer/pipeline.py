@@ -64,9 +64,17 @@ class IntelligentEngineeringAnalyzer:
         if self.enable_cache:
             try:
                 from src.utils.cache import AnalysisCache
-                cache_ttl = cache_ttl or self.config.get('cache_ttl', 3600 * 24 * 7)
-                cache_dir = cache_dir or self.config.get('cache_dir', '.cache/analysis')
-                self.cache = AnalysisCache(cache_dir=cache_dir, default_ttl=cache_ttl, config=config)
+                from src.utils.config import get_analysis_cache_settings
+                cache_settings = get_analysis_cache_settings(
+                    self.config,
+                    cache_dir=cache_dir,
+                    cache_ttl=cache_ttl,
+                )
+                self.cache = AnalysisCache(
+                    cache_dir=cache_settings["cache_dir"],
+                    default_ttl=cache_settings["default_ttl"],
+                    config=config,
+                )
                 logger.info("缓存系统已启用")
             except Exception as e:
                 logger.warning(f"缓存系统初始化失败，将不使用缓存: {e}")

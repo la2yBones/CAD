@@ -56,6 +56,34 @@ class TestBatchProcessor(unittest.TestCase):
         self.assertEqual([], result.skipped_features)
         self.assertIsNone(result.partial_completion_reason)
 
+    def test_processor_attaches_recovery_question_to_partial_modeling_result(self):
+        processor = CADProcessor({})
+        result = CADProcessResult(success=False, input_file="drawing.dxf")
+        result.mark_partial_completed(
+            skipped_features=[{"name": "R15", "reason": "圆弧面未实现"}],
+            reason="主体模型已生成，R15 跳过",
+        )
+        analysis = {
+            "view_analysis": {"view_type": "two_view"},
+            "dimension_extraction": {"dimensions": []},
+            "local_relationships": {"relations": []},
+            "reconstruction_context": {"context_version": "test"},
+            "modeling_instructions": {"analysis_summary": "summary"},
+        }
+
+        processor._attach_partial_modeling_clarification(
+            result,
+            analysis,
+            geometry_data={"entities": []},
+            extrude_height=10.0,
+            file_path="drawing.dxf",
+        )
+
+        self.assertEqual(["user_modeling_hint"], [q["id"] for q in result.clarification_questions])
+        self.assertTrue(result.clarification_context["partial_modeling_recovery"])
+        self.assertEqual("semantic_policy", result.clarification_context["clarification_stage"])
+        self.assertEqual("R15", result.clarification_context["skipped_features"][0]["name"])
+
     def test_cad_process_result_supports_stopped_by_user_status(self):
         result = CADProcessResult(success=False, input_file="drawing.dxf")
 
@@ -80,6 +108,39 @@ class TestBatchProcessor(unittest.TestCase):
 
         self.assertEqual(
             ["bind_profile_length", "provide_extrusion_depth"],
+            [question["id"] for question in questions],
+        )
+
+    def test_processor_deduplicates_clarification_questions(self):
+        questions = CADProcessor._collect_clarification_questions({
+            "semantic_policy": {
+                "clarification_questions": [
+                    {
+                        "id": "bind_profile_length",
+                        "text": "请确认哪个标注值表示主视图中的水平总尺寸。",
+                    },
+                    {
+                        "id": "choose_depth",
+                        "text": "请确认拉伸深度。",
+                    },
+                ],
+            },
+            "modeling_instructions": {
+                "clarification_questions": [
+                    {
+                        "id": "bind_profile_length",
+                        "text": "请确认哪个标注值表示主视图中的水平总尺寸。",
+                    },
+                    {
+                        "id": "another_depth_id",
+                        "text": " 请确认拉伸深度。 ",
+                    },
+                ],
+            },
+        })
+
+        self.assertEqual(
+            ["bind_profile_length", "choose_depth"],
             [question["id"] for question in questions],
         )
 
@@ -109,9 +170,22 @@ class TestBatchProcessor(unittest.TestCase):
         )
 
         self.assertEqual(PipelineStatus.STOPPED_BY_USER, result.status)
-        self.assertIn("用户在 view_analysis", result.error_message)
+        self.assertIn("用户在 视图语义校正", result.error_message)
         self.assertEqual("stop", result.stage_stop_action)
         self.assertEqual("view_analysis", result.stage_stop_stage)
+
+    def test_processor_progress_callback_is_best_effort(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {
+            "_progress_callback": unittest.mock.Mock(side_effect=RuntimeError("ui closed"))
+        }
+
+        processor._notify_progress_stage("ai_analysis", "AI 分析中")
+
+        processor.config["_progress_callback"].assert_called_once_with(
+            "ai_analysis",
+            "AI 分析中",
+        )
 
     def test_pipeline_summary_separates_user_stop_from_failure(self):
         completed = CADProcessResult(success=True, input_file="ok.dxf")

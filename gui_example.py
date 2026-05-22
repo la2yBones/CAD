@@ -414,7 +414,13 @@ class CacheManagerPanel(ttk.Frame):
         ttk.Label(header_frame, textvariable=self.stats_summary_var, foreground="darkblue").pack(side=tk.RIGHT)
 
         columns = ("source_file", "size", "timestamp", "status")
-        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=8)
+        self.tree = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="headings",
+            height=8,
+            selectmode="extended",
+        )
         self.tree.heading("source_file", text="源文件")
         self.tree.heading("size", text="大小")
         self.tree.heading("timestamp", text="时间")
@@ -504,20 +510,18 @@ class CacheManagerPanel(ttk.Frame):
         finally:
             self._refresh_lock.release()
 
-    def _delete_selected(self):
+    def _selected_cache_entries(self):
+        return [
+            self._entry_by_item.get(item_id, {})
+            for item_id in self.tree.selection()
+        ]
+
+    def _delete_cache_entries(self, entries) -> int:
         cache = self._get_cache()
         if cache is None:
-            return
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showinfo("提示", "请先选择要删除的缓存条目")
-            return
-        if not messagebox.askyesno("确认", f"确定删除选中的 {len(selected)} 个缓存条目？"):
-            return
-
+            return 0
         count = 0
-        for item_id in selected:
-            entry = self._entry_by_item.get(item_id, {})
+        for entry in entries:
             cache_path = entry.get('cache_path')
             if cache_path:
                 try:
@@ -533,6 +537,17 @@ class CacheManagerPanel(ttk.Frame):
             cache.clear_expired()
         except Exception:
             pass
+        return count
+
+    def _delete_selected(self):
+        selected_entries = self._selected_cache_entries()
+        if not selected_entries:
+            messagebox.showinfo("提示", "请先选择要删除的缓存条目")
+            return
+        if not messagebox.askyesno("确认", f"确定删除选中的 {len(selected_entries)} 个缓存条目？"):
+            return
+
+        count = self._delete_cache_entries(selected_entries)
         messagebox.showinfo("完成", f"已删除 {count} 个缓存条目")
         self.refresh()
 
@@ -871,15 +886,21 @@ class LLMTelemetryPanel(ttk.Frame):
             "completion": 95,
             "total": 80,
             "rate": 70,
-            "duration": 70,
+            "duration": 95,
         }
         for col in columns:
             self.tree.heading(col, text=headings[col])
             self.tree.column(col, width=widths[col], minwidth=50)
+        self.tree.column("duration", minwidth=85, stretch=False)
+        self.tree.column("rate", minwidth=70, stretch=False)
         vsb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        list_frame.grid_rowconfigure(0, weight=1)
+        list_frame.grid_columnconfigure(0, weight=1)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
         self.tree.bind("<Double-1>", self._open_record_window)
         self.tree.bind("<Delete>", lambda _event: self.delete_selected_records())
 
@@ -2457,6 +2478,7 @@ class ProcessingPanel(ttk.Frame):
 
         body = ttk.Frame(dialog, padding=14)
         body.pack(fill=tk.BOTH, expand=True)
+
         ttk.Label(
             body,
             text="系统需要补充信息后再继续智能建模：",
@@ -2467,7 +2489,11 @@ class ProcessingPanel(ttk.Frame):
         for question in questions:
             block = ttk.Frame(body)
             block.pack(fill=tk.X, pady=(0, 10))
-            ttk.Label(block, text=question.get("text", "请补充信息")).pack(anchor=tk.W)
+            ttk.Label(
+                block,
+                text=question.get("text", "请补充信息"),
+                wraplength=420,
+            ).pack(anchor=tk.W)
             reason = str(question.get("reason") or "").strip()
             if reason:
                 ttk.Label(
@@ -2784,25 +2810,31 @@ class ProcessingPanel(ttk.Frame):
                 if resumed.output_paths:
                     for k, v in resumed.output_paths.items():
                         logger.info(f"输出产物 [{k}]: {v}")
-                if pending_id:
-                    if (
-                        status_value == "partial_completed"
-                        and getattr(resumed, "clarification_questions", None)
-                        and getattr(resumed, "clarification_context", None)
-                    ):
-                        self.pending_store.save_recovery(
-                            resumed,
-                            output_dir=str(self.pipeline.file_manager.base_output_dir),
-                            extrude_height=float(self.height_var.get()),
-                            mode="intelligent",
-                        )
+                partial_recovery_ready = (
+                    status_value == "partial_completed"
+                    and getattr(resumed, "clarification_questions", None)
+                    and getattr(resumed, "clarification_context", None)
+                )
+                if partial_recovery_ready:
+                    self.pending_store.save_recovery(
+                        resumed,
+                        output_dir=str(self.pipeline.file_manager.base_output_dir),
+                        extrude_height=float(self.height_var.get()),
+                        mode="intelligent",
+                    )
+                    if pending_id:
                         logger.info(f"待恢复任务已更新，仍可继续补充后重新生成: {pending_id}")
                     else:
-                        resolved_item = self.pending_store.mark_resolved(pending_id)
-                        if resolved_item:
-                            logger.info(f"待恢复任务已标记为已解决: {pending_id}")
-                        else:
-                            logger.warning(f"待恢复任务标记已解决失败，未找到任务: {pending_id}")
+                        logger.info("部分完成任务已加入待恢复列表，补充信息后可重新生成模型")
+                    if self.on_pending_changed:
+                        self.after(0, self.on_pending_changed)
+                    self.after(0, self.pending_panel.refresh)
+                elif pending_id:
+                    resolved_item = self.pending_store.mark_resolved(pending_id)
+                    if resolved_item:
+                        logger.info(f"待恢复任务已标记为已解决: {pending_id}")
+                    else:
+                        logger.warning(f"待恢复任务标记已解决失败，未找到任务: {pending_id}")
                     if self.on_pending_changed:
                         self.after(0, self.on_pending_changed)
                     self.after(0, self.pending_panel.refresh)
@@ -3035,6 +3067,7 @@ class CADApplication(tk.Tk):
         self.processing_panel.pack(fill=tk.BOTH, expand=True)
 
         notebook = ttk.Notebook(bottom_frame)
+        self.bottom_notebook = notebook
         notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
 
         self.log_panel = LogPanel(notebook, self.log_handler, self.app_config)
@@ -3045,10 +3078,23 @@ class CADApplication(tk.Tk):
 
         self.cache_panel = CacheManagerPanel(notebook, self.app_config)
         notebook.add(self.cache_panel, text="缓存管理")
+        notebook.bind("<<NotebookTabChanged>>", self._on_bottom_tab_changed)
 
         self.after(100, self._set_initial_pane_sizes)
         self.after(500, self._set_initial_pane_sizes)
         self.after(1200, self._set_initial_pane_sizes)
+
+    def _on_bottom_tab_changed(self, _event=None):
+        try:
+            selected = self.bottom_notebook.select()
+            if selected == str(self.cache_panel):
+                self.cache_panel.refresh()
+            elif selected == str(self.llm_telemetry_panel):
+                self.llm_telemetry_panel.refresh()
+            elif selected == str(self.processing_panel.pending_panel):
+                self.processing_panel.pending_panel.refresh()
+        except Exception as exc:
+            logger.debug(f"底部标签页刷新失败: {exc}")
 
     def _set_initial_pane_sizes(self):
         try:

@@ -13,6 +13,7 @@ from openai import OpenAI
 
 from src.utils.llm_telemetry import default_llm_telemetry_store
 from .modeling_constraints import DEFAULT_MODELING_CONSTRAINTS
+from .modeling_task import ModelingTaskBuilder
 
 logger = logging.getLogger(__name__)
 MODELING_CONSTRAINTS_PROMPT = DEFAULT_MODELING_CONSTRAINTS.prompt_section()
@@ -24,22 +25,11 @@ class FreeCADInstructionGenerator:
     使用大模型分析工程图纸并生成完整的建模流程指令
     """
 
-    MODELING_SYSTEM_PROMPT = """你是专业的 CAD/FreeCAD 建模专家。你的任务是分析输入的标准化工程图纸几何数据，并生成可直接运行的 FreeCAD Python 建模脚本。
+    MODELING_SYSTEM_PROMPT = """你是专业的 CAD/FreeCAD 建模专家。你的任务是分析输入的建模任务载荷，并生成可直接运行的 FreeCAD Python 建模脚本。
 
 【输入要求】
-输入必须是结构化 JSON 对象，且至少满足以下任一条件：
-
-1. 包含经解析的 DXF 结构数据：
-   - entities: 数组，包含 LINE、CIRCLE、ARC、LWPOLYLINE、TEXT、MTEXT、DIMENSION、ELLIPSE、SPLINE、INSERT 等实体
-   - units: 可选，图纸单位
-   - version: 可选，DXF 版本
-
-2. 包含工程视图和建模语义数据：
-   - views: 数组，包含视图名称、bbox、entity_count 等
-   - dimensions: 数组，包含尺寸名称、数值、类型
-   - contours: 数组，包含轮廓点、闭合状态、用途
-   - units: 可选，图纸单位
-
+输入必须是结构化 JSON 对象，顶层必须包含 object、features、dimensions、constraints、recovery_hints。
+该对象是系统已裁决的建模任务载荷，不应包含原始 entities、视图实体列表、局部几何关系明细、完整 reconstruction_context 或完整 part_semantics。
 若输入缺失关键字段、格式错误、不是 JSON 对象，或只是非结构化自然语言描述，必须返回 INVALID_INPUT JSON，严禁基于模糊描述猜测建模。
 
 【无效输入返回格式】
@@ -72,6 +62,7 @@ class FreeCADInstructionGenerator:
 - 单个步骤中连续 .fuse() 或 .cut() 不得超过 2 次；若需要更多布尔操作，必须拆分为多个中间变量和多个 try/except 步骤。
 - 若需自定义截面，仅允许用直线或圆弧构造 Part.Wire，再通过 Part.Face 和 Shape.extrude() 生成实体；若需要轴对称圆弧面，可用 Part.ArcOfCircle 构造轮廓并通过 Shape.revolve() 绕轴线生成回转曲面或回转切除体。
 - 使用 Part.LineSegment 或 Part.ArcOfCircle 构造线框时，传入 Part.Wire 的每一项必须是 Shape；应先调用 `.toShape()`，例如 `edge = Part.LineSegment(...).toShape()`。
+- `Part.ArcOfCircle` 只能写 3 个位置参数：`Part.ArcOfCircle(Part.Circle(center, FreeCAD.Vector(0,0,1), radius), start_angle, end_angle).toShape()` 或 `Part.ArcOfCircle(p1, p2, p3).toShape()`；不得写成 `Part.ArcOfCircle(center, radius, start_angle, end_angle)`。
 - 中间变量若在后续步骤复用，必须在 try/except 外先给出默认值，避免前一步失败后后续引用未定义变量。
 - 若轮廓点写成 `(x, y, 0)`，则轮廓位于 XY 平面，拉伸方向必须沿 Z 轴；若需要沿 Y 轴拉伸，则轮廓点必须写成 `(x, 0, z)`，确保拉伸方向垂直于轮廓平面。
 - 对板件、法兰、底座这类正视图轮廓，默认优先在 XY 平面构造轮廓，再按深度沿 Z 轴拉伸，除非图纸语义明确要求其他坐标系。
@@ -145,6 +136,7 @@ JSON 必须包含以下字段：
         self.model = self.config.get("model", "deepseek-v4-pro")
         self.telemetry_store = default_llm_telemetry_store(self.config)
         self.constraints = DEFAULT_MODELING_CONSTRAINTS
+        self.modeling_task_builder = ModelingTaskBuilder()
 
         max_prompt_tokens = self.config.get("max_prompt_tokens", 12000)
         self.MAX_PROMPT_CHARS = max_prompt_tokens * 4
@@ -155,6 +147,7 @@ JSON 必须包含以下字段：
                  extrude_height: float = 10.0,
                  reconstruction_context: Optional[Dict[str, Any]] = None,
                  part_semantics: Optional[Dict[str, Any]] = None,
+                 modeling_task_payload: Optional[Dict[str, Any]] = None,
                  file_path: Optional[str] = None) -> Dict[str, Any]:
         """
         生成FreeCAD建模指令
@@ -170,15 +163,14 @@ JSON 必须包含以下字段：
         """
         logger.info("开始生成FreeCAD建模指令")
 
-        # 构建提示词
-        prompt = self._build_prompt(
-            geometry_data,
-            view_analysis,
-            dimension_data,
-            extrude_height,
-            reconstruction_context=reconstruction_context,
-            part_semantics=part_semantics,
-        )
+        if modeling_task_payload is None:
+            builder = getattr(self, "modeling_task_builder", None) or ModelingTaskBuilder()
+            modeling_task_payload = builder.build(
+                part_semantics=part_semantics,
+                reconstruction_context=reconstruction_context,
+            )
+
+        prompt = self._build_prompt(modeling_task_payload)
 
         try:
             max_tokens = self.config.get("max_tokens", 8000)
@@ -202,7 +194,8 @@ JSON 必须包含以下字段：
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=max_tokens,
-                extra_body=extra_body
+                extra_body=extra_body,
+                response_format={"type": "json_object"},
             )
 
             choice = response.choices[0]
@@ -264,179 +257,22 @@ JSON 必须包含以下字段：
             call_span.finish(error=call_error)
             raise
 
-    MAX_ENTITIES_IN_PROMPT = 20
-    MAX_ENTITY_JSON_CHARS = 500
-
     def _estimate_tokens(self, text: str) -> int:
         return len(text) // 4
 
-    def _truncate_entity_json(self, entity: Dict) -> str:
-        raw = json.dumps(entity, ensure_ascii=False)
-        if len(raw) > self.MAX_ENTITY_JSON_CHARS:
-            raw = raw[:self.MAX_ENTITY_JSON_CHARS] + "..."
-        return raw
-
-    def _build_prompt(self, geometry_data: Dict[str, Any],
-                      view_analysis: Optional[Dict],
-                      dimension_data: Optional[Dict],
-                      extrude_height: float,
-                      reconstruction_context: Optional[Dict[str, Any]] = None,
-                      part_semantics: Optional[Dict[str, Any]] = None) -> str:
+    def _build_prompt(self, modeling_task_payload: Dict[str, Any]) -> str:
         """构建提示词"""
-        entities = geometry_data.get("entities", [])
-
-        entities_summary = self._summarize_entities(entities)
-
-        prompt_parts = [
-            "请分析以下工程图纸数据并生成FreeCAD建模脚本：\n",
-            "=== 几何实体数据 ===\n",
-            entities_summary,
-        ]
-
-        modeling_context = reconstruction_context or self._build_modeling_context(
-            geometry_data, view_analysis, dimension_data
-        )
-        prompt_parts.append("\n=== 建模上下文 ===\n")
-        prompt_parts.append(json.dumps(modeling_context, ensure_ascii=False, indent=2))
-        user_hint_section = self._build_user_modeling_hint_section(
-            modeling_context,
-            part_semantics,
-        )
-        if user_hint_section:
-            prompt_parts.append(user_hint_section)
-        if part_semantics:
-            prompt_parts.append("\n=== 零件语义 ===\n")
-            prompt_parts.append(json.dumps(part_semantics, ensure_ascii=False, indent=2))
-
-        prompt = "\n".join(prompt_parts)
-
-        if self.MAX_PROMPT_CHARS and len(prompt) > self.MAX_PROMPT_CHARS:
-            logger.warning(
-                f"Prompt过长 ({len(prompt)}字符, ~{self._estimate_tokens(prompt)} tokens), 进行截断"
-            )
-            prompt = prompt[:self.MAX_PROMPT_CHARS] + "\n... (内容已截断以适配token限制)"
-
+        prompt = "\n".join([
+            "请基于以下建模任务载荷生成FreeCAD建模脚本。",
+            "只使用载荷中的 object、features、dimensions、constraints、recovery_hints。",
+            "不要要求或假设存在原始图元明细。",
+            "",
+            "=== 建模任务载荷 ===",
+            json.dumps(modeling_task_payload, ensure_ascii=False, indent=2),
+        ])
         estimated_tokens = self._estimate_tokens(prompt)
         logger.info(f"Prompt大小: {len(prompt)}字符, ~{estimated_tokens} tokens")
         return prompt
-
-    def _build_user_modeling_hint_section(
-        self,
-        modeling_context: Dict[str, Any],
-        part_semantics: Optional[Dict[str, Any]],
-    ) -> str:
-        semantic_policy = modeling_context.get("semantic_policy", {}) or {}
-        hint = (
-            modeling_context.get("user_modeling_hint")
-            or semantic_policy.get("user_modeling_hint")
-            or (part_semantics or {}).get("user_modeling_hint")
-            or ""
-        )
-        hint = str(hint).strip()
-        if not hint:
-            return ""
-
-        conflict_policy = (
-            modeling_context.get("user_modeling_hint_policy")
-            or semantic_policy.get("user_modeling_hint_policy")
-            or (part_semantics or {}).get("user_modeling_hint_policy")
-            or "drawing_facts_override_user_hint"
-        )
-        return "\n".join([
-            "\n=== 用户补充建模提示使用规则 ===\n",
-            f"用户补充提示: {hint}",
-            f"冲突策略: {conflict_policy}",
-            (
-                "必须遵守：用户补充提示只用于解释建模意图、细节优先级和可接受的跳过范围；"
-                "当它与图纸解析事实、已裁决关键尺寸来源、主体方向或主体外形冲突时，"
-                "必须以图纸事实和 semantic_policy.dimension_plan 为准。"
-            ),
-            (
-                "如果补充提示要求跳过细节，可把对应细节写入 skipped_features；"
-                "不得因此跳过已可靠裁决且影响主体外形或主要体量的特征。"
-            ),
-        ])
-
-    def _summarize_entities(self, entities: List[Dict]) -> str:
-        """总结实体信息"""
-        type_count = {}
-        for entity in entities:
-            t = entity.get("type", "unknown")
-            type_count[t] = type_count.get(t, 0) + 1
-
-        summary = f"总计 {len(entities)} 个实体\n"
-        summary += f"类型分布: {json.dumps(type_count, ensure_ascii=False)}\n\n"
-
-        for i, entity in enumerate(entities[:self.MAX_ENTITIES_IN_PROMPT]):
-            summary += f"[{i}] {self._truncate_entity_json(entity)}\n"
-
-        if len(entities) > self.MAX_ENTITIES_IN_PROMPT:
-            summary += f"... 还有 {len(entities) - self.MAX_ENTITIES_IN_PROMPT} 个实体\n"
-
-        return summary
-
-    def _build_modeling_context(
-        self,
-        geometry_data: Dict[str, Any],
-        view_analysis: Optional[Dict[str, Any]],
-        dimension_data: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        views = (view_analysis or {}).get("views", []) or []
-        dimensions = (dimension_data or {}).get("dimensions", []) or []
-        local_relationships = geometry_data.get("_local_relationships") or {}
-
-        return {
-            "drawing_type": (view_analysis or {}).get("drawing_type"),
-            "view_reason_summary": (view_analysis or {}).get("reason_summary", ""),
-            "views": [self._compact_view_for_modeling(view) for view in views],
-            "dimensions": [self._compact_dimension_for_modeling(dim) for dim in dimensions],
-            "local_relationships": {
-                "summary": local_relationships.get("summary"),
-                "entity_pairs": local_relationships.get("entity_pairs", []),
-            },
-        }
-
-    def _compact_view_for_modeling(self, view: Dict[str, Any]) -> Dict[str, Any]:
-        entities = view.get("entities", []) or []
-        return {
-            "name": view.get("name"),
-            "type": view.get("type"),
-            "bbox": view.get("bbox"),
-            "centroid": view.get("centroid"),
-            "entity_count": view.get("entity_count", len(entities)),
-            "layers": view.get("layers", []),
-            "type_count": self._count_entity_types(entities),
-            "entities": [self._compact_entity_for_modeling(entity) for entity in entities],
-        }
-
-    @staticmethod
-    def _count_entity_types(entities: List[Dict[str, Any]]) -> Dict[str, int]:
-        result: Dict[str, int] = {}
-        for entity in entities:
-            entity_type = str(entity.get("type", "unknown"))
-            result[entity_type] = result.get(entity_type, 0) + 1
-        return result
-
-    @staticmethod
-    def _compact_entity_for_modeling(entity: Dict[str, Any]) -> Dict[str, Any]:
-        keep_keys = (
-            "type",
-            "layer",
-            "start",
-            "end",
-            "center",
-            "radius",
-            "vertices",
-            "closed",
-            "start_angle",
-            "end_angle",
-        )
-        return {key: entity.get(key) for key in keep_keys if key in entity}
-
-    @staticmethod
-    def _compact_dimension_for_modeling(dimension: Dict[str, Any]) -> Dict[str, Any]:
-        keep_keys = ("text", "value", "type", "position")
-        return {key: dimension.get(key) for key in keep_keys if key in dimension}
 
     def _generate_fallback_script(self, geometry_data: Dict[str, Any],
                                   extrude_height: float) -> str:

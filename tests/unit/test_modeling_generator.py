@@ -28,48 +28,54 @@ class TestModelingGenerator(unittest.TestCase):
         self.assertIn("禁止使用 while", prompt)
         self.assertIn("Shape.makeFillet", prompt)
         self.assertIn("common / section / split / thickness", prompt)
+        self.assertIn("ArcOfCircle 固定模板", prompt)
+        self.assertIn("不得写成 `Part.ArcOfCircle(center, radius, start_angle, end_angle)`", prompt)
+        self.assertIn("R=4x1.5", prompt)
+        self.assertIn("repeat_count+radius_value", prompt)
+        self.assertIn("3xφ5", prompt)
+        self.assertIn("diameter_value/thread_value", prompt)
         self.assertIn("六角头螺栓主视图左侧头部的 R15 标注", prompt)
         self.assertIn("不得把它建成向实体内部凹陷的槽", prompt)
         self.assertIn("传入 Part.Wire 的每一项必须是 Shape", prompt)
         self.assertIn("若轮廓点写成 `(x, y, 0)`", prompt)
 
-    def test_prompt_uses_supplied_reconstruction_context(self):
+    def test_prompt_uses_modeling_task_payload_only(self):
         generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
-        generator.MAX_PROMPT_CHARS = 10000
         prompt = generator._build_prompt(
-            {"entities": []},
-            None,
-            None,
-            10.0,
-            reconstruction_context={"context_version": "custom_v1", "marker": "keep-me"},
+            {
+                "object": {"part_type": "bracket"},
+                "features": {"base": [{"name": "body"}]},
+                "dimensions": {"allowed_dimensions": [{"text": "30", "value": 30.0}]},
+                "constraints": {"partial_modeling_policy": {}},
+                "recovery_hints": {"user_modeling_hint": "优先生成主体。"},
+            }
         )
 
-        self.assertIn('"context_version": "custom_v1"', prompt)
-        self.assertIn('"marker": "keep-me"', prompt)
-
-    def test_prompt_includes_part_semantics(self):
-        generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
-        generator.MAX_PROMPT_CHARS = 10000
-        prompt = generator._build_prompt(
-            {"entities": []},
-            None,
-            None,
-            10.0,
-            reconstruction_context={"context_version": "custom_v1"},
-            part_semantics={"part_type": "bracket"},
-        )
-
-        self.assertIn("=== 零件语义 ===", prompt)
         self.assertIn('"part_type": "bracket"', prompt)
+        self.assertIn('"user_modeling_hint": "优先生成主体。"', prompt)
+        self.assertNotIn("=== 几何实体数据 ===", prompt)
+        self.assertNotIn("=== 零件语义 ===", prompt)
+        self.assertNotIn("context_version", prompt)
+        self.assertNotIn("内容已截断", prompt)
 
-    def test_prompt_lifts_user_modeling_hint_conflict_policy(self):
+    def test_generate_builds_modeling_task_payload_from_context(self):
         generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
-        generator.MAX_PROMPT_CHARS = 10000
-        prompt = generator._build_prompt(
+        generator.config = {}
+        generator.model = "deepseek-v4-pro"
+        generator.constraints = ModelingConstraints()
+        calls = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            message = SimpleNamespace(content="{}", reasoning_content=None)
+            choice = SimpleNamespace(message=message, finish_reason="stop")
+            return SimpleNamespace(choices=[choice])
+
+        generator._create_chat_completion = fake_completion
+        generator._extract_json = lambda content: {"freecad_script": "pass"}
+
+        result = generator.generate(
             {"entities": []},
-            None,
-            None,
-            10.0,
             reconstruction_context={
                 "context_version": "adjudicated_context_v1",
                 "semantic_policy": {
@@ -78,12 +84,15 @@ class TestModelingGenerator(unittest.TestCase):
                     "dimension_plan": {"allowed_dimensions": []},
                 },
             },
+            part_semantics={"part_type": "bracket", "confidence": 0.9},
         )
 
-        self.assertIn("=== 用户补充建模提示使用规则 ===", prompt)
-        self.assertIn("优先生成主体，槽可以跳过。", prompt)
-        self.assertIn("drawing_facts_override_user_hint", prompt)
-        self.assertIn("必须以图纸事实和 semantic_policy.dimension_plan 为准", prompt)
+        self.assertEqual({"freecad_script": "pass"}, result)
+        prompt = calls[0]["messages"][1]["content"]
+        self.assertIn('"part_type": "bracket"', prompt)
+        self.assertIn('"user_modeling_hint": "优先生成主体，槽可以跳过。"', prompt)
+        self.assertNotIn('"entities"', prompt)
+        self.assertNotIn('"context_version": "adjudicated_context_v1"', prompt)
 
     def test_modeling_generation_retries_when_required_chamfer_is_skipped(self):
         constraints = ModelingConstraints()
@@ -189,6 +198,7 @@ class TestModelingGenerator(unittest.TestCase):
 
         self.assertEqual(first_result, result)
         self.assertEqual(1, len(calls))
+        self.assertEqual({"type": "json_object"}, calls[0]["response_format"])
 
     def test_low_semantic_confidence_blocks_modeling(self):
         analyzer = IntelligentEngineeringAnalyzer.__new__(IntelligentEngineeringAnalyzer)

@@ -209,7 +209,7 @@ class AnalysisCache:
 
             # 删除该文件相关的所有缓存
             file_path_str = str(file_path)
-            for cache_file in self.cache_dir.rglob("*.json"):
+            for cache_file in list(self.cache_dir.rglob("*.json")):
                 try:
                     with open(cache_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
@@ -236,7 +236,7 @@ class AnalysisCache:
         removed_count = 0
         current_time = datetime.now().timestamp()
 
-        for cache_file in self.cache_dir.rglob("*.json"):
+        for cache_file in list(self.cache_dir.rglob("*.json")):
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -265,7 +265,7 @@ class AnalysisCache:
         """
         removed_count = 0
 
-        for cache_file in self.cache_dir.rglob("*.json"):
+        for cache_file in list(self.cache_dir.rglob("*.json")):
             try:
                 if self.delete_entry(str(cache_file)):
                     removed_count += 1

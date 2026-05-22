@@ -11,6 +11,7 @@ from openai import OpenAI
 
 from src.utils.llm_telemetry import default_llm_telemetry_store
 
+from .semantic_payload import SemanticUnderstandingPayloadBuilder
 from .semantic_schema import PartSemanticsValidator
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class PartSemanticGenerator:
     """在生成 CAD 脚本前，先让模型解释零件结构。"""
 
     SYSTEM_PROMPT = """你是机械制图和三维重建专家。
-你的任务不是写 FreeCAD 脚本，而是把 reconstruction_context 解释为结构化零件语义。
+你的任务不是写 FreeCAD 脚本，而是把 semantic_understanding_payload 解释为结构化零件语义。
 
 原则：
 - 基于输入证据做判断，不要把视图旁边的位置关系误判为真实三维附加实体。
@@ -94,7 +95,7 @@ class PartSemanticGenerator:
 
 
     RETRY_SYSTEM_PROMPT = """你是机械制图和三维重建专家。
-你的任务是把 reconstruction_summary 解释为结构化零件语义。
+你的任务是把精简 semantic_understanding_payload 解释为结构化零件语义。
 这是第二次请求，上一次因输出过长被截断。请输出极简 JSON，只保留建模必需字段。
 砍掉 evidence、candidate_interpretations 和长 description。
 uncertainties/warnings 用短句。
@@ -132,6 +133,7 @@ key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；
         self.model = self.config.get("semantic_model") or self.config.get("model", "deepseek-v4-pro")
         self.telemetry_store = default_llm_telemetry_store(self.config)
         self.validator = PartSemanticsValidator()
+        self.payload_builder = SemanticUnderstandingPayloadBuilder()
         self.min_confidence = float(self.config.get("semantic_min_confidence", 0.70))
 
     def generate(
@@ -175,6 +177,7 @@ key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；
             ],
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "response_format": {"type": "json_object"},
         }
         if thinking:
             request_payload["extra_body"] = {
@@ -225,9 +228,12 @@ key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；
             return self._fallback_semantics(str(error))
 
     def _build_user_content(self, context: Dict[str, Any]) -> str:
+        builder = getattr(self, "payload_builder", None) or SemanticUnderstandingPayloadBuilder()
+        payload = builder.build(context)
         parts = [
-            "请根据以下 reconstruction_context 生成结构化零件语义：",
-            json.dumps(context, ensure_ascii=False, indent=2),
+            "请根据以下 semantic_understanding_payload 生成结构化零件语义：",
+            "=== semantic_understanding_payload ===",
+            json.dumps(payload, ensure_ascii=False, indent=2),
         ]
         hint_section = self._build_user_modeling_hint_section(context)
         if hint_section:

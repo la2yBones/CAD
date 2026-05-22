@@ -3,6 +3,7 @@
 """构建从 CAD 分析到三维重建的结构化交接数据。"""
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 
@@ -32,6 +33,7 @@ class ReconstructionContextBuilder:
                 "entity_type_count": self._count_entity_types(entities),
                 "layer_count": self._count_layers(entities),
             },
+            "geometry_summary": self._summarize_geometry(entities),
             "view_analysis": {
                 "drawing_type": (view_analysis or {}).get("drawing_type"),
                 "confidence": (view_analysis or {}).get("confidence"),
@@ -113,7 +115,103 @@ class ReconstructionContextBuilder:
             result[layer] = result.get(layer, 0) + 1
         return result
 
-        return result
+    @classmethod
+    def _summarize_geometry(cls, entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            "line_summary": cls._summarize_lines(entities),
+            "circle_summary": cls._summarize_circles(entities),
+            "arc_summary": cls._summarize_arcs(entities),
+            "polyline_summary": cls._summarize_polylines(entities),
+        }
+
+    @staticmethod
+    def _summarize_lines(entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        lines = [
+            entity for entity in entities
+            if str(entity.get("type", "")).upper() == "LINE"
+        ]
+        orientations = {"horizontal": 0, "vertical": 0, "diagonal": 0}
+        lengths: List[float] = []
+        for line in lines:
+            start = line.get("start") or []
+            end = line.get("end") or []
+            if len(start) < 2 or len(end) < 2:
+                continue
+            dx = float(end[0]) - float(start[0])
+            dy = float(end[1]) - float(start[1])
+            lengths.append(math.hypot(dx, dy))
+            if abs(dx) >= abs(dy) * 2.5:
+                orientations["horizontal"] += 1
+            elif abs(dy) >= abs(dx) * 2.5:
+                orientations["vertical"] += 1
+            else:
+                orientations["diagonal"] += 1
+        return {
+            "count": len(lines),
+            "orientation_count": orientations,
+            "length_range": ReconstructionContextBuilder._numeric_range(lengths),
+        }
+
+    @staticmethod
+    def _summarize_circles(entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        radii = [
+            float(entity.get("radius"))
+            for entity in entities
+            if str(entity.get("type", "")).upper() == "CIRCLE"
+            and isinstance(entity.get("radius"), (int, float))
+        ]
+        return {
+            "count": len(radii),
+            "radius_values": ReconstructionContextBuilder._unique_numbers(radii),
+            "radius_range": ReconstructionContextBuilder._numeric_range(radii),
+        }
+
+    @staticmethod
+    def _summarize_arcs(entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        arcs = [
+            entity for entity in entities
+            if str(entity.get("type", "")).upper() == "ARC"
+        ]
+        radii = [
+            float(entity.get("radius"))
+            for entity in arcs
+            if isinstance(entity.get("radius"), (int, float))
+        ]
+        return {
+            "count": len(arcs),
+            "radius_values": ReconstructionContextBuilder._unique_numbers(radii),
+            "radius_range": ReconstructionContextBuilder._numeric_range(radii),
+        }
+
+    @staticmethod
+    def _summarize_polylines(entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        polylines = [
+            entity for entity in entities
+            if str(entity.get("type", "")).upper() in ("LWPOLYLINE", "POLYLINE")
+        ]
+        return {
+            "count": len(polylines),
+            "closed_count": sum(1 for entity in polylines if entity.get("closed")),
+            "vertex_counts": [
+                len(entity.get("vertices", []) or [])
+                for entity in polylines
+            ][:12],
+        }
+
+    @staticmethod
+    def _numeric_range(values: List[float]) -> List[float]:
+        if not values:
+            return []
+        return [min(values), max(values)]
+
+    @staticmethod
+    def _unique_numbers(values: List[float]) -> List[float]:
+        unique: List[float] = []
+        for value in values:
+            rounded = round(float(value), 6)
+            if rounded not in unique:
+                unique.append(rounded)
+        return unique[:20]
 
     def build_summary(self, full_context: Dict[str, Any]) -> Dict[str, Any]:
         """从完整重建上下文生成精简摘要，用于截断重试或低 token 场景。

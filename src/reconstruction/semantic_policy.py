@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import re
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -16,6 +17,7 @@ class SemanticPolicy:
 
     UNKNOWN_ANSWER = "__unknown__"
     USER_MODELING_HINT_KEY = USER_MODELING_HINT_KEY
+    FEATURE_DETAIL_DIMENSION_KEY = "bind_feature_detail_dimension"
 
     def evaluate(
         self,
@@ -158,6 +160,11 @@ class SemanticPolicy:
                 "text": dimension.get("text"),
                 "value": dimension.get("value"),
                 "type": dimension.get("type"),
+                "repeat_count": dimension.get("repeat_count"),
+                "radius_value": dimension.get("radius_value"),
+                "diameter_value": dimension.get("diameter_value"),
+                "thread_value": dimension.get("thread_value"),
+                "callout": dimension.get("callout"),
                 "semantic_role": semantic_role,
                 "confidence": confidence,
                 "evidence": evidence,
@@ -175,6 +182,8 @@ class SemanticPolicy:
             "diameter",
             "thread_size",
             "chamfer",
+            "feature_depth",
+            "feature_height",
             "projected_profile_horizontal_extent",
             "projected_profile_vertical_extent",
         }
@@ -220,6 +229,14 @@ class SemanticPolicy:
             "confidence": binding.get("confidence"),
             "evidence": binding.get("evidence", []),
             "span": binding.get("span"),
+            "repeat_count": binding.get("repeat_count"),
+            "radius_value": binding.get("radius_value"),
+            "diameter_value": binding.get("diameter_value"),
+            "thread_value": binding.get("thread_value"),
+            "callout": binding.get("callout"),
+            "feature_kind": binding.get("feature_kind"),
+            "feature_description": binding.get("feature_description"),
+            "source": binding.get("source"),
         }
 
     @classmethod
@@ -341,7 +358,42 @@ class SemanticPolicy:
             and isinstance(binding.get("value"), (int, float))
         ]
         cls._apply_projected_profile_extent_roles(span_bindings)
+        cls._apply_square_profile_roles(span_bindings)
         cls._append_main_view_composite_length(bindings, span_bindings)
+
+    @classmethod
+    def _apply_square_profile_roles(cls, bindings: List[Dict[str, Any]]) -> None:
+        """Bind equal orthogonal outer dimensions in the same view as a square profile."""
+        unresolved = [
+            binding for binding in bindings
+            if binding.get("semantic_role") == "unresolved_linear"
+            and isinstance(binding.get("value"), (int, float))
+            and (binding.get("span") or {}).get("view_name") == "main"
+            and (binding.get("span") or {}).get("orientation") in ("horizontal", "vertical")
+        ]
+        for horizontal in unresolved:
+            h_span = horizontal.get("span") or {}
+            if h_span.get("orientation") != "horizontal":
+                continue
+            for vertical in unresolved:
+                if vertical is horizontal:
+                    continue
+                v_span = vertical.get("span") or {}
+                if v_span.get("orientation") != "vertical":
+                    continue
+                if not cls._values_equal(horizontal.get("value"), vertical.get("value")):
+                    continue
+                horizontal["semantic_role"] = "profile_length"
+                horizontal["confidence"] = 0.95
+                horizontal["evidence"] = [
+                    "同一主视图存在相同数值的水平和竖直外形尺寸，裁决为正方形轮廓边长",
+                ]
+                vertical["semantic_role"] = "profile_height"
+                vertical["confidence"] = 0.95
+                vertical["evidence"] = [
+                    "同一主视图存在相同数值的水平和竖直外形尺寸，裁决为正方形轮廓边长",
+                ]
+                return
 
     @staticmethod
     def _apply_projected_profile_extent_roles(bindings: List[Dict[str, Any]]) -> None:
@@ -549,6 +601,12 @@ class SemanticPolicy:
                 selected_value=answer,
             )
 
+        if cls.FEATURE_DETAIL_DIMENSION_KEY in response:
+            cls._apply_feature_detail_dimension_answer(
+                resolved,
+                response.get(cls.FEATURE_DETAIL_DIMENSION_KEY),
+            )
+
         for question_id, answer in response.answers.items():
             if not question_id.startswith("resolve_"):
                 continue
@@ -562,6 +620,64 @@ class SemanticPolicy:
                 selected_value=answer,
             )
         return resolved
+
+    @classmethod
+    def _apply_feature_detail_dimension_answer(
+        cls,
+        bindings: List[Dict[str, Any]],
+        answer: Any,
+    ) -> None:
+        payload = cls._parse_structured_answer(answer)
+        if not payload:
+            return
+        action = str(payload.get("action") or "")
+        if action == "bind_feature_dimension":
+            selected_text = str(payload.get("dimension_text") or "")
+            role = str(payload.get("role") or "feature_depth")
+            feature_kind = str(payload.get("feature_kind") or "")
+            feature_description = str(payload.get("feature_description") or "")
+            for binding in bindings:
+                if binding.get("semantic_role") != "unresolved_linear":
+                    continue
+                if str(binding.get("text") or binding.get("value")) != selected_text:
+                    continue
+                binding["semantic_role"] = role
+                binding["confidence"] = 1.0
+                binding["feature_kind"] = feature_kind
+                binding["feature_description"] = feature_description
+                binding["source"] = "user_confirmed"
+                binding["evidence"] = ["用户通过系统澄清确认该尺寸用于细节特征高度/深度"]
+                return
+        if action in {
+            "exclude_feature_dimensions",
+            "skip_feature",
+            "unknown_feature_dimension",
+        }:
+            selected_texts = {
+                str(item) for item in payload.get("dimension_texts", []) or []
+            }
+            for binding in bindings:
+                if binding.get("semantic_role") != "unresolved_linear":
+                    continue
+                if str(binding.get("text") or binding.get("value")) not in selected_texts:
+                    continue
+                binding["semantic_role"] = "excluded_by_user"
+                binding["confidence"] = 0.0
+                binding["source"] = "user_confirmed"
+                binding["feature_description"] = payload.get("feature_description")
+                binding["evidence"] = ["用户未确认该尺寸可用于细节特征高度/深度"]
+
+    @staticmethod
+    def _parse_structured_answer(answer: Any) -> Dict[str, Any]:
+        if isinstance(answer, dict):
+            return dict(answer)
+        if not isinstance(answer, str):
+            return {}
+        try:
+            parsed = json.loads(answer)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     @classmethod
     def _bind_selected_value(

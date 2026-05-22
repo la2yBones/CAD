@@ -18,8 +18,8 @@ from openai import OpenAI
 
 from src.utils.llm_telemetry import default_llm_telemetry_store
 
+from .view_decision_payload import build_view_decision_payload
 from .view_schema import (
-    VIEW_ANALYSIS_SCHEMA,
     ViewAnalysisValidator,
     build_standard_view_analysis,
 )
@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 
 class LLMViewAnalyzer:
     """使用 LLM 校验并校正本地工程视图分析。"""
-
-    MAX_ENTITIES_IN_PROMPT = 40
-    MAX_PROMPT_CHARS = 18000
 
     def __init__(self, api_key: str, config: Optional[Dict[str, Any]] = None):
         self.api_key = api_key
@@ -84,7 +81,10 @@ class LLMViewAnalyzer:
                 "messages": messages,
                 "max_tokens": int(self.config.get("view_max_tokens", 4096)),
                 "temperature": float(self.config.get("view_temperature", 0.1)),
+                "response_format": {"type": "json_object"},
             }
+            if self.config.get("view_disable_thinking", True):
+                request_payload["extra_body"] = {"thinking": {"type": "disabled"}}
             call_span = self.telemetry_store.start_call(
                 stage="view_analysis",
                 model=self.model,
@@ -129,7 +129,7 @@ class LLMViewAnalyzer:
             "你是CAD工程图视图分析专家。你的任务是校正本地规则引擎的视图识别结果。"
             "只能输出一个JSON对象，不要输出Markdown。"
             "不要输出完整思维链，只输出reason_summary、evidence和warnings。"
-            "必须遵守给定JSON Schema。"
+            "必须遵守输入中的output_contract字段。"
             "drawing_type只能是single_view、two_view、three_view、assembly_drawing、"
             "section_view、unknown之一。"
             "装配图/总装图通常应作为assembly_drawing或single_view，不要因为零件区域分散就拆成多视图。"
@@ -146,28 +146,15 @@ class LLMViewAnalyzer:
         preview_path: Optional[str],
         media_inputs: Optional[Dict[str, Any]],
     ) -> str:
-        payload = {
-            "task": "校正CAD工程图视图识别结果",
-            "file_name": Path(file_path).name if file_path else None,
-            "preview_path": preview_path,
-            "media_inputs": self._summarize_media_inputs(preview_path, media_inputs),
-            "schema": VIEW_ANALYSIS_SCHEMA,
-            "local_rule_result": self._summarize_rule_result(rule_result),
-            "standardized_rule_result": rule_standard,
-            "geometry_summary": self._summarize_geometry(geometry_data),
-            "dimension_summary": self._summarize_dimensions(dimension_data or {}),
-            "output_requirements": {
-                "must_include_timestamp": True,
-                "must_include_object_id": True,
-                "must_include_bbox": True,
-                "must_include_confidence": True,
-                "confidence_threshold": self.confidence_threshold,
-                "reasoning_policy": "不要输出完整推理链，只输出简短reason_summary和evidence",
-            },
-        }
+        payload = build_view_decision_payload(
+            geometry_data=geometry_data,
+            rule_result=rule_result,
+            rule_standard=rule_standard,
+            dimension_data=dimension_data,
+            file_path=file_path,
+            confidence_threshold=self.confidence_threshold,
+        )
         prompt = json.dumps(payload, ensure_ascii=False, indent=2)
-        if len(prompt) > self.MAX_PROMPT_CHARS:
-            prompt = prompt[:self.MAX_PROMPT_CHARS] + "\n...内容已截断"
         return prompt
 
     def _build_messages(
@@ -196,22 +183,6 @@ class LLMViewAnalyzer:
 
         return [system_message, {"role": "user", "content": content}]
 
-    def _summarize_media_inputs(
-        self,
-        preview_path: Optional[str],
-        media_inputs: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        media_inputs = media_inputs or {}
-        return {
-            "structured_data": True,
-            "preview_image": preview_path,
-            "images": media_inputs.get("images", []),
-            "videos": media_inputs.get("videos", []),
-            "video_frames": media_inputs.get("video_frames", []),
-            "multimodal_direct_upload_enabled": self.enable_multimodal,
-            "video_policy": "视频以抽帧图片或结构化元数据方式输入",
-        }
-
     def _collect_image_paths(
         self,
         preview_path: Optional[str],
@@ -222,7 +193,6 @@ class LLMViewAnalyzer:
         if preview_path:
             paths.append(preview_path)
         paths.extend(str(p) for p in media_inputs.get("images", []) or [])
-        paths.extend(str(p) for p in media_inputs.get("video_frames", []) or [])
         return paths[: int(self.config.get("view_max_images", 4))]
 
     def _image_to_data_url(self, image_path: str) -> Optional[str]:
@@ -239,72 +209,6 @@ class LLMViewAnalyzer:
             return None
 
         return f"data:{mime_type};base64,{encoded}"
-
-    def _summarize_rule_result(self, rule_result: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "detection_method": rule_result.get("detection_method"),
-            "views": [
-                {
-                    "name": view.get("name"),
-                    "type": view.get("type"),
-                    "entity_count": view.get("entity_count"),
-                    "bbox": view.get("bbox"),
-                    "centroid": view.get("centroid"),
-                }
-                for view in rule_result.get("views", []) or []
-            ],
-            "relationships": rule_result.get("relationships", []),
-            "layers": rule_result.get("layers", []),
-            "total_entities": rule_result.get("total_entities"),
-        }
-
-    def _summarize_geometry(self, geometry_data: Dict[str, Any]) -> Dict[str, Any]:
-        entities = geometry_data.get("entities", []) or []
-        type_count: Dict[str, int] = {}
-        layer_count: Dict[str, int] = {}
-        samples: List[Dict[str, Any]] = []
-
-        for entity in entities:
-            etype = str(entity.get("type", "unknown"))
-            layer = str(entity.get("layer", "default"))
-            type_count[etype] = type_count.get(etype, 0) + 1
-            layer_count[layer] = layer_count.get(layer, 0) + 1
-            if len(samples) < self.MAX_ENTITIES_IN_PROMPT:
-                samples.append(self._compact_entity(entity))
-
-        return {
-            "version": geometry_data.get("version"),
-            "units": geometry_data.get("units"),
-            "entity_count": len(entities),
-            "type_count": type_count,
-            "layer_count": layer_count,
-            "entity_samples": samples,
-        }
-
-    def _compact_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
-        keep_keys = (
-            "type",
-            "layer",
-            "start",
-            "end",
-            "center",
-            "radius",
-            "vertices",
-            "position",
-            "text",
-        )
-        compact = {key: entity.get(key) for key in keep_keys if key in entity}
-        if "vertices" in compact and isinstance(compact["vertices"], list):
-            compact["vertices"] = compact["vertices"][:8]
-        return compact
-
-    def _summarize_dimensions(self, dimension_data: Dict[str, Any]) -> Dict[str, Any]:
-        dimensions = dimension_data.get("dimensions", []) or []
-        return {
-            "dimension_count": len(dimensions),
-            "dimensions": dimensions[:20],
-            "statistics": dimension_data.get("statistics", {}),
-        }
 
     def _extract_json(self, content: str) -> Dict[str, Any]:
         content = content.strip()

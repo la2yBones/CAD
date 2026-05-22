@@ -31,6 +31,23 @@ class TestAnalysisCache(unittest.TestCase):
             self.assertEqual(1, len(entries))
             self.assertNotIn("extrude_height", entries[0])
 
+    def test_clear_all_removes_entries_across_cache_shards(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_a = Path(temp_dir) / "a.dxf"
+            source_b = Path(temp_dir) / "b.dxf"
+            source_a.write_text("a", encoding="utf-8")
+            source_b.write_text("b", encoding="utf-8")
+            cache = AnalysisCache(cache_dir=str(Path(temp_dir) / "cache"))
+            cache.set(str(source_a), None, {"ok": "a"}, analysis_params={"version": "a"})
+            cache.set(str(source_b), None, {"ok": "b"}, analysis_params={"version": "b"})
+
+            self.assertEqual(2, len(cache.list_entries()))
+
+            removed = cache.clear_all()
+
+            self.assertEqual(2, removed)
+            self.assertEqual([], cache.list_entries())
+
     def test_cache_settings_prefer_canonical_nested_config(self):
         settings = get_analysis_cache_settings({
             "cache": {

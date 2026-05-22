@@ -141,6 +141,9 @@ class DimensionExtractor:
             "position": text_info["position"],
             "associated_lines": self._find_nearby_lines(text_info["position"], lines)
         }
+        repeated_callout = self._parse_repeated_feature_callout(text)
+        if repeated_callout:
+            result.update(repeated_callout)
         for key in ("definition_points", "measurement", "dimension_type"):
             if key in dimension_entity:
                 result[key] = dimension_entity[key]
@@ -149,9 +152,60 @@ class DimensionExtractor:
     def _extract_numeric_value(self, text: str) -> Optional[float]:
         """提取数值"""
         text = self._normalize_dimension_text(text)
+        repeated_callout = self._parse_repeated_feature_callout(text)
+        if repeated_callout:
+            return float(
+                repeated_callout.get("radius_value")
+                or repeated_callout.get("diameter_value")
+                or repeated_callout.get("thread_value")
+            )
         match = re.search(r'(\d+\.?\d*)', text)
         if match:
             return float(match.group(1))
+        return None
+
+    @staticmethod
+    def _parse_repeated_radius_callout(text: str) -> Optional[Dict]:
+        callout = DimensionExtractor._parse_repeated_feature_callout(text)
+        if callout and callout.get("callout") == "repeated_radius":
+            return callout
+        return None
+
+    @staticmethod
+    def _parse_repeated_feature_callout(text: str) -> Optional[Dict]:
+        normalized = DimensionExtractor._normalize_dimension_text(text).replace(" ", "")
+        radius_match = re.match(
+            r"^[Rr]\s*=?\s*(\d+)\s*[xX×]\s*(\d+(?:\.\d+)?)$",
+            normalized,
+        )
+        if radius_match:
+            return {
+                "callout": "repeated_radius",
+                "repeat_count": int(radius_match.group(1)),
+                "radius_value": float(radius_match.group(2)),
+            }
+
+        diameter_match = re.match(
+            r"^(\d+)\s*(?:[xX×-])\s*[φΦ∅⌀Ø]\s*(\d+(?:\.\d+)?)$",
+            normalized,
+        )
+        if diameter_match:
+            return {
+                "callout": "repeated_diameter",
+                "repeat_count": int(diameter_match.group(1)),
+                "diameter_value": float(diameter_match.group(2)),
+            }
+
+        thread_match = re.match(
+            r"^(\d+)\s*(?:[xX×-])\s*[Mm]\s*(\d+(?:\.\d+)?)$",
+            normalized,
+        )
+        if thread_match:
+            return {
+                "callout": "repeated_thread",
+                "repeat_count": int(thread_match.group(1)),
+                "thread_value": float(thread_match.group(2)),
+            }
         return None
 
     def _determine_dimension_type(self, text: str) -> str:

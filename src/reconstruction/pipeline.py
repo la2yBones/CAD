@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Semantic reconstruction pipeline decoupled from drawing-analysis orchestration."""
 
+import json
 from typing import Any, Dict, Optional
 
 from .context import ReconstructionContextBuilder
@@ -9,6 +10,7 @@ from .clarification_response import ClarificationResponse
 from .semantic_policy import SemanticPolicy
 from .semantics import PartSemanticGenerator
 from .instruction_generator import FreeCADInstructionGenerator
+from .modeling_task import ModelingTaskBuilder
 from .modeling_path import ModelingPathDecision, default_modeling_path_registry
 from .path_clarification import (
     apply_path_clarification_answers,
@@ -34,6 +36,7 @@ class SemanticReconstructionPipeline:
         self.semantic_policy = SemanticPolicy()
         self.semantic_generator = PartSemanticGenerator(api_key, self.config)
         self.instruction_generator = FreeCADInstructionGenerator(api_key, self.config)
+        self.modeling_task_builder = ModelingTaskBuilder()
         self.modeling_path_registry = default_modeling_path_registry()
         self.stage_confirmation = resolve_stage_confirmation(self.config)
 
@@ -93,6 +96,35 @@ class SemanticReconstructionPipeline:
             "part_semantics": part_semantics,
             "semantic_policy": policy_result,
         })
+
+        feature_detail_questions = self._build_feature_detail_clarification_questions(
+            part_semantics,
+            policy_result,
+        )
+        if feature_detail_questions:
+            modeling_result = self._build_pending_modeling_result({
+                **policy_result,
+                "clarification_questions": feature_detail_questions,
+            })
+            return {
+                "reconstruction_context": reconstruction_context,
+                "semantic_policy": {
+                    **policy_result,
+                    "clarification_questions": feature_detail_questions,
+                },
+                "adjudicated_context": adjudicated_context,
+                "part_semantics": part_semantics,
+                "modeling_instructions": modeling_result,
+                "clarification_context": self._build_clarification_context(
+                    geometry_data=geometry_data,
+                    view_analysis=view_analysis,
+                    dimension_data=dimension_data,
+                    local_relationships=local_relationships,
+                    extrude_height=extrude_height,
+                    file_path=file_path,
+                    reconstruction_context=reconstruction_context,
+                ),
+            }
 
         modeling_path_decision = self._choose_modeling_path(view_analysis, part_semantics)
 
@@ -179,6 +211,26 @@ class SemanticReconstructionPipeline:
             "part_semantics": part_semantics,
             "semantic_policy": policy_result,
         })
+        feature_detail_questions = self._build_feature_detail_clarification_questions(
+            part_semantics,
+            policy_result,
+        )
+        if feature_detail_questions:
+            modeling_result = self._build_pending_modeling_result({
+                **policy_result,
+                "clarification_questions": feature_detail_questions,
+            })
+            return {
+                "reconstruction_context": reconstruction_context,
+                "semantic_policy": {
+                    **policy_result,
+                    "clarification_questions": feature_detail_questions,
+                },
+                "adjudicated_context": adjudicated_context,
+                "part_semantics": part_semantics,
+                "modeling_instructions": modeling_result,
+                "clarification_context": clarification_context,
+            }
         modeling_path_decision = self._choose_modeling_path(
             clarification_context["view_analysis"],
             part_semantics,
@@ -252,6 +304,12 @@ class SemanticReconstructionPipeline:
         )
         if routed is not None:
             return routed
+        builder = getattr(self, "modeling_task_builder", None) or ModelingTaskBuilder()
+        modeling_task_payload = builder.build(
+            part_semantics=part_semantics,
+            reconstruction_context=reconstruction_context,
+            modeling_path_decision=modeling_path_decision,
+        )
         return self.instruction_generator.generate(
             geometry_data,
             view_analysis,
@@ -259,6 +317,7 @@ class SemanticReconstructionPipeline:
             extrude_height,
             reconstruction_context=reconstruction_context,
             part_semantics=part_semantics,
+            modeling_task_payload=modeling_task_payload,
             file_path=file_path,
         )
 
@@ -323,6 +382,101 @@ class SemanticReconstructionPipeline:
             "blocked_by_clarification": True,
             "clarification_questions": policy_result["clarification_questions"],
         }
+
+    @staticmethod
+    def _build_feature_detail_clarification_questions(
+        part_semantics: Dict[str, Any],
+        policy_result: Dict[str, Any],
+    ) -> list[Dict[str, Any]]:
+        semantic_policy = (
+            policy_result.get("adjudicated_context", {}) or {}
+        ).get("semantic_policy", {}) or {}
+        if semantic_policy.get("user_modeling_hint"):
+            return []
+
+        additive_features = part_semantics.get("additive_features", []) or []
+        detail_features = [
+            feature for feature in additive_features
+            if str(feature.get("kind") or "").lower() in {"boss", "rib", "shoulder"}
+        ]
+        if not detail_features:
+            return []
+
+        dimension_plan = policy_result.get("dimension_plan", {}) or {}
+        unresolved = dimension_plan.get("unresolved_dimensions", []) or []
+        unresolved_linear = [
+            item for item in unresolved
+            if isinstance(item.get("value"), (int, float))
+        ]
+        if not unresolved_linear:
+            return []
+
+        feature_names = [
+            str(feature.get("description") or feature.get("kind") or "增材细节")
+            for feature in detail_features[:3]
+        ]
+        dimension_options = [
+            str(item.get("text") or item.get("value"))
+            for item in unresolved_linear[:6]
+        ]
+        options = "、".join(
+            str(item.get("text") or item.get("value"))
+            for item in unresolved_linear[:6]
+        )
+        primary_feature = feature_names[0]
+        choice_options: list[Dict[str, str]] = []
+        for dimension_text in dimension_options:
+            choice_options.append({
+                "label": f"{dimension_text} 是该细节高度/深度",
+                "value": json.dumps({
+                    "action": "bind_feature_dimension",
+                    "dimension_text": dimension_text,
+                    "role": "feature_depth",
+                    "feature_kind": str(detail_features[0].get("kind") or ""),
+                    "feature_description": primary_feature,
+                }, ensure_ascii=False),
+            })
+        choice_options.extend([
+            {
+                "label": "这些尺寸不是该细节尺寸",
+                "value": json.dumps({
+                    "action": "exclude_feature_dimensions",
+                    "dimension_texts": dimension_options,
+                    "feature_description": primary_feature,
+                }, ensure_ascii=False),
+            },
+            {
+                "label": "该细节不需要建模",
+                "value": json.dumps({
+                    "action": "skip_feature",
+                    "dimension_texts": dimension_options,
+                    "feature_description": primary_feature,
+                }, ensure_ascii=False),
+            },
+            {
+                "label": "不确定",
+                "value": json.dumps({
+                    "action": "unknown_feature_dimension",
+                    "dimension_texts": dimension_options,
+                    "feature_description": primary_feature,
+                }, ensure_ascii=False),
+            },
+        ])
+        return [{
+            "id": "bind_feature_detail_dimension",
+            "kind": "single_choice",
+            "required": True,
+            "text": (
+                "语义阶段识别到可能需要额外建模的凸台、肋或轴肩，但相关高度/深度尺寸尚未绑定。"
+                "请确认哪些未绑定尺寸用于这些细节。"
+            ),
+            "options": choice_options,
+            "reason": (
+                f"候选细节：{'；'.join(feature_names)}。"
+                f" 未绑定尺寸：{options}。不确认时系统可能只能生成主体并跳过这些细节。"
+            ),
+            "example": "优先选择候选项；如果候选项说不清，可在下方建模提示中补充说明。",
+        }]
 
     def _path_clarification_payload(
         self,

@@ -45,6 +45,93 @@ def _normalize_feature_records(value: Any) -> List[Dict[str, Any]]:
     return records
 
 
+def _feature_text(record: Dict[str, Any]) -> str:
+    parts = [
+        record.get("name"),
+        record.get("kind"),
+        record.get("reason"),
+        record.get("risk"),
+        record.get("evidence"),
+    ]
+    return " ".join(str(part) for part in parts if part).lower()
+
+
+def _is_speculative_skipped_feature(record: Dict[str, Any]) -> bool:
+    """Treat unconfirmed optional details as warnings, not partial failures."""
+    kind = str(record.get("kind") or "").strip().lower()
+    name = str(record.get("name") or "").strip().lower()
+    if kind not in {"fillet", "chamfer", "round", "edge_round", "edge_fillet"}:
+        if not any(marker in name for marker in ("fillet", "chamfer", "round")):
+            return False
+
+    text = _feature_text(record)
+    speculative_markers = (
+        "not clearly",
+        "unclear",
+        "ambiguous",
+        "speculative",
+        "possible",
+        "possibly",
+        "if drawing requires",
+        "if required",
+        "optional",
+        "未明确",
+        "不明确",
+        "尚未明确",
+        "可能",
+        "可能仅指",
+        "若图纸要求",
+        "如需",
+        "可选",
+    )
+    hard_failure_markers = (
+        "failed",
+        "failure",
+        "cannot",
+        "error",
+        "exception",
+        "missing width",
+        "missing height",
+        "缺少宽度",
+        "缺少高度",
+        "执行失败",
+        "建模失败",
+        "api restrictions",
+    )
+    return any(marker in text for marker in speculative_markers) and not any(
+        marker in text for marker in hard_failure_markers
+    )
+
+
+def _split_skipped_features(
+    skipped_features: List[Dict[str, Any]]
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    required: List[Dict[str, Any]] = []
+    advisory: List[Dict[str, Any]] = []
+    for feature in skipped_features:
+        if _is_speculative_skipped_feature(feature):
+            advisory.append(feature)
+        else:
+            required.append(feature)
+    return required, advisory
+
+
+def _append_advisory_warnings(
+    modeling_instructions: Dict[str, Any],
+    advisory_features: List[Dict[str, Any]],
+) -> None:
+    if not advisory_features:
+        return
+    warnings = modeling_instructions.setdefault("warnings", [])
+    if not isinstance(warnings, list):
+        warnings = [warnings]
+        modeling_instructions["warnings"] = warnings
+    for feature in advisory_features:
+        name = feature.get("name") or feature.get("kind") or "detail"
+        reason = feature.get("reason") or feature.get("risk") or "not confirmed by drawing"
+        warnings.append(f"Speculative skipped feature treated as warning: {name}: {reason}")
+
+
 class IntelligentModelingExecutor:
     """Execute the modeling path selected by intelligent reconstruction."""
 
@@ -222,6 +309,8 @@ class IntelligentModelingExecutor:
                 run_result.get("skipped_features")
                 or modeling_instructions.get("skipped_features")
             )
+            skipped_features, advisory_features = _split_skipped_features(skipped_features)
+            _append_advisory_warnings(modeling_instructions, advisory_features)
             completed_features = _normalize_feature_records(
                 run_result.get("completed_features")
                 or modeling_instructions.get("completed_features")
@@ -238,6 +327,11 @@ class IntelligentModelingExecutor:
                 logger.info(f"AI script completed with skipped details: {len(skipped_features)}")
             else:
                 result.mark_completed()
+                if advisory_features:
+                    logger.info(
+                        "AI script completed; speculative skipped details were kept as warnings: %s",
+                        len(advisory_features),
+                    )
             logger.info(request.completion_message)
             return result
         except Exception as error:

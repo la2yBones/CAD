@@ -85,6 +85,55 @@ class TestIntelligentModelingExecutor(unittest.TestCase):
         self.assertEqual("R2 fillet", completed.skipped_features[0]["name"])
         self.assertEqual("主体模型已导出，圆角失败后跳过", completed.partial_completion_reason)
 
+    def test_treats_speculative_skipped_fillet_as_completed_warning(self):
+        result = CADProcessResult(
+            success=False,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+        fake_runner = unittest.mock.Mock()
+        fake_runner.run_script.return_value = {
+            "success": True,
+            "step_path": "drawing.step",
+            "skipped_features": [
+                {
+                    "name": "thickness_edge_fillets",
+                    "kind": "fillet",
+                    "reason": "R=4x1.5 possibly only refers to front-view corner fillets; thickness edge fillets are not clearly annotated",
+                    "risk": "If drawing requires all edge fillets, model may be incomplete.",
+                }
+            ],
+            "completed_features": [
+                {"name": "square_plate_with_corners", "kind": "base"},
+                {"name": "cylindrical_boss", "kind": "additive"},
+                {"name": "through_hole", "kind": "subtractive"},
+            ],
+            "partial_completion_reason": "main required features completed; speculative fillet skipped",
+        }
+        modeling_instructions = {"freecad_script": "pass", "warnings": []}
+
+        with patch("src.model_generator.ai_script_runner.AIScriptRunner", return_value=fake_runner):
+            completed = IntelligentModelingExecutor({}, lambda: None).execute(
+                result=result,
+                intelligent_analysis_result={
+                    "modeling_path_decision": {"modeling_path": "semantic_reconstruction"},
+                    "modeling_instructions": modeling_instructions,
+                },
+                geometry_data={"entities": []},
+                output_structure={},
+                extrude_height=10.0,
+                missing_script_message="missing",
+                script_failure_prefix="failed",
+                completion_message="done",
+            )
+
+        self.assertTrue(completed.success)
+        self.assertEqual(PipelineStatus.COMPLETED, completed.status)
+        self.assertEqual([], completed.skipped_features)
+        self.assertIsNone(completed.partial_completion_reason)
+        self.assertIn("Speculative skipped feature treated as warning", modeling_instructions["warnings"][0])
+
     def test_runs_revolve_executor(self):
         result = CADProcessResult(success=False, input_file="drawing.dxf", mode="intelligent")
         fake_runner = unittest.mock.Mock()

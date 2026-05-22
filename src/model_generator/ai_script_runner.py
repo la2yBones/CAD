@@ -6,6 +6,7 @@ AI生成的FreeCAD脚本执行器
 """
 import sys
 import os
+import ast
 import re
 import json
 import tempfile
@@ -78,6 +79,7 @@ class AIScriptRunner:
 
     def _normalize_generated_script(self, script_content: str) -> str:
         """发送到 FreeCAD 前修正常见 AI 几何脚本问题。"""
+        script_content = self._normalize_arc_of_circle_calls(script_content)
         pattern = re.compile(
             r"^(?P<prefix>\s*\w+\s*=\s*Part\.(?:LineSegment|ArcOfCircle)\(.*\))\s*$",
             re.MULTILINE,
@@ -90,6 +92,62 @@ class AIScriptRunner:
             return f"{line}.toShape()"
 
         return pattern.sub(add_to_shape, script_content)
+
+    @staticmethod
+    def _normalize_arc_of_circle_calls(script_content: str) -> str:
+        try:
+            tree = ast.parse(script_content)
+        except SyntaxError:
+            return script_content
+
+        class ArcNormalizer(ast.NodeTransformer):
+            changed = False
+
+            def visit_Call(self, node: ast.Call):
+                self.generic_visit(node)
+                if not AIScriptRunner._is_arc_of_circle_call(node):
+                    return node
+                if len(node.args) != 4:
+                    return node
+                center, radius, start_angle, end_angle = node.args
+                normal = ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id="FreeCAD", ctx=ast.Load()),
+                        attr="Vector",
+                        ctx=ast.Load(),
+                    ),
+                    args=[ast.Constant(0), ast.Constant(0), ast.Constant(1)],
+                    keywords=[],
+                )
+                circle = ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id="Part", ctx=ast.Load()),
+                        attr="Circle",
+                        ctx=ast.Load(),
+                    ),
+                    args=[center, normal, radius],
+                    keywords=[],
+                )
+                node.args = [circle, start_angle, end_angle]
+                self.changed = True
+                return node
+
+        normalizer = ArcNormalizer()
+        normalized_tree = normalizer.visit(tree)
+        if not normalizer.changed:
+            return script_content
+        ast.fix_missing_locations(normalized_tree)
+        return ast.unparse(normalized_tree)
+
+    @staticmethod
+    def _is_arc_of_circle_call(node: ast.Call) -> bool:
+        func = node.func
+        return (
+            isinstance(func, ast.Attribute)
+            and func.attr == "ArcOfCircle"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "Part"
+        )
 
     def _run_via_bridge(self, script_content: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         logger.info("通过子进程桥接执行 AI 脚本")

@@ -127,6 +127,23 @@ class TestAIScriptRunner(unittest.TestCase):
         self.assertIn("arc_br = Part.ArcOfCircle(c, p1, p2).toShape()", normalized)
         self.assertIn("already = Part.LineSegment(p1, p2).toShape()", normalized)
 
+    def test_generated_script_normalizes_four_arg_arc_of_circle(self):
+        runner = AIScriptRunner.__new__(AIScriptRunner)
+        script = "\n".join(
+            [
+                "import FreeCAD",
+                "import Part",
+                "arc = Part.ArcOfCircle(FreeCAD.Vector(0, 0, 0), 1.5, 0, 1.57)",
+            ]
+        )
+
+        normalized = runner._normalize_generated_script(script)
+
+        self.assertIn(
+            "Part.ArcOfCircle(Part.Circle(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1), 1.5), 0, 1.57).toShape()",
+            normalized,
+        )
+
     def test_partial_metadata_from_script_variables_is_normalized(self):
         metadata = AIScriptRunner._extract_partial_metadata_from_vars({
             "completed_features": ["base body"],

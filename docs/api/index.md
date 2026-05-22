@@ -148,6 +148,14 @@ basic = pipeline.process_file_basic("sample.dxf")
 
 智能模式需要 `DEEPSEEK_API_KEY` 配置可用。当前本地规则和聚类逻辑仍是智能分析子过程的重要组成部分。
 
+LLM 输入采用阶段化载荷：
+
+- `build_view_decision_payload(...)` 构建视图判定载荷，供 `LLMViewAnalyzer` 校正视图结构。
+- `SemanticUnderstandingPayloadBuilder.build(...)` 构建语义理解载荷，供 `PartSemanticGenerator` 生成 `part_semantics`。
+- `ModelingTaskBuilder.build(...)` 构建建模任务载荷，供 `FreeCADInstructionGenerator` 生成 FreeCAD 脚本。
+
+这些载荷是 LLM 调用边界，不等同于本地缓存或完整中间结果。完整实体和本地关系明细仍可在本地分析、裁决和校验中使用，但不应直接传入大模型 prompt。
+
 ## 模型生成
 
 ### `src.model_generator.FreeCADBridge`

@@ -171,8 +171,9 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
         call_kwargs = pipeline.instruction_generator.generate.call_args.kwargs
         self.assertEqual(
             "不用管图纸尺寸，以我说的为准。",
-            call_kwargs["reconstruction_context"]["user_modeling_hint"],
+            call_kwargs["modeling_task_payload"]["recovery_hints"]["user_modeling_hint"],
         )
+        self.assertNotIn("source_entities", repr(call_kwargs["modeling_task_payload"]))
 
     def test_reconstruction_pipeline_routes_simple_single_profile_to_planar_extrude(self):
         pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
@@ -222,6 +223,86 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
         self.assertEqual("planar_extrude", result["modeling_path_decision"]["modeling_path"])
         self.assertTrue(result["modeling_instructions"]["routed_to_planar_extrude"])
         pipeline.instruction_generator.generate.assert_not_called()
+
+    def test_reconstruction_pipeline_asks_before_skipping_additive_feature_with_unbound_dimension(self):
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.stage_confirmation = resolve_stage_confirmation({})
+        pipeline.config = {}
+        pipeline.semantic_generator = unittest.mock.Mock(
+            generate=unittest.mock.Mock(
+                return_value={
+                    "part_type": "base",
+                    "confidence": 0.9,
+                    "summary": "base with possible boss",
+                    "evidence": [],
+                    "candidate_interpretations": [],
+                    "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
+                    "dimension_source": "annotation",
+                    "base_features": [{"kind": "plate"}],
+                    "additive_features": [
+                        {"kind": "boss", "description": "右视图中的凸台"}
+                    ],
+                    "subtractive_features": [],
+                    "planar_modeling_semantics": {
+                        "profile": {"kind": "plate", "description": "base"},
+                        "extrusion_direction": "Z",
+                        "extrusion_depth": 8.0,
+                        "cut_features": [],
+                        "dimension_bindings": [],
+                        "uncertainties": [],
+                    },
+                    "revolve_modeling_semantics": None,
+                    "preferred_modeling_path": None,
+                    "key_dimensions": [],
+                    "uncertainties": ["凸台高度可能对应未绑定尺寸40"],
+                    "warnings": [],
+                }
+            )
+        )
+        pipeline.instruction_generator = unittest.mock.Mock()
+
+        result = pipeline.run(
+            geometry_data={"entities": []},
+            view_analysis={"drawing_type": "single_view", "views": [{"name": "main", "bbox": [0, 0, 100, 100]}]},
+            dimension_data={"dimensions": [{"text": "40", "value": 40.0, "type": "线性"}]},
+            local_relationships=None,
+            extrude_height=10.0,
+        )
+
+        questions = result["semantic_policy"]["clarification_questions"]
+        self.assertEqual(["bind_feature_detail_dimension"], [question["id"] for question in questions])
+        self.assertEqual("single_choice", questions[0]["kind"])
+        self.assertIn("40", questions[0]["reason"])
+        self.assertIn("40 是该细节高度/深度", [option["label"] for option in questions[0]["options"]])
+        self.assertIn('"action": "bind_feature_dimension"', questions[0]["options"][0]["value"])
+        self.assertIn('"feature_description": "右视图中的凸台"', questions[0]["options"][0]["value"])
+        self.assertTrue(result["modeling_instructions"]["blocked_by_clarification"])
+        pipeline.instruction_generator.generate.assert_not_called()
+
+    def test_feature_detail_clarification_skips_when_user_modeling_hint_exists(self):
+        questions = SemanticReconstructionPipeline._build_feature_detail_clarification_questions(
+            part_semantics={
+                "additive_features": [
+                    {"kind": "boss", "description": "right-view boss"}
+                ]
+            },
+            policy_result={
+                "adjudicated_context": {
+                    "semantic_policy": {
+                        "user_modeling_hint": "40 is the boss height"
+                    }
+                },
+                "dimension_plan": {
+                    "unresolved_dimensions": [
+                        {"text": "40", "value": 40.0}
+                    ]
+                },
+            },
+        )
+
+        self.assertEqual([], questions)
 
     def test_reconstruction_pipeline_waits_for_path_contract_clarification(self):
         pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
@@ -390,7 +471,7 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
         self.assertFalse(resumed["modeling_instructions"].get("blocked_by_clarification", False))
         pipeline.instruction_generator.generate.assert_called_once()
         call_kwargs = pipeline.instruction_generator.generate.call_args.kwargs
-        fallback_context = call_kwargs["part_semantics"]["path_clarification_fallback"]
+        fallback_context = call_kwargs["modeling_task_payload"]["recovery_hints"]["path_clarification_fallback"]
         self.assertEqual(["extrusion_depth"], fallback_context["missing_fields"])
         self.assertEqual("planar_extrude", fallback_context["original_modeling_path"])
         self.assertIn("用户已提供补充建模提示", fallback_context["reason"])

@@ -57,6 +57,20 @@ class TestReconstructionContext(unittest.TestCase):
 
         self.assertEqual("annotation", summary["semantic_policy"]["dimension_source"])
 
+    def test_reconstruction_context_keeps_geometry_summary_for_compressed_payloads(self):
+        context = ReconstructionContextBuilder().build(
+            {
+                "entities": [
+                    {"type": "ARC", "layer": "轮廓线", "center": [0, 0, 0], "radius": 1.5},
+                    {"type": "ARC", "layer": "轮廓线", "center": [1, 0, 0], "radius": 1.5},
+                ],
+            },
+            {"views": []},
+            {"dimensions": []},
+        )
+
+        self.assertEqual(2, context["geometry_summary"]["arc_summary"]["count"])
+        self.assertEqual([1.5], context["geometry_summary"]["arc_summary"]["radius_values"])
 
 
 if __name__ == "__main__":

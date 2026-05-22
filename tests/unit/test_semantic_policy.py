@@ -12,6 +12,9 @@ class TestSemanticPolicy(unittest.TestCase):
             {
                 "context_version": "reconstruction_context_v1",
                 "dimensions": [{"text": "30", "value": 30.0, "type": "线性"}],
+                "geometry_summary": {
+                    "arc_summary": {"count": 4, "radius_values": [1.5]},
+                },
                 "source_entities": [{"type": "LINE", "start": [0, 0], "end": [48.5, 0]}],
                 "view_analysis": {
                     "views": [
@@ -28,6 +31,10 @@ class TestSemanticPolicy(unittest.TestCase):
         adjudicated = policy_result["adjudicated_context"]
         self.assertNotIn("source_entities", adjudicated)
         self.assertNotIn("entities", adjudicated["view_analysis"]["views"][0])
+        self.assertEqual(
+            {"count": 4, "radius_values": [1.5]},
+            adjudicated["geometry_summary"]["arc_summary"],
+        )
         self.assertEqual("unresolved_linear", policy_result["dimension_bindings"][0]["semantic_role"])
 
     def test_semantic_policy_keeps_geometry_when_annotations_missing(self):
@@ -69,6 +76,112 @@ class TestSemanticPolicy(unittest.TestCase):
         constraints = policy_result["feature_constraints"]
         self.assertTrue(constraints["chamfer_is_external_corner_removal"])
         self.assertTrue(constraints["chamfer_must_not_create_recess_or_slot"])
+
+    def test_semantic_policy_preserves_repeated_radius_metadata(self):
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {
+                        "text": "R=4x1.5",
+                        "value": 1.5,
+                        "type": "半径",
+                        "callout": "repeated_radius",
+                        "repeat_count": 4,
+                        "radius_value": 1.5,
+                    }
+                ],
+                "view_analysis": {"views": []},
+            }
+        )
+
+        allowed = policy_result["dimension_plan"]["allowed_dimensions"][0]
+        self.assertEqual("radius", allowed["role"])
+        self.assertEqual(1.5, allowed["value"])
+        self.assertEqual("repeated_radius", allowed["callout"])
+        self.assertEqual(4, allowed["repeat_count"])
+
+    def test_semantic_policy_preserves_repeated_diameter_metadata(self):
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {
+                        "text": "3xφ5",
+                        "value": 5.0,
+                        "type": "直径",
+                        "callout": "repeated_diameter",
+                        "repeat_count": 3,
+                        "diameter_value": 5.0,
+                    }
+                ],
+                "view_analysis": {"views": []},
+            }
+        )
+
+        allowed = policy_result["dimension_plan"]["allowed_dimensions"][0]
+        self.assertEqual("diameter", allowed["role"])
+        self.assertEqual(5.0, allowed["value"])
+        self.assertEqual("repeated_diameter", allowed["callout"])
+        self.assertEqual(3, allowed["repeat_count"])
+        self.assertEqual(5.0, allowed["diameter_value"])
+
+    def test_semantic_policy_preserves_repeated_thread_metadata(self):
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {
+                        "text": "3-M5",
+                        "value": 5.0,
+                        "type": "螺纹",
+                        "callout": "repeated_thread",
+                        "repeat_count": 3,
+                        "thread_value": 5.0,
+                    }
+                ],
+                "view_analysis": {"views": []},
+            }
+        )
+
+        allowed = policy_result["dimension_plan"]["allowed_dimensions"][0]
+        self.assertEqual("thread_size", allowed["role"])
+        self.assertEqual(5.0, allowed["value"])
+        self.assertEqual("repeated_thread", allowed["callout"])
+        self.assertEqual(3, allowed["repeat_count"])
+        self.assertEqual(5.0, allowed["thread_value"])
+
+    def test_semantic_policy_promotes_user_confirmed_feature_dimension(self):
+        answer = (
+            '{"action":"bind_feature_dimension","dimension_text":"40",'
+            '"role":"feature_depth","feature_kind":"boss",'
+            '"feature_description":"中心圆柱凸台"}'
+        )
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {
+                        "text": "40",
+                        "value": 40.0,
+                        "type": "线性",
+                        "position": [0, 0, 0],
+                    }
+                ],
+                "view_analysis": {"views": []},
+            },
+            clarification_answers={
+                "bind_feature_detail_dimension": answer,
+            },
+        )
+
+        self.assertEqual([], policy_result["dimension_plan"]["unresolved_dimensions"])
+        allowed = policy_result["dimension_plan"]["allowed_dimensions"][0]
+        self.assertEqual("feature_depth", allowed["role"])
+        self.assertEqual(40.0, allowed["value"])
+        self.assertEqual("boss", allowed["feature_kind"])
+        self.assertEqual("中心圆柱凸台", allowed["feature_description"])
+        self.assertEqual("user_confirmed", allowed["source"])
 
     def test_semantic_policy_binds_linear_dimension_when_view_and_line_agree(self):
         policy_result = SemanticPolicy().evaluate(
@@ -335,6 +448,46 @@ class TestSemanticPolicy(unittest.TestCase):
         self.assertEqual("profile_length_segment", segments["9"]["role"])
         self.assertEqual("profile_length_segment", segments["39"]["role"])
         self.assertEqual("unresolved_linear", unresolved["30"]["role"])
+
+    def test_semantic_policy_binds_equal_orthogonal_main_dimensions_as_square(self):
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {
+                        "text": "96",
+                        "value": 96.0,
+                        "type": "线性",
+                        "definition_points": [[0, 0, 0], [96, 0, 0]],
+                    },
+                    {
+                        "text": "96",
+                        "value": 96.0,
+                        "type": "线性",
+                        "definition_points": [[0, 0, 0], [0, 96, 0]],
+                    },
+                    {"text": "φ32", "value": 32.0, "type": "直径"},
+                    {"text": "φ64", "value": 64.0, "type": "直径"},
+                ],
+                "view_analysis": {
+                    "drawing_type": "two_view",
+                    "views": [
+                        {"name": "main", "bbox": [0, 0, 96, 96]},
+                        {"name": "right", "bbox": [140, 0, 200, 96]},
+                    ],
+                },
+            }
+        )
+
+        roles = [item["semantic_role"] for item in policy_result["dimension_bindings"]]
+        self.assertIn("profile_length", roles)
+        self.assertIn("profile_height", roles)
+        self.assertEqual([], policy_result["clarification_questions"])
+        allowed = policy_result["dimension_plan"]["allowed_dimensions"]
+        self.assertEqual(
+            ["profile_length", "profile_height", "diameter", "diameter"],
+            [item["role"] for item in allowed],
+        )
 
     def test_semantic_policy_applies_clarification_answers(self):
         context = {

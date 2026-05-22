@@ -14,15 +14,15 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
                                              │
                                              ├─ EngineeringViewAnalyzer 本地视图初判
                                              ├─ DimensionExtractor 尺寸提取
-                                             ├─ LLMViewAnalyzer DeepSeek 视图语义校正
+                                             ├─ view_decision_payload → LLMViewAnalyzer 视图语义校正
                                              ├─ Shapely STRtree 本地关系分析
                                              └─ src/reconstruction 语义重建内核
                                                 ├─ ReconstructionContextBuilder 重建上下文
-                                                ├─ PartSemanticGenerator 结构化零件语义
+                                                ├─ SemanticUnderstandingPayloadBuilder → PartSemanticGenerator
                                                 ├─ path_contracts 专用路径契约
                                                 ├─ path_clarification 路径层追问恢复
                                                 ├─ choose_modeling_path 建模路径裁决
-                                                └─ FreeCADInstructionGenerator AI 脚本生成
+                                                └─ ModelingTaskBuilder → FreeCADInstructionGenerator
                                                        │
                                                        ▼
                                       IntelligentModelingExecutor 建模执行分发
@@ -97,10 +97,12 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
 
 1. 本地规则先给出视图初判，保证无 AI 时也有可解释结果。
 2. 尺寸提取从 DIMENSION、TEXT、MTEXT 及周边几何中提取标注。
-3. LLM 视图校正输出必须符合 `VIEW_ANALYSIS_SCHEMA`，不合规则回退本地规则。
+3. LLM 视图校正只接收视图判定载荷，输出必须符合视图结果合同，不合规则回退本地规则。
 4. 复杂实体数超过阈值时跳过全量本地关系分析，避免耗时失控。
 5. 语义重建内核先依据路径契约筛选合法候选；若候选路径语义未闭合，则生成追问而不是静默回退；若多条路径同时闭合但缺少 `preferred_modeling_path`，同样进入路径优选追问；只有同时满足契约且已有执行器的专用路径才可被真正选中。当前 `planar_extrude` 可执行，`revolve` 已支持“轴线 + 闭合母线点列”的受约束回转体。
 6. 统一智能处理只缓存智能分析结果；最终执行路径和产物属于智能处理结果。
+
+三个大模型调用阶段均通过专用载荷隔离职责：视图语义校正使用视图判定载荷，零件语义生成使用语义理解载荷，建模指令生成使用建模任务载荷。全量 `geometry_data.entities`、完整视图实体列表、`source_entities` 和局部关系明细只供本地分析、裁决和校验使用，不作为 LLM 输入兜底。
 
 `PartSemanticGenerator` 输出的零件语义必须显式包含 `planar_modeling_semantics`、`revolve_modeling_semantics` 和 `preferred_modeling_path`。当某条专用路径不适用时，对应语义字段应为 `null`；字段缺失表示模型输出未满足语义交接合同，不应被解释为“路径不适用”。
 

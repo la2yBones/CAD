@@ -132,6 +132,37 @@ class TestCADParser(unittest.TestCase):
         self.assertTrue(parser._is_auto_dimension_overlay("auto"))
         self.assertFalse(parser._is_dimension_overlay_enabled(False))
         self.assertEqual(3.2, parser._auto_dimension_overlay_max_height(ax))
+        self.assertEqual(10.0, parser._dimension_overlay_fontsize(1.0, 3.2))
+        self.assertEqual(12.0, parser._dimension_overlay_fontsize(2.0, None))
+
+    def test_preview_normalizes_annotation_colors(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dxf_path = Path(tmp_dir) / "annotation_color.dxf"
+            doc = ezdxf.new()
+            doc.layers.add("文本层", color=212)
+            msp = doc.modelspace()
+            msp.add_text("R=4x1.5", dxfattribs={"layer": "文本层", "color": 256})
+            dim = msp.add_linear_dim(base=(0, 5), p1=(0, 0), p2=(12, 0), dxfattribs={"layer": "文本层"})
+            dim.render()
+            doc.saveas(dxf_path)
+
+            parser = CADParser(str(dxf_path), {"preview_annotation_color": 7})
+            parser.parse()
+            parser._normalize_annotation_colors_for_preview()
+
+            self.assertEqual(7, parser.doc.layers.get("文本层").dxf.color)
+            text = list(parser.doc.modelspace().query("TEXT"))[0]
+            self.assertEqual(7, text.dxf.color)
+            dimension_text_colors = []
+            for dim in parser.doc.modelspace().query("DIMENSION"):
+                block = parser.doc.blocks.get(dim.dxf.geometry)
+                dimension_text_colors.extend(
+                    sub.dxf.color
+                    for sub in block
+                    if sub.dxftype() in ("TEXT", "MTEXT")
+                )
+            self.assertTrue(dimension_text_colors)
+            self.assertTrue(all(color == 7 for color in dimension_text_colors))
 
 
 if __name__ == "__main__":

@@ -223,6 +223,10 @@ class TestModelingGenerator(unittest.TestCase):
         self.assertEqual(first_result, result)
         self.assertEqual(1, len(calls))
         self.assertEqual({"type": "json_object"}, calls[0]["response_format"])
+        self.assertEqual(
+            {"thinking": {"type": "disabled"}},
+            calls[0]["extra_body"],
+        )
 
     def test_low_semantic_confidence_blocks_modeling(self):
         analyzer = IntelligentEngineeringAnalyzer.__new__(IntelligentEngineeringAnalyzer)

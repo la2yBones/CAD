@@ -12,6 +12,7 @@ class TestPendingClarificationStore(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             store = PendingClarificationStore(tmpdir)
             result = CADProcessResult(success=False, input_file="examples/cad_files/part.dxf")
+            result.modeling_path = "semantic_reconstruction"
             result.mark_needs_clarification(
                 [
                     {
@@ -25,6 +26,11 @@ class TestPendingClarificationStore(unittest.TestCase):
                     "semantic": {"shape": "bracket"},
                 },
             )
+            result.output_paths = {
+                "geometry": "examples/output/part/part_geometry.json",
+                "analysis_full": "examples/output/part/part_full.json",
+                "analysis_report": "examples/output/part/part_report.txt",
+            }
 
             item = store.save(result, output_dir="examples/output", extrude_height=10.0)
             loaded = store.load(item["pending_id"])
@@ -35,7 +41,12 @@ class TestPendingClarificationStore(unittest.TestCase):
             self.assertEqual("examples/cad_files/part.dxf", loaded["input_file"])
             self.assertEqual("examples/output", loaded["output_dir"])
             self.assertEqual(10.0, loaded["extrude_height"])
+            self.assertEqual("semantic_reconstruction", loaded["modeling_path"])
             self.assertEqual("clar_123", loaded["clarification_context"]["session_id"])
+            self.assertEqual(
+                "examples/output/part/part_full.json",
+                loaded["output_paths"]["analysis_full"],
+            )
             self.assertEqual(["depth"], [q["id"] for q in loaded["clarification_questions"]])
             self.assertEqual([item["pending_id"]], [entry["pending_id"] for entry in listed])
             self.assertTrue(Path(tmpdir, f"{item['pending_id']}.json").exists())
@@ -94,6 +105,7 @@ class TestPendingClarificationStore(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             store = PendingClarificationStore(tmpdir)
             result = CADProcessResult(success=False, input_file="drawing.dxf")
+            result.modeling_path = "semantic_reconstruction"
             result.mark_partial_completed(
                 skipped_features=[{"name": "R15", "reason": "need user hint"}],
                 reason="主体模型已生成，R15 跳过",
@@ -109,6 +121,7 @@ class TestPendingClarificationStore(unittest.TestCase):
 
             self.assertEqual("needs_clarification", loaded["status"])
             self.assertEqual("partial_completed", loaded["source_status"])
+            self.assertEqual("semantic_reconstruction", loaded["modeling_path"])
             self.assertEqual("R15", loaded["skipped_features"][0]["name"])
             self.assertEqual("out/drawing.step", loaded["output_paths"]["model_step"])
             self.assertEqual([item["pending_id"]], [entry["pending_id"] for entry in store.list_pending()])

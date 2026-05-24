@@ -258,7 +258,7 @@ class IntelligentEngineeringAnalyzer:
         return any(marker in text for marker in transient_markers)
 
     def save_results(self, analysis_result: Dict[str, Any],
-                     output_dir: str, base_name: str = "analysis") -> None:
+                     output_dir: str, base_name: str = "analysis") -> Dict[str, str]:
         """
         保存分析结果到文件
 
@@ -272,9 +272,13 @@ class IntelligentEngineeringAnalyzer:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
+        saved_paths: Dict[str, str] = {}
+
         # 保存完整分析结果
-        with open(output_path / f"{base_name}_full.json", 'w', encoding='utf-8') as f:
+        full_path = output_path / f"{base_name}_full.json"
+        with open(full_path, 'w', encoding='utf-8') as f:
             json.dump(analysis_result, f, ensure_ascii=False, indent=2)
+        saved_paths["analysis_full"] = str(full_path)
 
         # 保存FreeCAD脚本
         if "modeling_instructions" in analysis_result:
@@ -283,12 +287,16 @@ class IntelligentEngineeringAnalyzer:
                 script_path = output_path / f"{base_name}_freecad.py"
                 with open(script_path, 'w', encoding='utf-8') as f:
                     f.write(script)
+                saved_paths["freecad_script"] = str(script_path)
                 logger.info(f"FreeCAD脚本已保存: {script_path}")
 
         # 保存分析报告
         report = self._generate_report(analysis_result)
-        with open(output_path / f"{base_name}_report.txt", 'w', encoding='utf-8') as f:
+        report_path = output_path / f"{base_name}_report.txt"
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
+        saved_paths["analysis_report"] = str(report_path)
+        return saved_paths
 
     def _entity_to_shapely(self, entity: Dict):
         import shapely.geometry as sg

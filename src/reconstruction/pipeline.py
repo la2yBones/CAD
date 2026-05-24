@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 from .context import ReconstructionContextBuilder
 from .clarification_response import ClarificationResponse
+from .semantic_adjudicator import LLMSemanticAdjudicator
+from .semantic_adjudication_view import SemanticAdjudicationView
 from .semantic_policy import SemanticPolicy
 from .semantics import PartSemanticGenerator
 from .instruction_generator import FreeCADInstructionGenerator
@@ -33,6 +35,7 @@ class SemanticReconstructionPipeline:
         self.config = config or {}
         self.context_builder = ReconstructionContextBuilder()
         self.semantic_policy = SemanticPolicy()
+        self.semantic_adjudicator = LLMSemanticAdjudicator(api_key, self.config)
         self.semantic_generator = PartSemanticGenerator(api_key, self.config)
         self.instruction_generator = FreeCADInstructionGenerator(api_key, self.config)
         self.modeling_task_builder = ModelingTaskBuilder()
@@ -59,13 +62,16 @@ class SemanticReconstructionPipeline:
             local_relationships=local_relationships,
         )
         policy_result = self.semantic_policy.evaluate(reconstruction_context)
-        adjudicated_context = policy_result["adjudicated_context"]
-        summary_context = self.context_builder.build_summary(adjudicated_context)
         self._confirm_stage("view_analysis", {
             "view_analysis": view_analysis,
             "dimension_data": dimension_data,
             "semantic_policy": policy_result,
         })
+        policy_result, adjudicated_context = self._apply_semantic_adjudication(
+            policy_result,
+            file_path=file_path,
+        )
+        summary_context = self.context_builder.build_summary(adjudicated_context)
         if policy_result["clarification_questions"]:
             part_semantics = self._build_pending_semantics(policy_result)
             modeling_result = self._build_pending_modeling_result(policy_result)
@@ -83,6 +89,9 @@ class SemanticReconstructionPipeline:
                     extrude_height=extrude_height,
                     file_path=file_path,
                     reconstruction_context=reconstruction_context,
+                    clarification_stage=self._clarification_stage_for_policy_result(
+                        policy_result
+                    ),
                 ),
             }
 
@@ -122,6 +131,12 @@ class SemanticReconstructionPipeline:
                     extrude_height=extrude_height,
                     file_path=file_path,
                     reconstruction_context=reconstruction_context,
+                    clarification_stage=self._clarification_stage_for_policy_result(
+                        {
+                            **policy_result,
+                            "clarification_questions": feature_detail_questions,
+                        }
+                    ),
                 ),
             }
 
@@ -187,7 +202,11 @@ class SemanticReconstructionPipeline:
             reconstruction_context,
             clarification_answers=clarification_response,
         )
-        adjudicated_context = policy_result["adjudicated_context"]
+        policy_result, adjudicated_context = self._apply_semantic_adjudication(
+            policy_result,
+            file_path=clarification_context.get("file_path"),
+            clarification_response=clarification_response,
+        )
         summary_context = self.context_builder.build_summary(adjudicated_context)
         if policy_result["clarification_questions"]:
             part_semantics = self._build_pending_semantics(policy_result)
@@ -265,6 +284,83 @@ class SemanticReconstructionPipeline:
         )
         if not decision.continue_processing:
             raise StageConfirmationStopped(ensure_stage_stop_message(decision, stage))
+
+    def _apply_semantic_adjudication(
+        self,
+        policy_result: Dict[str, Any],
+        *,
+        file_path: Optional[str],
+        clarification_response: Optional[ClarificationResponse] = None,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        adjudicator = getattr(self, "semantic_adjudicator", None)
+        adjudicated_context = policy_result["adjudicated_context"]
+        if adjudicator is None:
+            return policy_result, adjudicated_context
+        if (
+            clarification_response is not None
+            and clarification_response.source_stage == "semantic_adjudication"
+        ):
+            adjudicated_context = dict(adjudicated_context)
+            adjudicated_context["semantic_adjudication_clarification"] = {
+                "answers": dict(clarification_response.answers),
+                "user_modeling_hint": clarification_response.user_modeling_hint,
+                "conflict_policy": clarification_response.conflict_policy,
+            }
+
+        semantic_adjudication = adjudicator.adjudicate(
+            adjudicated_context,
+            file_path=file_path,
+        )
+        updated_context = dict(adjudicated_context)
+        semantic_policy = dict(updated_context.get("semantic_policy", {}) or {})
+        semantic_policy["semantic_adjudication"] = semantic_adjudication
+        updated_context["semantic_policy"] = semantic_policy
+
+        updated_policy = dict(policy_result)
+        updated_policy["semantic_adjudication"] = semantic_adjudication
+        updated_policy["adjudicated_context"] = updated_context
+        adjudication_view = SemanticAdjudicationView(semantic_adjudication)
+        adjudication_questions = adjudication_view.clarification_questions
+        if adjudication_view.is_successful:
+            adjudication_questions = self._with_question_source(
+                adjudication_questions,
+                "semantic_adjudication",
+            )
+            updated_policy["clarification_questions"] = adjudication_questions
+        self._confirm_stage("semantic_adjudication", {
+            "semantic_adjudication": semantic_adjudication,
+            "semantic_policy": updated_policy,
+        })
+        return updated_policy, updated_context
+
+    @staticmethod
+    def _semantic_adjudication_succeeded(semantic_adjudication: Dict[str, Any]) -> bool:
+        return SemanticAdjudicationView(semantic_adjudication).is_successful
+
+    @staticmethod
+    def _with_question_source(
+        questions: list[Dict[str, Any]],
+        source_stage: str,
+    ) -> list[Dict[str, Any]]:
+        tagged = []
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            updated = dict(question)
+            updated.setdefault("source_stage", source_stage)
+            tagged.append(updated)
+        return tagged
+
+    @staticmethod
+    def _clarification_stage_for_policy_result(policy_result: Dict[str, Any]) -> str:
+        questions = policy_result.get("clarification_questions", []) or []
+        if questions and all(
+            isinstance(question, dict)
+            and question.get("source_stage") == "semantic_adjudication"
+            for question in questions
+        ):
+            return "semantic_adjudication"
+        return "semantic_policy"
 
     def _is_semantic_confidence_sufficient(self, part_semantics: Dict[str, Any]) -> bool:
         confidence = float(part_semantics.get("confidence") or 0.0)
@@ -676,6 +772,7 @@ class SemanticReconstructionPipeline:
         extrude_height: float,
         file_path: Optional[str],
         reconstruction_context: Dict[str, Any],
+        clarification_stage: str = "semantic_policy",
     ) -> Dict[str, Any]:
         return {
             "geometry_data": geometry_data,
@@ -685,5 +782,6 @@ class SemanticReconstructionPipeline:
             "extrude_height": extrude_height,
             "file_path": file_path,
             "reconstruction_context": reconstruction_context,
+            "clarification_stage": clarification_stage,
         }
 

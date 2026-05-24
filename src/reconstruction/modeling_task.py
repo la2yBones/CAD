@@ -6,6 +6,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
+from .semantic_adjudication_view import SemanticAdjudicationView
+
 
 class ModelingTaskBuilder:
     """Convert semantic reconstruction outputs into a stage-specific task payload."""
@@ -71,11 +73,18 @@ class ModelingTaskBuilder:
         semantic_policy: Dict[str, Any],
     ) -> Dict[str, Any]:
         dimension_plan = semantic_policy.get("dimension_plan", {}) or {}
-        return {
+        adjudication_view = SemanticAdjudicationView.from_policy(semantic_policy)
+        payload = {
             "dimension_source": (
                 semantic_policy.get("dimension_source")
                 or semantics.get("dimension_source")
             ),
+            "semantic_adjudication": adjudication_view.to_dict(),
+        }
+        if adjudication_view.is_successful:
+            payload["modeling_dimensions"] = adjudication_view.modeling_dimensions
+            return payload
+        payload.update({
             "allowed_dimensions": deepcopy(
                 dimension_plan.get("allowed_dimensions", []) or []
             ),
@@ -89,7 +98,8 @@ class ModelingTaskBuilder:
                 dimension_plan.get("excluded_dimensions", []) or []
             ),
             "rules": deepcopy(dimension_plan.get("rules", []) or []),
-        }
+        })
+        return payload
 
     @staticmethod
     def _build_constraints(

@@ -44,6 +44,8 @@ dxf_parser:
   overlay_dimension_text: "auto"
   dimension_text_auto_overlay_ratio: 0.008
   dimension_text_auto_overlay_min_height: 1.5
+  dimension_text_auto_overlay_fontsize: 10.0
+  preview_annotation_color: 7  # 预览中统一文字/尺寸标注颜色，7 通常显示为白色
 
 # FreeCAD路径配置
 # 系统会自动检测运行环境，选择合适的调用方式：

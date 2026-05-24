@@ -107,6 +107,29 @@ class CADProcessResult:
         self.stage_stop_action = action or "stop"
         self.stage_stop_stage = stage
 
+    @classmethod
+    def from_pending_item(cls, item: Dict[str, Any]) -> "CADProcessResult":
+        """Restore an in-memory result from a persisted pending clarification item."""
+        result = cls(
+            success=False,
+            input_file=str(item.get("input_file") or ""),
+            mode=item.get("mode", "intelligent"),
+            modeling_path=item.get("modeling_path"),
+        )
+        result.mark_needs_clarification(
+            list(item.get("clarification_questions") or []),
+            item.get("clarification_context"),
+        )
+        result.output_paths.update({
+            str(key): str(path)
+            for key, path in (item.get("output_paths") or {}).items()
+            if path
+        })
+        result.completed_features = list(item.get("completed_features") or [])
+        result.skipped_features = list(item.get("skipped_features") or [])
+        result.partial_completion_reason = item.get("partial_completion_reason")
+        return result
+
     def to_dict(self) -> Dict:
         return {
             'success': self.success,
@@ -413,6 +436,15 @@ class CADProcessor:
                         file_path=str(file_path)
                     )
                     result.intelligent_analysis = intelligent_analysis_result
+                    output_dir = output_structure.get('directory', Path('.') / 'output')
+                    base_name = Path(file_path).stem
+                    self._save_analysis_outputs(
+                        analyzer,
+                        result,
+                        intelligent_analysis_result,
+                        output_dir,
+                        base_name,
+                    )
 
                     clarification_questions = self._collect_clarification_questions(
                         intelligent_analysis_result
@@ -425,12 +457,6 @@ class CADProcessor:
                         logger.info("语义裁决需要用户澄清，已暂停智能建模")
                         return result
 
-                    # 保存分析结果
-                    self._notify_progress_stage("finalizing", "保存分析结果")
-                    output_dir = output_structure.get('directory', Path('.') / 'output')
-                    base_name = Path(file_path).stem
-                    analyzer.save_results(intelligent_analysis_result, str(output_dir), base_name)
-                    
                     # 显示缓存状态
                     if intelligent_analysis_result.get('_cache_hit'):
                         logger.info("智能分析已从缓存加载")
@@ -504,6 +530,7 @@ class CADProcessor:
                 script_failure_prefix="AI脚本执行失败，统一智能处理不会调用通用建模器兜底",
                 completion_message=f"智能分析处理完成: {Path(file_path).name}",
             )
+            self._merge_output_paths(modeled_result, result.output_paths)
             self._attach_partial_modeling_clarification(
                 modeled_result,
                 result.intelligent_analysis,
@@ -744,6 +771,17 @@ class CADProcessor:
                 clarification_response,
             )
             result.intelligent_analysis = resumed_analysis
+            output_dir = output_structure.get("directory", Path(".") / "output")
+            base_name = Path(
+                result.clarification_context.get("file_path", result.input_file)
+            ).stem
+            self._save_analysis_outputs(
+                analyzer,
+                result,
+                resumed_analysis,
+                output_dir,
+                base_name,
+            )
 
             clarification_questions = self._collect_clarification_questions(resumed_analysis)
             if clarification_questions:
@@ -753,12 +791,6 @@ class CADProcessor:
                 )
                 logger.info("用户澄清后仍存在未决问题，继续等待输入")
                 return result
-
-            output_dir = output_structure.get("directory", Path(".") / "output")
-            base_name = Path(
-                result.clarification_context.get("file_path", result.input_file)
-            ).stem
-            analyzer.save_results(resumed_analysis, str(output_dir), base_name)
 
             modeling_instructions = resumed_analysis.get("modeling_instructions", {}) or {}
             if self._needs_pre_modeling_clarification(modeling_instructions):
@@ -788,6 +820,7 @@ class CADProcessor:
                 script_failure_prefix="用户澄清后的 AI 脚本执行失败",
                 completion_message="用户澄清后的智能建模已完成",
             )
+            self._merge_output_paths(modeled_result, result.output_paths)
             self._attach_partial_modeling_clarification(
                 modeled_result,
                 resumed_analysis,
@@ -813,6 +846,30 @@ class CADProcessor:
             result.mark_failed(f"用户澄清后的局部恢复失败: {error}")
             logger.error(traceback.format_exc())
             return result
+
+    @staticmethod
+    def _save_analysis_outputs(
+        analyzer,
+        result: CADProcessResult,
+        analysis_result: Dict[str, Any],
+        output_dir: Path | str,
+        base_name: str,
+    ) -> None:
+        result_paths = analyzer.save_results(analysis_result, str(output_dir), base_name)
+        if isinstance(result_paths, dict):
+            result.output_paths.update({
+                str(key): str(path)
+                for key, path in result_paths.items()
+                if path
+            })
+
+    @staticmethod
+    def _merge_output_paths(
+        target: CADProcessResult,
+        source_paths: Dict[str, str],
+    ) -> None:
+        for key, path in source_paths.items():
+            target.output_paths.setdefault(key, path)
 
     def _attach_partial_modeling_clarification(
         self,

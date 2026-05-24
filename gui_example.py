@@ -278,7 +278,7 @@ class SettingsDialog(tk.Toplevel):
     def _build_runtime_tab(self, parent):
         parent.columnconfigure(1, weight=1)
 
-        ttk.Label(parent, text="DeepSeek API Key:").grid(row=0, column=0, sticky=tk.W, pady=6)
+        ttk.Label(parent, text="API Key:").grid(row=0, column=0, sticky=tk.W, pady=6)
         api_entry = ttk.Entry(parent, textvariable=self.api_key_var, show="*", width=48)
         api_entry.grid(row=0, column=1, sticky="ew", pady=6)
         ttk.Button(
@@ -296,8 +296,8 @@ class SettingsDialog(tk.Toplevel):
         )
 
         hint = (
-            "FreeCAD 增强包也可放在 tools/freecad/FreeCAD-1.0.x/bin/python.exe；"
-            "该路径会优先于这里配置的系统安装路径。"
+            "如项目内已内置 FreeCAD，将优先使用 tools/freecad/*/bin/python.exe；"
+            "否则使用上方配置的 FreeCAD bin 目录。"
         )
         ttk.Label(parent, text=hint, foreground="gray", wraplength=520).grid(
             row=2, column=0, columnspan=3, sticky=tk.W, pady=(4, 0)
@@ -405,7 +405,7 @@ class CacheManagerPanel(ttk.Frame):
     def _build_ui(self):
         # 缓存条目列表
         list_frame = ttk.LabelFrame(self, text="缓存条目", padding=5)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
+        list_frame.pack(fill=tk.X, expand=False, padx=5, pady=(0, 5))
 
         header_frame = ttk.Frame(list_frame)
         header_frame.pack(fill=tk.X, pady=(0, 5))
@@ -418,7 +418,7 @@ class CacheManagerPanel(ttk.Frame):
             list_frame,
             columns=columns,
             show="headings",
-            height=8,
+            height=5,
             selectmode="extended",
         )
         self.tree.heading("source_file", text="源文件")
@@ -452,8 +452,18 @@ class CacheManagerPanel(ttk.Frame):
 
         row = ttk.Frame(config_frame)
         row.pack(fill=tk.X)
+        row.grid_columnconfigure(1, weight=1)
 
-        ttk.Label(row, text="过期时间 (TTL):").pack(side=tk.LEFT, padx=(0, 5))
+        cache_dir = self.app_config.get('cache', 'dir', default='.cache/analysis')
+        ttk.Label(row, text="缓存目录:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+        ttk.Label(
+            row,
+            text=cache_dir,
+            foreground="gray",
+            anchor=tk.W,
+        ).grid(row=0, column=1, sticky=tk.EW, padx=(0, 14))
+
+        ttk.Label(row, text="过期时间:").grid(row=0, column=2, sticky=tk.E, padx=(0, 5))
         self.ttl_var = tk.StringVar()
         current_ttl = self.app_config.get('cache', 'default_ttl_days', default=7) * 86400
         ttl_combo = ttk.Combobox(row, textvariable=self.ttl_var, state="readonly", width=10)
@@ -464,13 +474,9 @@ class CacheManagerPanel(ttk.Frame):
                 default_idx = i
                 break
         ttl_combo.current(default_idx)
-        ttl_combo.pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(row, text="应用", command=self._apply_ttl).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row, text="立即清理过期", command=self._clear_expired).pack(side=tk.LEFT, padx=10)
-
-        cache_dir = self.app_config.get('cache', 'dir', default='.cache/analysis')
-        ttk.Label(config_frame, text=f"缓存目录: {cache_dir}", foreground="gray").pack(
-            anchor=tk.W, pady=(5, 0))
+        ttl_combo.grid(row=0, column=3, sticky=tk.E, padx=(0, 8))
+        ttk.Button(row, text="应用", command=self._apply_ttl).grid(row=0, column=4, sticky=tk.E, padx=(0, 6))
+        ttk.Button(row, text="清理过期", command=self._clear_expired).grid(row=0, column=5, sticky=tk.E)
 
     def refresh(self):
         if not self._refresh_lock.acquire(blocking=False):
@@ -1555,6 +1561,7 @@ class PendingClarificationPanel(ttk.Frame):
 
     def refresh(self):
         checked_ids = set(self._checked_pending_items)
+        selected_ids = set(self.tree.selection())
         pending_ids = set()
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -1578,7 +1585,11 @@ class PendingClarificationPanel(ttk.Frame):
             )
             if checked:
                 self._checked_pending_items.add(pending_id)
+            if pending_id in selected_ids:
+                self.tree.selection_add(pending_id)
         self._checked_pending_items.intersection_update(pending_ids)
+        for selected_id in selected_ids - pending_ids:
+            self.tree.selection_remove(selected_id)
 
     def _on_tree_click(self, event):
         if self.tree.identify_region(event.x, event.y) != "cell":
@@ -1623,10 +1634,11 @@ class PendingClarificationPanel(ttk.Frame):
         self.tree.selection_remove(self.tree.selection())
 
     def _selected_pending_ids(self) -> List[str]:
-        checked = [item for item in self._checked_pending_items if item in self.tree.get_children()]
+        children = self.tree.get_children()
+        checked = [item for item in children if item in self._checked_pending_items]
         if checked:
             return checked
-        return list(self.tree.selection())
+        return [item for item in self.tree.selection() if item in children]
 
     def _resume_selected(self):
         selected = self._selected_pending_ids()
@@ -1641,6 +1653,8 @@ class PendingClarificationPanel(ttk.Frame):
             messagebox.showwarning("待恢复任务不存在", "该待恢复任务可能已被处理或移除。")
             self.refresh()
             return
+        self._checked_pending_items.discard(selected[0])
+        self.tree.selection_remove(selected[0])
         self.on_resume(item)
 
     def _delete_selected(self):
@@ -1908,13 +1922,13 @@ class ProcessingPanel(ttk.Frame):
                 paths.append(values[3])
         return paths
 
-    def _save_recovery_item(self, result, output_dir: str) -> bool:
+    def _save_recovery_item(self, result, output_dir: str) -> Optional[str]:
         try:
             if not getattr(result, "clarification_questions", None):
-                return False
+                return None
             if not getattr(result, "clarification_context", None):
-                return False
-            self.pending_store.save_recovery(
+                return None
+            item = self.pending_store.save_recovery(
                 result,
                 output_dir=output_dir,
                 extrude_height=float(self.height_var.get()),
@@ -1923,10 +1937,10 @@ class ProcessingPanel(ttk.Frame):
             if self.on_pending_changed:
                 self.after(0, self.on_pending_changed)
             self.after(0, self.pending_panel.refresh)
-            return True
+            return item.get("pending_id")
         except Exception as pending_error:
             logger.warning(f"保存待恢复任务失败: {pending_error}")
-            return False
+            return None
 
     def resume_pending_item(self, item: Dict[str, Any]) -> None:
         if self._processing:
@@ -1955,15 +1969,7 @@ class ProcessingPanel(ttk.Frame):
             )
             self.pipeline.set_output_dir(output_dir)
 
-            result = CADProcessResult(
-                success=False,
-                input_file=input_file,
-                mode=item.get("mode", "intelligent"),
-            )
-            result.mark_needs_clarification(
-                item.get("clarification_questions") or [],
-                item.get("clarification_context"),
-            )
+            result = CADProcessResult.from_pending_item(item)
             self.output_dir_var.set(output_dir)
             self.progress_label.set("等待补充")
             logger.info(f"恢复图纸任务: {Path(input_file).name}")
@@ -2420,8 +2426,11 @@ class ProcessingPanel(ttk.Frame):
             elif getattr(result, "status", None) and getattr(result.status, "value", "") == "needs_clarification":
                 self._awaiting_clarification = True
                 logger.info(f"处理需要澄清 | 耗时: {elapsed:.1f}s | 问题数: {len(result.clarification_questions)}")
+                pending_id = self._save_recovery_item(result, output_dir)
+                if pending_id:
+                    logger.info(f"已保存为待恢复任务: {Path(filepath).name} | {pending_id}")
                 self.after(0, lambda: self.progress_label.set("等待澄清"))
-                self.after(0, lambda r=result, s=start_time: self._show_clarification_dialog(r, s))
+                self.after(0, lambda r=result, s=start_time, p=pending_id: self._show_clarification_dialog(r, s, p))
                 return
             elif getattr(result, "status", None) and getattr(result.status, "value", "") == "stopped_by_user":
                 logger.info(f"用户停止处理 | 耗时: {elapsed:.1f}s | {result.error_message}")
@@ -2575,6 +2584,9 @@ class ProcessingPanel(ttk.Frame):
             self._awaiting_clarification = False
             self.process_btn.configure(state="normal", text="开始处理")
             self.progress_label.set("已取消澄清")
+            if self.on_pending_changed:
+                self.after(0, self.on_pending_changed)
+            self.after(0, self.pending_panel.refresh)
             dialog.destroy()
 
         ttk.Button(action_row, text="继续建模", command=submit).pack(side=tk.RIGHT)
@@ -2844,17 +2856,22 @@ class ProcessingPanel(ttk.Frame):
             elif getattr(resumed, "status", None) and getattr(resumed.status, "value", "") == "needs_clarification":
                 self._awaiting_clarification = True
                 logger.info("澄清后仍需补充信息")
-                if pending_id:
-                    self.pending_store.save_recovery(
+                next_pending_id = pending_id
+                try:
+                    saved_item = self.pending_store.save_recovery(
                         resumed,
                         output_dir=str(self.pipeline.file_manager.base_output_dir),
                         extrude_height=float(self.height_var.get()),
                         mode="intelligent",
                     )
+                    next_pending_id = saved_item.get("pending_id") or next_pending_id
                     if self.on_pending_changed:
                         self.after(0, self.on_pending_changed)
+                    self.after(0, self.pending_panel.refresh)
+                except Exception as pending_error:
+                    logger.warning(f"保存待恢复任务失败: {pending_error}")
                 self.after(0, lambda: self.progress_label.set("等待澄清"))
-                self.after(0, lambda r=resumed, s=start_time, p=pending_id: self._show_clarification_dialog(r, s, p))
+                self.after(0, lambda r=resumed, s=start_time, p=next_pending_id: self._show_clarification_dialog(r, s, p))
                 return
             elif getattr(resumed, "status", None) and getattr(resumed.status, "value", "") == "stopped_by_user":
                 logger.info(f"用户停止处理 | 总耗时: {elapsed:.1f}s | {resumed.error_message}")
@@ -3257,6 +3274,7 @@ class CADApplication(tk.Tk):
         target_dir = str(latest)
 
         if len(subdirs) > 1:
+            confirmed_selection = False
             choice_win = tk.Toplevel(self)
             choice_win.title("选择输出子目录")
             choice_win.geometry("500x350")
@@ -3288,18 +3306,25 @@ class CADApplication(tk.Tk):
             tree.selection_set(tree.get_children()[0])
 
             def on_select():
-                nonlocal target_dir
+                nonlocal target_dir, confirmed_selection
                 sel = tree.selection()
                 if sel:
                     target_dir = str(output_base / tree.item(sel[0], "values")[0])
+                    confirmed_selection = True
+                choice_win.destroy()
+
+            def on_cancel():
                 choice_win.destroy()
 
             btn_frame = ttk.Frame(choice_win)
             btn_frame.pack(pady=10)
             ttk.Button(btn_frame, text="打开选中目录", command=on_select).pack(side=tk.LEFT, padx=5)
-            ttk.Button(btn_frame, text="取消", command=choice_win.destroy).pack(side=tk.LEFT, padx=5)
+            ttk.Button(btn_frame, text="取消", command=on_cancel).pack(side=tk.LEFT, padx=5)
+            choice_win.protocol("WM_DELETE_WINDOW", on_cancel)
 
             self.wait_window(choice_win)
+            if not confirmed_selection:
+                return
 
         if target_dir:
             try:

@@ -538,6 +538,7 @@ class CADParser:
             ctx = RenderContext(self.doc)
             out = MatplotlibBackend(ax)
             self._normalize_dimension_block_texts_for_preview()
+            self._normalize_annotation_colors_for_preview()
             Frontend(ctx, out).draw_layout(self.doc.modelspace(), finalize=True)
             overlay_mode = self.config.get("overlay_dimension_text", "auto")
             if self._is_dimension_overlay_enabled(overlay_mode):
@@ -579,6 +580,13 @@ class CADParser:
         min_height = float(self.config.get("dimension_text_auto_overlay_min_height", 1.5))
         return max(min_height, span * ratio)
 
+    def _dimension_overlay_fontsize(self, height: float, max_text_height: Optional[float]) -> float:
+        base_size = max(6.0, min(12.0, height * 6.0))
+        if max_text_height is None:
+            return base_size
+        target_size = float(self.config.get("dimension_text_auto_overlay_fontsize", 10.0))
+        return max(base_size, target_size)
+
     def _draw_dimension_text_overlays(self, ax, max_text_height: Optional[float] = None) -> None:
         if self.doc is None:
             return
@@ -591,7 +599,7 @@ class CADParser:
                 height = float(text_info.get("height") or 1.0)
                 if max_text_height is not None and height > max_text_height:
                     continue
-                fontsize = max(6.0, min(12.0, height * 6.0))
+                fontsize = self._dimension_overlay_fontsize(height, max_text_height)
                 ax.text(
                     position[0],
                     position[1],
@@ -630,6 +638,46 @@ class CADParser:
                         sub.text = normalized
                     except Exception:
                         pass
+
+    def _normalize_annotation_colors_for_preview(self) -> None:
+        if self.doc is None:
+            return
+        color = int(self.config.get("preview_annotation_color", 7))
+        for layer in self.doc.layers:
+            if self._is_annotation_layer(layer.dxf.name):
+                try:
+                    layer.dxf.color = color
+                except Exception:
+                    pass
+
+        for entity in self.doc.modelspace():
+            if entity.dxftype() in ("TEXT", "MTEXT", "DIMENSION"):
+                self._set_entity_preview_color(entity, color)
+            if entity.dxftype() != "DIMENSION":
+                continue
+            try:
+                block = self.doc.blocks.get(entity.dxf.geometry)
+            except Exception:
+                continue
+            for sub in block:
+                if sub.dxftype() in ("TEXT", "MTEXT", "LINE", "ARC", "SOLID", "POINT"):
+                    self._set_entity_preview_color(sub, color)
+
+    @staticmethod
+    def _is_annotation_layer(layer_name: str) -> bool:
+        normalized = str(layer_name or "").strip().lower()
+        return any(token in normalized for token in ("文本", "标注", "dimension", "dim", "text"))
+
+    @staticmethod
+    def _set_entity_preview_color(entity, color: int) -> None:
+        try:
+            entity.dxf.color = color
+        except Exception:
+            return
+        try:
+            entity.dxf.discard("true_color")
+        except Exception:
+            pass
 
 
 # 向后兼容性：保持 DXFParser 作为 CADParser 的别名

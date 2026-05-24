@@ -54,6 +54,8 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 | `dxf_parser.overlay_dimension_text` | YAML，默认 `auto` | DIMENSION 匿名块文字补绘策略，支持 `auto`、`true`、`false` | 可选 |
 | `dxf_parser.dimension_text_auto_overlay_ratio` | YAML，默认 `0.008` | `auto` 模式下按图幅跨度计算补绘阈值 | 可选 |
 | `dxf_parser.dimension_text_auto_overlay_min_height` | YAML，默认 `1.5` | `auto` 模式下最小补绘阈值 | 可选 |
+| `dxf_parser.dimension_text_auto_overlay_fontsize` | YAML，默认 `10.0` | `auto` 模式下补绘过小尺寸文字时使用的最小字号 | 可选 |
+| `dxf_parser.preview_annotation_color` | YAML，默认 `7` | CAD 预览中统一文字与尺寸标注颜色，避免同一图纸出现粉色/白色混用 | 可选 |
 | `freecad.bin_path` | `${FREECAD_BIN_PATH}` | FreeCAD `bin` 目录 | 建模推荐配置 |
 | `modeling.export_formats` | YAML | 导出格式 | 可选 |
 | `cache.cache_dir` | YAML | 分析缓存目录 | 可选 |

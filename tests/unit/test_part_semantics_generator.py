@@ -105,6 +105,10 @@ class TestPartSemanticGenerator(unittest.TestCase):
         )
 
         self.assertEqual({"type": "json_object"}, calls[0]["response_format"])
+        self.assertEqual(
+            {"thinking": {"type": "disabled"}},
+            calls[0]["extra_body"],
+        )
 
     def test_semantic_prompts_require_chinese_user_facing_fields(self):
         self.assertIn("所有面向用户阅读的自然语言字段必须使用中文", PartSemanticGenerator.SYSTEM_PROMPT)
@@ -112,6 +116,23 @@ class TestPartSemanticGenerator(unittest.TestCase):
         self.assertIn("不要输出英文风险句", PartSemanticGenerator.RETRY_SYSTEM_PROMPT)
         self.assertIn("不得直接升级为圆柱凸台 boss", PartSemanticGenerator.SYSTEM_PROMPT)
         self.assertIn("应优先解释为孔/通孔", PartSemanticGenerator.RETRY_SYSTEM_PROMPT)
+        self.assertIn("不得覆盖 semantic_adjudication", PartSemanticGenerator.SYSTEM_PROMPT)
+        self.assertIn("旧 dimension_bindings 只能作为兼容提示", PartSemanticGenerator.RETRY_SYSTEM_PROMPT)
+
+    def test_normalizes_incomplete_revolve_semantics_to_semantic_reconstruction(self):
+        result = PartSemanticGenerator._normalize_part_semantics({
+            "preferred_modeling_path": "revolve_base_then_add_hex_head",
+            "revolve_modeling_semantics": {
+                "profile": "由直线和圆弧组成的半轮廓",
+                "axis": "中心线",
+                "angle": 360.0,
+            },
+            "uncertainties": [],
+        })
+
+        self.assertIsNone(result["revolve_modeling_semantics"])
+        self.assertEqual("semantic_reconstruction", result["preferred_modeling_path"])
+        self.assertIn("回转语义缺少精确轴线", result["uncertainties"][0])
 
 
 if __name__ == "__main__":

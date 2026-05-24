@@ -407,6 +407,11 @@ class TestBatchProcessor(unittest.TestCase):
             "modeling_instructions": {"freecad_script": "pass"},
         }
         fake_analyzer.continue_with_clarification.return_value = resumed_analysis
+        fake_analyzer.save_results.return_value = {
+            "analysis_full": "out/base_plate_full.json",
+            "freecad_script": "out/base_plate_freecad.py",
+            "analysis_report": "out/base_plate_report.txt",
+        }
 
         with patch(
             "src.intelligent_analyzer.IntelligentEngineeringAnalyzer",
@@ -424,6 +429,66 @@ class TestBatchProcessor(unittest.TestCase):
             "out",
             "base_plate",
         )
+        self.assertEqual(
+            "out/base_plate_full.json",
+            result.output_paths["analysis_full"],
+        )
+
+    def test_intelligent_processing_saves_pending_clarification_outputs(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {
+            "api": {
+                "deepseek": {"api_key": "test-key"},
+            }
+        }
+        processor._analysis_cache_settings = unittest.mock.Mock(return_value={
+            "enabled": False,
+            "cache_dir": ".cache/analysis",
+            "default_ttl": 0,
+        })
+        processor._notify_progress_stage = unittest.mock.Mock()
+        processor._prepare_intelligent_view_context = unittest.mock.Mock(return_value={})
+        parser = unittest.mock.Mock()
+        parser.parse.return_value = {"entities": []}
+        parser.export_json.return_value = None
+        processor._get_parser = unittest.mock.Mock(
+            return_value=unittest.mock.Mock(return_value=parser)
+        )
+
+        pending_analysis = {
+            "semantic_policy": {
+                "clarification_questions": [
+                    {"id": "confirm_depth", "kind": "single_choice"}
+                ]
+            },
+            "clarification_context": {"clarification_stage": "semantic_adjudication"},
+            "modeling_instructions": {},
+        }
+        fake_analyzer = unittest.mock.Mock()
+        fake_analyzer.analyze_full.return_value = pending_analysis
+        fake_analyzer.save_results.return_value = {
+            "analysis_full": "out/drawing_full.json",
+            "analysis_report": "out/drawing_report.txt",
+        }
+
+        with patch(
+            "src.intelligent_analyzer.IntelligentEngineeringAnalyzer",
+            return_value=fake_analyzer,
+        ):
+            result = processor.process_with_intelligent_analysis(
+                "drawing.dxf",
+                {"directory": "out", "geometry": "out/drawing_geometry.json"},
+                10.0,
+            )
+
+        self.assertEqual(PipelineStatus.NEEDS_CLARIFICATION, result.status)
+        fake_analyzer.save_results.assert_called_once_with(
+            pending_analysis,
+            "out",
+            "drawing",
+        )
+        self.assertEqual("out/drawing_full.json", result.output_paths["analysis_full"])
+        self.assertEqual("out/drawing_report.txt", result.output_paths["analysis_report"])
 
     def test_continue_with_clarification_keeps_pre_modeling_failure_pending(self):
         processor = CADProcessor.__new__(CADProcessor)
@@ -473,7 +538,10 @@ class TestBatchProcessor(unittest.TestCase):
 
         fake_analyzer = unittest.mock.Mock()
         fake_analyzer.continue_with_clarification.return_value = resumed_analysis
-        fake_analyzer.save_results.return_value = None
+        fake_analyzer.save_results.return_value = {
+            "analysis_full": "out/base_plate_full.json",
+            "analysis_report": "out/base_plate_report.txt",
+        }
 
         with patch(
             "src.intelligent_analyzer.IntelligentEngineeringAnalyzer",
@@ -492,6 +560,10 @@ class TestBatchProcessor(unittest.TestCase):
             resumed_analysis,
             "out",
             "base_plate",
+        )
+        self.assertEqual(
+            "out/base_plate_full.json",
+            result.output_paths["analysis_full"],
         )
         processor._execute_intelligent_modeling_path.assert_not_called()
 

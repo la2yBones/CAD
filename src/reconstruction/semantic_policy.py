@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 from .clarification_questions import clarification_question, choice_option
 from .clarification_response import ClarificationResponse, USER_MODELING_HINT_KEY
+from .drawing_evidence import DrawingEvidencePackageBuilder
 
 
 class SemanticPolicy:
@@ -42,6 +43,9 @@ class SemanticPolicy:
                 "未发现可用尺寸标注，后续语义生成只能依据图形几何做保守解释。"
             ]
 
+        drawing_evidence_package = DrawingEvidencePackageBuilder().build(
+            reconstruction_context
+        )
         dimension_bindings = self._build_dimension_bindings(
             annotation_dimensions,
             reconstruction_context,
@@ -85,6 +89,7 @@ class SemanticPolicy:
             dimension_plan=dimension_plan,
             feature_constraints=feature_constraints,
             assumptions=assumptions,
+            drawing_evidence_package=drawing_evidence_package,
             user_modeling_hint=user_modeling_hint,
             user_modeling_hint_policy=clarification_response.conflict_policy,
         )
@@ -96,6 +101,7 @@ class SemanticPolicy:
             "feature_constraints": feature_constraints,
             "clarification_questions": clarification_questions,
             "assumptions": assumptions,
+            "drawing_evidence_package": drawing_evidence_package,
             "adjudicated_context": adjudicated_context,
         }
 
@@ -108,6 +114,7 @@ class SemanticPolicy:
         dimension_plan: Dict[str, Any],
         feature_constraints: Dict[str, Any],
         assumptions: List[str],
+        drawing_evidence_package: Dict[str, Any],
         user_modeling_hint: str = "",
         user_modeling_hint_policy: str = "",
     ) -> Dict[str, Any]:
@@ -119,6 +126,7 @@ class SemanticPolicy:
             "dimension_plan": dimension_plan,
             "feature_constraints": feature_constraints,
             "assumptions": assumptions,
+            "drawing_evidence_package": drawing_evidence_package,
         }
         if user_modeling_hint:
             context["semantic_policy"]["user_modeling_hint"] = user_modeling_hint

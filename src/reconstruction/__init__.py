@@ -3,6 +3,8 @@
 """语义重建核心。"""
 
 from .context import ReconstructionContextBuilder
+from .semantic_adjudicator import LLMSemanticAdjudicator, SemanticAdjudicationValidator
+from .semantic_adjudication_view import SemanticAdjudicationView
 from .semantic_policy import SemanticPolicy
 from .semantics import PartSemanticGenerator
 from .semantic_payload import SemanticUnderstandingPayloadBuilder
@@ -14,6 +16,9 @@ from .pipeline import SemanticReconstructionPipeline
 
 __all__ = [
     "ReconstructionContextBuilder",
+    "LLMSemanticAdjudicator",
+    "SemanticAdjudicationValidator",
+    "SemanticAdjudicationView",
     "SemanticPolicy",
     "PartSemanticGenerator",
     "SemanticUnderstandingPayloadBuilder",

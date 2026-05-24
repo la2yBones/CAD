@@ -27,14 +27,17 @@ class PartSemanticGenerator:
 - 基于输入证据做判断，不要把视图旁边的位置关系误判为真实三维附加实体。
 - 对二视图/三视图，先解释为同一零件的正交投影。
 - 必须服从 semantic_policy.dimension_source，并把同一值原样写入 dimension_source；不得在语义生成阶段重新裁决尺寸来源。
-- 优先使用 semantic_policy.dimension_bindings 中已经完成的尺寸语义绑定；对 unresolved_linear 不得擅自命名为总长、对边、对角、法兰直径或孔径。
-- key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions 中的值和角色；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
-- semantic_policy.dimension_plan.construction_dimensions 可作为组合尺寸证据、局部分段尺寸、局部特征尺寸或重复特征尺寸，也可作为建模构造步骤的尺寸；如果进入 key_dimensions，名称必须保留为 head_length、thread_length、fillet_radius 等具体构造含义，不能单独命名为总长、深度、对边、对角、法兰直径或孔径。
+- 若 semantic_policy.semantic_adjudication 存在且 status 不是 failed，必须优先服从其中的 view_roles、dimension_roles、feature_roles 和 derived_dimensions；这些裁决是基于图纸证据包的最新语义判断。
+- 在 semantic_policy.semantic_adjudication 成功时，旧 dimension_bindings / dimension_plan 只能作为兼容背景，不得覆盖 semantic_adjudication，也不得补强 semantic_adjudication；不得把旧 unresolved_linear 重新命名为总长、深度、对边、对角、法兰直径或孔径。
+- 只有 semantic_policy.semantic_adjudication 缺失或 status=failed 时，才允许优先使用 semantic_policy.dimension_bindings 中已经完成的尺寸语义绑定；对 unresolved_linear 不得擅自命名为总长、对边、对角、法兰直径或孔径。
+- 只有 semantic_policy.semantic_adjudication 缺失或 status=failed 时，key_dimensions 才优先使用 semantic_policy.dimension_plan.allowed_dimensions 中的值和角色；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
+- semantic_policy.dimension_plan.construction_dimensions 仅作为兼容兜底下的组合尺寸证据、局部分段尺寸、局部特征尺寸或重复特征尺寸；如果进入 key_dimensions，名称必须保留为 head_length、thread_length、fillet_radius 等具体构造含义，不能单独命名为总长、深度、对边、对角、法兰直径或孔径。
 - semantic_policy.dimension_plan.unresolved_dimensions 不得进入 key_dimensions；若建模需要这些值，必须写入 uncertainties。
-- 若 dimension_source=annotation，key_dimensions 只能来自 dimensions 中已有标注值、semantic_policy.dimension_plan.allowed_dimensions 中已裁决的标注派生值，或 construction_dimensions 中已裁决且保留具体构造语义的值；不得混入从实体坐标反算出的图形测量值。
+- 若 dimension_source=annotation，key_dimensions 只能来自 semantic_adjudication 裁决的标注值/派生值；当 semantic_adjudication 缺失或失败时，才退回 dimensions 中已有标注值、semantic_policy.dimension_plan.allowed_dimensions 中已裁决的标注派生值，或 construction_dimensions 中已裁决且保留具体构造语义的值；不得混入从实体坐标反算出的图形测量值。
+- geometry_evidence 和 drawing_evidence_package 中的几何测量只能作为形状证据；当 dimension_source=annotation 时，不得把圆半径、线段长度、bbox 差值或坐标反算值写入 key_dimensions。
 - 必须遵守 semantic_policy.feature_constraints；隐藏线、同心圆或孤立投影不能单独升级为孔、槽、切除。
-- 若 dimension_plan 中存在 chamfer（如 1x45°），只能解释为外部尖角削除；不得解释为内陷槽、凹坑、孔口沉槽或向实体内部新增的负形特征。
-- 若 dimension_plan 中存在 radius（如 R15），必须根据标注位置解释为圆弧/圆角特征。对六角头螺栓头部侧面的 R15，应表达为绕螺栓轴线形成的圆弧面/承面，而不是简单忽略为普通风险。
+- 若 semantic_adjudication 或兼容 dimension_plan 中存在 chamfer（如 1x45°），只能解释为外部尖角削除；不得解释为内陷槽、凹坑、孔口沉槽或向实体内部新增的负形特征。
+- 若 semantic_adjudication 或兼容 dimension_plan 中存在 radius（如 R15），必须根据标注位置解释为圆弧/圆角特征。对六角头螺栓头部侧面的 R15，应表达为绕螺栓轴线形成的圆弧面/承面，而不是简单忽略为普通风险。
 - 对二视图/三视图中的中心圆、同心圆或直径标注，必须结合外轮廓和侧向视图判断。若圆位于六边形、正多边形、法兰或板件中心，且侧向视图没有明确凸出高度/轴向伸出证据，应优先解释为孔/通孔等 subtractive_features，不得直接升级为圆柱凸台 boss。
 - 若确实判断为凸台，必须能说明至少两个视图或标注共同支持其凸出方向、高度/深度和位置；否则写入 uncertainties 并等待澄清，不要生成 boss 语义。
 - 必须保留 semantic_policy.assumptions 施加的限制；若仍有未决事项，写入 uncertainties，不要绕过裁决继续硬猜。
@@ -104,8 +107,10 @@ class PartSemanticGenerator:
 uncertainties/warnings 用短句。
 所有面向用户阅读的自然语言字段必须使用中文；不要输出英文风险句。
 必须服从 semantic_policy.dimension_source，并把同一值原样写入 dimension_source。
-优先使用 semantic_policy.dimension_bindings 中已完成的绑定；不得重命名 unresolved_linear。
-key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions；allowed_dimensions 可包含由标注尺寸链组合得到的派生值。construction_dimensions 可用于建模构造步骤，必要时可进入 key_dimensions，但必须命名为具体构造语义，不能直接命名为总长/深度等关键语义；unresolved 尺寸不能进入 key_dimensions。
+若 semantic_policy.semantic_adjudication 存在且 status 不是 failed，必须优先服从其中的视图、尺寸和特征角色裁决，旧 dimension_bindings 只能作为兼容提示，旧 dimension_plan 只能作为兼容背景；不得覆盖 semantic_adjudication，也不得补强 semantic_adjudication。
+仅在 semantic_policy.semantic_adjudication 缺失或 status=failed 时，才优先使用 semantic_policy.dimension_bindings 中已完成的绑定；不得重命名 unresolved_linear。
+key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值；仅在 semantic_adjudication 缺失或失败时，才退回 semantic_policy.dimension_plan.allowed_dimensions。construction_dimensions 可用于建模构造步骤，必要时可进入 key_dimensions，但必须命名为具体构造语义，不能直接命名为总长/深度等关键语义；unresolved 尺寸不能进入 key_dimensions。
+当 dimension_source=annotation 时，geometry_evidence 和 drawing_evidence_package 里的几何数值只能辅助判断形状，不能作为 key_dimensions 的数值来源。
 必须遵守 semantic_policy.feature_constraints，不得把隐藏线、同心圆或孤立投影单独升级为孔、槽、切除。
 若存在 chamfer，只能表示外部尖角削除，不得输出内陷槽/凹坑语义。
 若存在 radius/R15，应保留为圆弧面或圆角语义；六角头螺栓头部 R15 表示绕轴线的圆弧面/承面。
@@ -153,7 +158,7 @@ key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions；
             reconstruction_context: 完整重建上下文。
             retry_context: 精简上下文，第一次被截断后用于自动重试。
         """
-        result = self._generate_once(reconstruction_context, thinking=True, file_path=file_path)
+        result = self._generate_once(reconstruction_context, thinking=False, file_path=file_path)
         if isinstance(result, dict) and result.get("finish_reason") == "length" and retry_context:
             logger.warning(
                 "语义生成响应被截断 (finish_reason=length)，使用极简 schema 重试"
@@ -188,6 +193,8 @@ key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions；
             request_payload["extra_body"] = {
                 "thinking": {"type": "enabled", "reasoning_effort": "medium"}
             }
+        else:
+            request_payload["extra_body"] = {"thinking": {"type": "disabled"}}
 
         finish_reason = ""
         call_span = self.telemetry_store.start_call(
@@ -212,7 +219,7 @@ key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions；
                 return {"confidence": 0.0, "finish_reason": "length",
                         "error": str(error)}
 
-            result = self._extract_json(content)
+            result = self._normalize_part_semantics(self._extract_json(content))
             if use_retry:
                 result.setdefault("evidence", [])
                 result.setdefault("candidate_interpretations", [])
@@ -266,7 +273,7 @@ key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions；
             f"冲突策略: {conflict_policy}",
             (
                 "必须遵守：补充提示用于帮助解释建模意图、细节优先级和可接受的跳过范围；"
-                "如果它与 CAD 解析事实、标注尺寸、semantic_policy.dimension_plan、主体方向或主体外形冲突，"
+                "如果它与 CAD 解析事实、标注尺寸、semantic_policy.semantic_adjudication、主体方向或主体外形冲突，"
                 "必须以图纸事实和已裁决语义为准。"
             ),
             (
@@ -305,6 +312,65 @@ key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions；
             "uncertainties": ["语义生成失败"],
             "warnings": [error],
         }
+
+    @staticmethod
+    def _normalize_part_semantics(result: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(result, dict):
+            return result
+
+        path_aliases = {
+            "旋转建模": "revolve",
+            "回转建模": "revolve",
+            "旋转": "revolve",
+            "回转": "revolve",
+            "平面拉伸": "planar_extrude",
+            "拉伸": "planar_extrude",
+            "语义重建": "semantic_reconstruction",
+            "通用语义重建": "semantic_reconstruction",
+        }
+        preferred_path = result.get("preferred_modeling_path")
+        if isinstance(preferred_path, str):
+            normalized_path = (
+                path_aliases.get(preferred_path.strip())
+                or PartSemanticGenerator._normalize_modeling_path_token(preferred_path)
+            )
+            if normalized_path:
+                result["preferred_modeling_path"] = normalized_path
+
+        revolve = result.get("revolve_modeling_semantics")
+        if not isinstance(revolve, dict):
+            return result
+
+        required_revolve_fields = {
+            "axis_point",
+            "axis_direction",
+            "profile_points",
+            "angle_degrees",
+            "uncertainties",
+        }
+        if required_revolve_fields.issubset(revolve):
+            return result
+
+        result["revolve_modeling_semantics"] = None
+        if result.get("preferred_modeling_path") == "revolve":
+            result["preferred_modeling_path"] = "semantic_reconstruction"
+        uncertainties = result.setdefault("uncertainties", [])
+        if isinstance(uncertainties, list):
+            uncertainties.append(
+                "回转语义缺少精确轴线或轮廓点，已降级为语义重建路径处理"
+            )
+        return result
+
+    @staticmethod
+    def _normalize_modeling_path_token(value: str) -> Optional[str]:
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if "revolve" in normalized or "回转" in normalized or "旋转" in normalized:
+            return "revolve"
+        if "planar" in normalized or "extrude" in normalized or "拉伸" in normalized:
+            return "planar_extrude"
+        if "semantic" in normalized or "语义" in normalized:
+            return "semantic_reconstruction"
+        return None
 
     @staticmethod
     def _extract_json(content: str) -> Dict[str, Any]:

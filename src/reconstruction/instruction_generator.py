@@ -61,21 +61,23 @@ class FreeCADInstructionGenerator:
 - 主视图中出现同心圆时，必须结合侧视图隐藏线/尺寸判断其含义；不得默认把所有同心圆都切成贯通孔。若证据不足，应优先生成单一通孔并在 warnings 中说明可能存在沉孔或台阶孔。
 - 单个步骤中连续 .fuse() 或 .cut() 不得超过 2 次；若需要更多布尔操作，必须拆分为多个中间变量和多个 try/except 步骤。
 - 若需自定义截面，仅允许用直线或圆弧构造 Part.Wire，再通过 Part.Face 和 Shape.extrude() 生成实体；若需要轴对称圆弧面，可用 Part.ArcOfCircle 构造轮廓并通过 Shape.revolve() 绕轴线生成回转曲面或回转切除体。
-- 使用 Part.LineSegment 或 Part.ArcOfCircle 构造线框时，传入 Part.Wire 的每一项必须是 Shape；应先调用 `.toShape()`，例如 `edge = Part.LineSegment(...).toShape()`。
+- 使用 Part.LineSegment 或 Part.ArcOfCircle 构造线框时，传入 Part.Wire 的每一项必须是 Shape 或 Edge/Shape。为兼容不同 FreeCAD 版本，脚本中必须先定义 `as_edge(obj): return obj.toShape() if hasattr(obj, "toShape") else obj`，然后写 `edge = as_edge(Part.LineSegment(...))` 或 `edge = as_edge(Part.ArcOfCircle(...))`；不得直接链式写 `.toShape()` 后假设所有版本返回同一类型。
 - `Part.ArcOfCircle` 只能写 3 个位置参数：`Part.ArcOfCircle(Part.Circle(center, FreeCAD.Vector(0,0,1), radius), start_angle, end_angle).toShape()` 或 `Part.ArcOfCircle(p1, p2, p3).toShape()`；不得写成 `Part.ArcOfCircle(center, radius, start_angle, end_angle)`。
 - 中间变量若在后续步骤复用，必须在 try/except 外先给出默认值，避免前一步失败后后续引用未定义变量。
 - 若轮廓点写成 `(x, y, 0)`，则轮廓位于 XY 平面，拉伸方向必须沿 Z 轴；若需要沿 Y 轴拉伸，则轮廓点必须写成 `(x, 0, z)`，确保拉伸方向垂直于轮廓平面。
 - 对板件、法兰、底座这类正视图轮廓，默认优先在 XY 平面构造轮廓，再按深度沿 Z 轴拉伸，除非图纸语义明确要求其他坐标系。
-- 若输入包含 semantic_policy.dimension_plan，key_dimensions 可使用 allowed_dimensions 中已裁决的主体关键尺寸；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
-- construction_dimensions 可作为建模构造步骤的局部分段、局部特征或重复特征尺寸；若写入 key_dimensions，必须保留具体构造语义，不得单独当成总长、深度、对边、对角、法兰直径或孔径。
+- 若 dimensions.semantic_adjudication 存在且 status 不是 failed，必须优先使用 dimensions.modeling_dimensions 作为已裁决建模尺寸池；dimension_roles、feature_roles 和 derived_dimensions 只作为证据解释和特征定位参考，不要再回头引用旧 dimension_plan 或本地猜测角色。
+- dimensions.modeling_dimensions 由本地 SemanticAdjudicationView 从语义裁决结果导出；其中每项都必须保留原始 evidence_ids/source，不得新增未裁决尺寸值。
+- 只有 semantic_adjudication 缺失或 status=failed 时，才允许把 dimensions.allowed_dimensions / construction_dimensions / unresolved_dimensions 当作兼容兜底。
+- allowed_dimensions 可作为已裁决的主体关键尺寸；construction_dimensions 只可作为局部分段、局部特征或重复特征尺寸，写入 key_dimensions 时必须保留具体构造语义，不得单独当成总长、深度、对边、对角、法兰直径或孔径。
 - unresolved_dimensions 不得用于创建关键几何；如果缺少这些尺寸会影响建模，必须在 warnings 中说明并保守降级。
 - `1x45°`、`2x45°` 等倒角标注表示外部尖角被削掉形成斜面；实现时只能去除外角材料，不得把它建成向实体内部凹陷的槽、坑、沉孔或内切缺口。
-- 若 semantic_policy.dimension_plan.allowed_dimensions 或 part_semantics 中存在 chamfer，且语义里已经定位到外部边，不得因为“FreeCAD 基本 API 限制”直接跳过。必须至少尝试用白名单 API 建出可见斜面。
+- 若 dimensions.semantic_adjudication、dimensions.allowed_dimensions 或 features.key_dimensions 中存在 chamfer，且语义里已经定位到外部边，不得因为“FreeCAD 基本 API 限制”直接跳过。必须至少尝试用白名单 API 建出可见斜面。
 - 可接受的倒角实现方式：对圆柱端部使用 `Part.makeCone(大半径, 小半径, 倒角轴向长度, FreeCAD.Vector(...), FreeCAD.Vector(...))` 构造 45° 截锥段；对六角头外端倒角，优先用较短的端部过渡体表达外轮廓收缩，必要时用 `Part.Wire`、`Part.Face`、`Shape.extrude` 和 `Shape.cut` 构造外角切除体。
 - 对六角头螺栓这类“六角头 + 圆柱杆”零件，若存在 `1x45°`，应在头部外端或头部-杆过渡外角处生成可见倒角斜面；不能在 warnings 中写“倒角未实现”后继续输出成功模型。
 - 若无法可靠定位倒角所在的外部边，必须在 warnings 中说明并跳过该倒角；不得为了表现倒角而在实体表面挖内陷特征。
 - `R15`、`R2` 等是圆角/圆弧过渡，不是 45° 倒角。对于六角头螺栓主视图左侧头部的 R15 标注，应解释为绕螺栓轴线形成的圆弧面/承面；必须尝试以轴线为中心、半径 15mm 创建圆弧轮廓，并用 Shape.revolve() 或等价回转切除生成该曲面。
-- 如果 part_semantics 或 semantic_policy.dimension_plan.allowed_dimensions 中存在 radius/R15，且语义已说明它属于螺栓头部圆弧面/承面，不得在 warnings 中写“R15未实现/圆角未实现”后输出成功模型。
+- 如果 dimensions.semantic_adjudication、dimensions.allowed_dimensions 或 features.key_dimensions 中存在 radius/R15，且语义已说明它属于螺栓头部圆弧面/承面，不得在 warnings 中写“R15未实现/圆角未实现”后输出成功模型。
 - 不得使用高级拓扑修改、网格建模、草图约束或不在白名单内的 API。
 - 每个建模步骤必须用 try/except 包裹。
 - except 中不得静默忽略错误，必须将错误信息追加到 runtime_warnings 列表。
@@ -175,12 +177,12 @@ JSON 必须包含以下字段：
 
         try:
             max_tokens = self.config.get("max_tokens", 8000)
-            use_thinking = self.config.get("thinking", True)
+            use_thinking = self.config.get("modeling_json_thinking", False)
 
             if use_thinking:
                 max_tokens = max(max_tokens, 16000)
 
-            extra_body = None
+            extra_body = {"thinking": {"type": "disabled"}}
             if use_thinking:
                 extra_body = {"thinking": {"type": "enabled", "reasoning_effort": self.config.get("reasoning_effort", "max")}}
 

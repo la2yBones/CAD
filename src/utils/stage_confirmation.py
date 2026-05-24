@@ -93,6 +93,7 @@ class StageConfirmationStopped(RuntimeError):
 
 STAGE_DISPLAY_NAMES = {
     "view_analysis": "视图语义校正",
+    "semantic_adjudication": "图纸语义裁决",
     "semantic_reconstruction": "零件语义重建",
 }
 

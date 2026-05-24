@@ -101,3 +101,124 @@ def test_semantic_understanding_payload_uses_preserved_geometry_summary_without_
     assert dimension["value"] == 5.0
     assert dimension["repeat_count"] == 3
     assert dimension["diameter_value"] == 5.0
+
+
+def test_semantic_understanding_payload_prefers_semantic_adjudication_over_legacy_bindings():
+    payload = SemanticUnderstandingPayloadBuilder().build({
+        "dimensions": [{"text": "16", "value": 16.0, "type": "线性"}],
+        "semantic_policy": {
+            "dimension_source": "annotation",
+            "dimension_bindings": [
+                {
+                    "text": "16",
+                    "value": 16.0,
+                    "semantic_role": "profile_length",
+                }
+            ],
+            "dimension_plan": {
+                "allowed_dimensions": [
+                    {"text": "16", "value": 16.0, "role": "profile_length"}
+                ]
+            },
+            "semantic_adjudication": {
+                "dimension_roles": [
+                    {
+                        "dimension_id": "D1",
+                        "role": "extrusion_depth",
+                        "evidence_ids": ["D1"],
+                    }
+                ],
+                "view_roles": [],
+                "feature_roles": [],
+                "derived_dimensions": [],
+                "clarification_questions": [],
+                "uncertainties": [],
+                "warnings": [],
+            },
+        },
+    })
+
+    assert payload["dimension_evidence"]["semantic_adjudication"]["dimension_roles"][0]["role"] == "extrusion_depth"
+    assert "dimension_bindings" not in payload["dimension_evidence"]
+    assert "dimension_plan" not in payload["dimension_evidence"]
+    assert "dimension_bindings" not in payload["semantic_policy"]
+    assert "dimension_plan" not in payload["semantic_policy"]
+    assert "profile_length" not in repr(payload)
+
+
+def test_semantic_understanding_payload_omits_geometry_measurements_after_adjudication():
+    payload = SemanticUnderstandingPayloadBuilder().build({
+        "drawing": {"entity_count": 1, "entity_type_count": {"CIRCLE": 1}},
+        "source_entities": [
+            {"type": "CIRCLE", "center": [0, 0], "radius": 42.0},
+        ],
+        "semantic_policy": {
+            "dimension_source": "annotation",
+            "drawing_evidence_package": {
+                "package_version": "drawing_evidence_package_v1",
+                "dimension_candidates": [
+                    {"id": "D1", "text": "21", "value": 21.0}
+                ],
+                "geometry_candidates": [
+                    {
+                        "id": "G1",
+                        "candidate_kind": "circle",
+                        "source_entity_type": "CIRCLE",
+                        "radius": 42.0,
+                        "bbox": [-42.0, -42.0, 42.0, 42.0],
+                    }
+                ],
+            },
+            "semantic_adjudication": {
+                "dimension_roles": [
+                    {
+                        "dimension_id": "D1",
+                        "role": "extrusion_depth",
+                        "evidence_ids": ["D1"],
+                    }
+                ],
+                "view_roles": [],
+                "feature_roles": [],
+                "derived_dimensions": [],
+                "clarification_questions": [],
+                "uncertainties": [],
+                "warnings": [],
+            },
+        },
+    })
+
+    assert "radius_values" not in payload["geometry_evidence"]["circle_summary"]
+    assert "radius_range" not in payload["geometry_evidence"]["circle_summary"]
+    assert "radius" not in payload["drawing_evidence_package"]["geometry_candidates"][0]
+    assert "bbox" not in payload["drawing_evidence_package"]["geometry_candidates"][0]
+    assert "42" not in repr(payload)
+
+
+def test_semantic_understanding_payload_keeps_legacy_bindings_when_adjudication_failed():
+    payload = SemanticUnderstandingPayloadBuilder().build({
+        "dimensions": [{"text": "16", "value": 16.0, "type": "线性"}],
+        "semantic_policy": {
+            "dimension_source": "annotation",
+            "dimension_bindings": [
+                {
+                    "text": "16",
+                    "value": 16.0,
+                    "semantic_role": "profile_length",
+                }
+            ],
+            "dimension_plan": {
+                "allowed_dimensions": [
+                    {"text": "16", "value": 16.0, "role": "profile_length"}
+                ]
+            },
+            "semantic_adjudication": {
+                "status": "failed",
+                "dimension_roles": [],
+                "warnings": ["连接失败"],
+            },
+        },
+    })
+
+    assert payload["dimension_evidence"]["dimension_bindings"][0]["semantic_role"] == "profile_length"
+    assert payload["dimension_evidence"]["dimension_plan"]["allowed_dimensions"][0]["role"] == "profile_length"
+    assert payload["semantic_policy"]["semantic_adjudication"]["status"] == "failed"

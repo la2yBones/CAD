@@ -153,7 +153,207 @@ class TestPartSemanticsValidator(unittest.TestCase):
         )
 
         self.assertFalse(valid)
-        self.assertTrue(any("dimension_plan.allowed_dimensions" in error for error in errors))
+        self.assertTrue(any("semantic_adjudication" in error for error in errors))
+
+    def test_part_semantics_validator_accepts_semantic_adjudication_dimension_roles(self):
+        valid, errors = PartSemanticsValidator().validate(
+            {
+                "part_type": "plate",
+                "confidence": 0.9,
+                "summary": "",
+                "evidence": [],
+                "candidate_interpretations": [],
+                "coordinate_system": {},
+                "dimension_source": "annotation",
+                "base_features": [],
+                "additive_features": [],
+                "subtractive_features": [],
+                "planar_modeling_semantics": {
+                    "profile": None,
+                    "extrusion_direction": "Z",
+                    "extrusion_depth": 16.0,
+                    "cut_features": [],
+                    "dimension_bindings": [],
+                    "uncertainties": [],
+                },
+                "revolve_modeling_semantics": None,
+                "preferred_modeling_path": None,
+                "key_dimensions": [
+                    {"name": "extrusion_depth", "value": 16.0, "unit": "mm"},
+                ],
+                "uncertainties": [],
+                "warnings": [],
+            },
+            {
+                "dimensions": [{"text": "16", "value": 16.0}],
+                "semantic_policy": {
+                    "dimension_source": "annotation",
+                    "dimension_plan": {
+                        "allowed_dimensions": [],
+                        "unresolved_dimensions": [
+                            {"text": "16", "value": 16.0, "role": "unresolved_linear"}
+                        ],
+                    },
+                    "drawing_evidence_package": {
+                        "dimension_candidates": [
+                            {"id": "D1", "text": "16", "value": 16.0}
+                        ],
+                        "derived_dimension_candidates": [],
+                    },
+                    "semantic_adjudication": {
+                        "dimension_roles": [
+                            {
+                                "dimension_id": "D1",
+                                "role": "extrusion_depth",
+                                "confidence": 0.9,
+                                "evidence_ids": ["D1"],
+                            }
+                        ],
+                        "derived_dimensions": [],
+                    },
+                },
+            },
+        )
+
+        self.assertTrue(valid)
+        self.assertEqual([], errors)
+
+    def test_part_semantics_validator_ignores_legacy_plan_when_adjudication_succeeds(self):
+        valid, errors = PartSemanticsValidator().validate(
+            {
+                "part_type": "plate",
+                "confidence": 0.9,
+                "summary": "",
+                "evidence": [],
+                "candidate_interpretations": [],
+                "coordinate_system": {},
+                "dimension_source": "annotation",
+                "base_features": [],
+                "additive_features": [],
+                "subtractive_features": [],
+                "planar_modeling_semantics": {
+                    "profile": None,
+                    "extrusion_direction": "Z",
+                    "extrusion_depth": 99.0,
+                    "cut_features": [],
+                    "dimension_bindings": [],
+                    "uncertainties": [],
+                },
+                "revolve_modeling_semantics": None,
+                "preferred_modeling_path": None,
+                "key_dimensions": [
+                    {"name": "extrusion_depth", "value": 99.0, "unit": "mm"},
+                ],
+                "uncertainties": [],
+                "warnings": [],
+            },
+            {
+                "dimensions": [
+                    {"text": "16", "value": 16.0},
+                    {"text": "99", "value": 99.0},
+                ],
+                "semantic_policy": {
+                    "dimension_source": "annotation",
+                    "dimension_plan": {
+                        "allowed_dimensions": [
+                            {"text": "99", "value": 99.0, "role": "extrusion_depth"}
+                        ],
+                    },
+                    "drawing_evidence_package": {
+                        "dimension_candidates": [
+                            {"id": "D1", "text": "16", "value": 16.0},
+                        ],
+                        "derived_dimension_candidates": [],
+                    },
+                    "semantic_adjudication": {
+                        "status": "completed",
+                        "dimension_roles": [
+                            {
+                                "dimension_id": "D1",
+                                "role": "extrusion_depth",
+                                "confidence": 0.9,
+                                "evidence_ids": ["D1"],
+                            }
+                        ],
+                        "derived_dimensions": [],
+                    },
+                },
+            },
+        )
+
+        self.assertFalse(valid)
+        self.assertTrue(any("semantic_adjudication" in error for error in errors))
+
+    def test_part_semantics_validator_accepts_semantic_adjudication_derived_dimensions(self):
+        valid, errors = PartSemanticsValidator().validate(
+            {
+                "part_type": "plate",
+                "confidence": 0.9,
+                "summary": "",
+                "evidence": [],
+                "candidate_interpretations": [],
+                "coordinate_system": {},
+                "dimension_source": "annotation",
+                "base_features": [],
+                "additive_features": [],
+                "subtractive_features": [],
+                "planar_modeling_semantics": {
+                    "profile": None,
+                    "extrusion_direction": "Z",
+                    "extrusion_depth": 16.0,
+                    "cut_features": [],
+                    "dimension_bindings": [],
+                    "uncertainties": [],
+                },
+                "revolve_modeling_semantics": None,
+                "preferred_modeling_path": None,
+                "key_dimensions": [
+                    {"name": "feature_height", "value": 4.0, "unit": "mm"},
+                ],
+                "uncertainties": [],
+                "warnings": [],
+            },
+            {
+                "dimensions": [
+                    {"text": "16", "value": 16.0},
+                    {"text": "20", "value": 20.0},
+                ],
+                "semantic_policy": {
+                    "dimension_source": "annotation",
+                    "dimension_plan": {
+                        "allowed_dimensions": [],
+                        "construction_dimensions": [],
+                    },
+                    "drawing_evidence_package": {
+                        "dimension_candidates": [
+                            {"id": "D1", "text": "16", "value": 16.0},
+                            {"id": "D2", "text": "20", "value": 20.0},
+                        ],
+                        "derived_dimension_candidates": [
+                            {
+                                "id": "DD1",
+                                "value": 4.0,
+                                "formula": "D2 - D1",
+                                "source_dimension_ids": ["D2", "D1"],
+                            }
+                        ],
+                    },
+                    "semantic_adjudication": {
+                        "dimension_roles": [],
+                        "derived_dimensions": [
+                            {
+                                "source_derived_dimension_id": "DD1",
+                                "role": "feature_height",
+                                "value": 4.0,
+                            }
+                        ],
+                    },
+                },
+            },
+        )
+
+        self.assertTrue(valid)
+        self.assertEqual([], errors)
 
     def test_part_semantics_validator_allows_adjudicated_composite_dimensions(self):
         valid, errors = PartSemanticsValidator().validate(

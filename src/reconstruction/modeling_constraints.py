@@ -8,6 +8,7 @@ import json
 from typing import Any, Dict, Optional
 
 from src.utils.result import Result
+from .semantic_adjudication_view import SemanticAdjudicationView
 
 
 class ModelingConstraints:
@@ -36,14 +37,15 @@ class ModelingConstraints:
 - Part.Wire
 - Part.Face
 说明：这是手动画直线、圆、圆弧、R角轮廓、回转承面轮廓和闭合截面的核心积木。
-ArcOfCircle 固定模板：只能使用 3 个位置参数，例如 `arc_edge = Part.ArcOfCircle(Part.Circle(center, FreeCAD.Vector(0, 0, 1), radius), start_angle, end_angle).toShape()`，或使用三点式 `Part.ArcOfCircle(p1, p2, p3).toShape()`。不要写 `Part.ArcOfCircle(center, radius, start_angle, end_angle)`。
+ArcOfCircle 固定模板：只能使用 3 个位置参数，例如 `arc_edge = as_edge(Part.ArcOfCircle(Part.Circle(center, FreeCAD.Vector(0, 0, 1), radius), start_angle, end_angle))`，或使用三点式 `as_edge(Part.ArcOfCircle(p1, p2, p3))`。不要写 `Part.ArcOfCircle(center, radius, start_angle, end_angle)`。
+Edge 兼容要求：脚本中若使用 Part.LineSegment 或 Part.ArcOfCircle 构造线框，应定义 `as_edge(obj): return obj.toShape() if hasattr(obj, "toShape") else obj`，并用 `as_edge(...)` 统一转换；不得直接假设返回对象一定拥有 `.toShape()`。
 
 4. 形体生成与变换
 - Shape.extrude
 - Shape.revolve
 说明：使用 Shape.revolve 替代自动圆角/球面/倒角函数，生成轴对称圆弧面或回转切除体。
-圆角要求：若 modeling_task_payload.dimensions.allowed_dimensions 或 construction_dimensions 中存在 role=radius 的圆角/圆弧标注，尤其是 R=4x1.5 这类 repeat_count+radius_value 标注，不得因为 makeFillet 被禁用就直接跳过。应优先使用图纸中 ARC 摘要、Part.ArcOfCircle、Part.Wire、Part.Face、Shape.revolve 或显式轮廓构造来表达该圆角；只有缺少半径、位置和构造方向时，才允许记录为 skipped_features。
-重复孔要求：若 construction_dimensions 中存在 repeated_diameter 或 repeated_thread 标注，例如 3xφ5、3×Φ5、3-φ5、3-M5，repeat_count 表示孔数量，diameter_value/thread_value 表示孔径或螺纹规格值；不得把前面的数量当作孔径，也不得只生成一个孔后忽略数量。
+圆角要求：若 modeling_task_payload.dimensions.semantic_adjudication 中存在 role=radius 的圆角/圆弧裁决，或兼容兜底字段 allowed_dimensions / construction_dimensions 中存在 role=radius，尤其是 R=4x1.5 这类 repeat_count+radius_value 标注，不得因为 makeFillet 被禁用就直接跳过。应优先使用图纸中 ARC 摘要、Part.ArcOfCircle、Part.Wire、Part.Face、Shape.revolve 或显式轮廓构造来表达该圆角；只有缺少半径、位置和构造方向时，才允许记录为 skipped_features。
+重复孔要求：若 modeling_task_payload.dimensions.semantic_adjudication 中存在 repeated_diameter 或 repeated_thread 裁决，或兼容兜底字段 construction_dimensions 中存在对应标注，例如 3xφ5、3×Φ5、3-φ5、3-M5，repeat_count 表示孔数量，diameter_value/thread_value 表示孔径或螺纹规格值；不得把前面的数量当作孔径，也不得只生成一个孔后忽略数量。
 
 5. 基础布尔
 - Shape.fuse
@@ -269,7 +271,13 @@ ArcOfCircle 固定模板：只能使用 3 个位置参数，例如 `arc_edge = P
         reconstruction_context: Optional[Dict[str, Any]],
         part_semantics: Optional[Dict[str, Any]],
     ) -> bool:
-        policy_plan = (reconstruction_context or {}).get("semantic_policy", {}).get("dimension_plan", {})
+        semantic_policy = (reconstruction_context or {}).get("semantic_policy", {})
+        if self._semantic_adjudication_has_role(semantic_policy, "chamfer"):
+            return True
+        if self._semantic_adjudication_succeeded(semantic_policy):
+            semantic_text = json.dumps(part_semantics or {}, ensure_ascii=False, default=str)
+            return "chamfer" in semantic_text.lower() or "倒角" in semantic_text
+        policy_plan = semantic_policy.get("dimension_plan", {})
         for item in policy_plan.get("allowed_dimensions", []) or []:
             if item.get("role") == "chamfer":
                 return True
@@ -281,12 +289,26 @@ ArcOfCircle 固定模板：只能使用 3 个位置参数，例如 `arc_edge = P
         reconstruction_context: Optional[Dict[str, Any]],
         part_semantics: Optional[Dict[str, Any]],
     ) -> bool:
-        policy_plan = (reconstruction_context or {}).get("semantic_policy", {}).get("dimension_plan", {})
+        semantic_policy = (reconstruction_context or {}).get("semantic_policy", {})
+        if self._semantic_adjudication_has_role(semantic_policy, "radius"):
+            return True
+        if self._semantic_adjudication_succeeded(semantic_policy):
+            semantic_text = json.dumps(part_semantics or {}, ensure_ascii=False, default=str)
+            return "R15" in semantic_text or "圆弧面" in semantic_text or "承面" in semantic_text
+        policy_plan = semantic_policy.get("dimension_plan", {})
         for item in policy_plan.get("allowed_dimensions", []) or []:
             if item.get("role") == "radius":
                 return True
         semantic_text = json.dumps(part_semantics or {}, ensure_ascii=False, default=str)
         return "R15" in semantic_text or "圆弧面" in semantic_text or "承面" in semantic_text
+
+    @staticmethod
+    def _semantic_adjudication_succeeded(semantic_policy: Dict[str, Any]) -> bool:
+        return SemanticAdjudicationView.from_policy(semantic_policy).is_successful
+
+    @staticmethod
+    def _semantic_adjudication_has_role(semantic_policy: Dict[str, Any], role: str) -> bool:
+        return SemanticAdjudicationView.from_policy(semantic_policy).has_role(role)
 
     @staticmethod
     def _combined_result_text(result: Dict[str, Any]) -> str:

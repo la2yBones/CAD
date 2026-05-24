@@ -2,7 +2,10 @@
 
 import unittest
 
-from src.reconstruction.modeling_constraints import ModelingConstraints
+from src.reconstruction.modeling_constraints import (
+    DEFAULT_MODELING_CONSTRAINTS,
+    ModelingConstraints,
+)
 
 
 class TestModelingConstraints(unittest.TestCase):
@@ -56,6 +59,72 @@ arc = Part.ArcOfCircle(
         self.assertFalse(result.success)
         self.assertIn("Part.ArcOfCircle must use exactly 3 positional arguments", result.error)
 
+    def test_constraints_prompt_requires_edge_compatibility_helper(self):
+        prompt = DEFAULT_MODELING_CONSTRAINTS.prompt_section()
+
+        self.assertIn("as_edge(obj)", prompt)
+        self.assertIn('hasattr(obj, "toShape")', prompt)
+
+    def test_constraints_prompt_prefers_semantic_adjudication(self):
+        prompt = DEFAULT_MODELING_CONSTRAINTS.prompt_section()
+
+        self.assertIn("dimensions.semantic_adjudication", prompt)
+
+    def test_retry_reason_ignores_legacy_radius_when_adjudication_succeeds(self):
+        retry_reason = ModelingConstraints().retry_reason(
+            {
+                "analysis_summary": "圆角未实现",
+                "modeling_strategy": "",
+                "freecad_script": "",
+                "warnings": [],
+            },
+            {
+                "semantic_policy": {
+                    "semantic_adjudication": {
+                        "status": "completed",
+                        "dimension_roles": [],
+                        "derived_dimensions": [],
+                    },
+                    "dimension_plan": {
+                        "allowed_dimensions": [
+                            {"role": "radius", "value": 4.0},
+                        ],
+                    },
+                },
+            },
+            {"part_type": "plate"},
+        )
+
+        self.assertEqual("", retry_reason)
+
+    def test_retry_reason_uses_adjudicated_feature_roles(self):
+        retry_reason = ModelingConstraints().retry_reason(
+            {
+                "analysis_summary": "R15圆弧面跳过",
+                "modeling_strategy": "",
+                "freecad_script": "",
+                "warnings": [],
+            },
+            {
+                "semantic_policy": {
+                    "semantic_adjudication": {
+                        "status": "completed",
+                        "dimension_roles": [],
+                        "derived_dimensions": [],
+                        "feature_roles": [
+                            {
+                                "feature_id": "G1",
+                                "role": "radius",
+                                "evidence_ids": ["G1"],
+                            }
+                        ],
+                    },
+                },
+            },
+            {"part_type": "bolt"},
+        )
+
+        self.assertEqual("radius_surface", retry_reason)
 
 
 if __name__ == "__main__":

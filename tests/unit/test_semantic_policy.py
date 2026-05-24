@@ -602,6 +602,101 @@ class TestSemanticPolicy(unittest.TestCase):
             [item["dimension_kind"] for item in construction],
         )
 
+    def test_semantic_policy_keeps_top_view_dimensions_projected_not_main_height(self):
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {
+                        "text": "90",
+                        "value": 90.0,
+                        "type": "线性",
+                        "position": [45.0, -45.0, 0.0],
+                        "definition_points": [[0.0, -30.0, 0.0], [90.0, -30.0, 0.0]],
+                    },
+                    {
+                        "text": "60",
+                        "value": 60.0,
+                        "type": "线性",
+                        "position": [-20.0, 0.0, 0.0],
+                        "definition_points": [[0.0, -30.0, 0.0], [0.0, 30.0, 0.0]],
+                    },
+                    {
+                        "text": "20",
+                        "value": 20.0,
+                        "type": "线性",
+                        "position": [-20.0, 110.0, 0.0],
+                        "definition_points": [[0.0, 100.0, 0.0], [0.0, 120.0, 0.0]],
+                    },
+                ],
+                "view_analysis": {
+                    "drawing_type": "two_view",
+                    "views": [
+                        {"name": "main", "bbox": [0, 100, 90, 120]},
+                        {"name": "top", "bbox": [0, -30, 90, 30]},
+                    ],
+                },
+            }
+        )
+
+        roles = {
+            item["text"]: item["semantic_role"]
+            for item in policy_result["dimension_bindings"]
+        }
+        self.assertEqual("projected_profile_horizontal_extent", roles["90"])
+        self.assertEqual("projected_profile_vertical_extent", roles["60"])
+        self.assertEqual("profile_height", roles["20"])
+        self.assertEqual([], policy_result["clarification_questions"])
+
+    def test_semantic_policy_derives_plate_thickness_and_raised_feature_height(self):
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {
+                        "text": "16",
+                        "value": 16.0,
+                        "type": "线性",
+                        "position": [-10.0, 158.0, 0.0],
+                        "definition_points": [[0.0, 150.0, 0.0], [0.0, 166.0, 0.0]],
+                    },
+                    {
+                        "text": "20",
+                        "value": 20.0,
+                        "type": "线性",
+                        "position": [-12.0, 160.0, 0.0],
+                        "definition_points": [[-5.0, 150.0, 0.0], [20.0, 170.0, 0.0]],
+                    },
+                ],
+                "view_analysis": {
+                    "drawing_type": "two_view",
+                    "views": [
+                        {"name": "main", "bbox": [0.0, 150.0, 90.0, 170.0]},
+                        {"name": "top", "bbox": [0.0, 0.0, 90.0, 60.0]},
+                    ],
+                },
+            }
+        )
+
+        bindings = {
+            item["text"]: item
+            for item in policy_result["dimension_bindings"]
+        }
+        self.assertEqual("extrusion_depth", bindings["16"]["semantic_role"])
+        self.assertEqual("feature_total_height", bindings["20"]["semantic_role"])
+        self.assertEqual("feature_height", bindings["20-16"]["semantic_role"])
+        self.assertEqual(4.0, bindings["20-16"]["value"])
+        allowed = {
+            item["text"]: item["role"]
+            for item in policy_result["dimension_plan"]["allowed_dimensions"]
+        }
+        construction = {
+            item["text"]: item["role"]
+            for item in policy_result["dimension_plan"]["construction_dimensions"]
+        }
+        self.assertEqual("extrusion_depth", allowed["16"])
+        self.assertEqual("feature_height", construction["20-16"])
+
     def test_semantic_policy_applies_clarification_answers(self):
         context = {
             "context_version": "reconstruction_context_v1",

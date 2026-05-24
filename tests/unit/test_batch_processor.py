@@ -425,6 +425,76 @@ class TestBatchProcessor(unittest.TestCase):
             "base_plate",
         )
 
+    def test_continue_with_clarification_keeps_pre_modeling_failure_pending(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {
+            "api": {
+                "deepseek": {"api_key": "test-key"},
+            }
+        }
+        processor._notify_progress_stage = unittest.mock.Mock()
+        processor._execute_intelligent_modeling_path = unittest.mock.Mock()
+
+        pending = CADProcessResult(
+            success=False,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+        pending.mark_needs_clarification(
+            [{"id": "bind_profile_length", "kind": "single_choice"}],
+            {
+                "geometry_data": {"entities": []},
+                "extrude_height": 10.0,
+                "file_path": "drawings/base_plate.dxf",
+                "reconstruction_context": {},
+            },
+        )
+
+        resumed_analysis = {
+            "view_analysis": {"drawing_type": "two_view"},
+            "dimension_extraction": {"dimensions": []},
+            "reconstruction_context": {},
+            "modeling_instructions": {
+                "analysis_summary": "主体高度和厚度缺失，无法生成基体",
+                "modeling_strategy": "缺少高度和深度尺寸，无法生成主体",
+                "freecad_script": "",
+                "completed_features": [],
+                "skipped_features": [
+                    {
+                        "name": "矩形基体",
+                        "kind": "base",
+                        "reason": "高度和厚度尺寸缺失，无法生成主体",
+                    }
+                ],
+                "warnings": ["主体拉伸深度缺失"],
+            },
+        }
+
+        fake_analyzer = unittest.mock.Mock()
+        fake_analyzer.continue_with_clarification.return_value = resumed_analysis
+        fake_analyzer.save_results.return_value = None
+
+        with patch(
+            "src.intelligent_analyzer.IntelligentEngineeringAnalyzer",
+            return_value=fake_analyzer,
+        ):
+            result = processor.continue_with_clarification(
+                pending,
+                {"bind_profile_length": "90"},
+                {"directory": "out"},
+            )
+
+        self.assertEqual(PipelineStatus.NEEDS_CLARIFICATION, result.status)
+        self.assertEqual("user_modeling_hint", result.clarification_questions[0]["id"])
+        self.assertTrue(result.clarification_context["pre_modeling_recovery"])
+        fake_analyzer.save_results.assert_called_once_with(
+            resumed_analysis,
+            "out",
+            "base_plate",
+        )
+        processor._execute_intelligent_modeling_path.assert_not_called()
+
 
 
 if __name__ == "__main__":

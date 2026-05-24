@@ -754,13 +754,30 @@ class CADProcessor:
                 logger.info("用户澄清后仍存在未决问题，继续等待输入")
                 return result
 
-            self._notify_progress_stage("modeling", "建模中")
             output_dir = output_structure.get("directory", Path(".") / "output")
             base_name = Path(
                 result.clarification_context.get("file_path", result.input_file)
             ).stem
             analyzer.save_results(resumed_analysis, str(output_dir), base_name)
 
+            modeling_instructions = resumed_analysis.get("modeling_instructions", {}) or {}
+            if self._needs_pre_modeling_clarification(modeling_instructions):
+                result.mark_needs_clarification(
+                    self._build_pre_modeling_clarification_questions(modeling_instructions),
+                    self._build_pre_modeling_clarification_context(
+                        resumed_analysis,
+                        geometry_data=result.clarification_context["geometry_data"],
+                        extrude_height=result.clarification_context["extrude_height"],
+                        file_path=result.clarification_context.get(
+                            "file_path",
+                            result.input_file,
+                        ),
+                    ),
+                )
+                logger.info("用户澄清后建模指令仍表明主体实体无法生成，继续等待用户澄清")
+                return result
+
+            self._notify_progress_stage("modeling", "建模中")
             modeled_result = self._execute_intelligent_modeling_path(
                 result=result,
                 intelligent_analysis_result=resumed_analysis,

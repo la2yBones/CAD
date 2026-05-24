@@ -95,3 +95,55 @@ def test_view_bbox_uses_outline_entities_not_cross_view_centerlines():
     ]
 
     assert analyzer._compute_view_bbox(entities) == (10.0, -30.0, 90.0, 30.0)
+
+
+def test_explicit_vertical_two_view_names_upper_as_main_and_lower_as_top():
+    analyzer = EngineeringViewAnalyzer({})
+    upper_main = [
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 100.0, 0.0], "end": [90.0, 100.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 120.0, 0.0], "end": [90.0, 120.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 100.0, 0.0], "end": [0.0, 120.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [90.0, 100.0, 0.0], "end": [90.0, 120.0, 0.0]},
+    ]
+    lower_top = [
+        {"type": "CIRCLE", "layer": "轮廓线", "center": [45.0, 0.0, 0.0], "radius": 20.0},
+        {"type": "CIRCLE", "layer": "轮廓线", "center": [20.0, 0.0, 0.0], "radius": 5.0},
+        {"type": "ARC", "layer": "轮廓线", "center": [70.0, 0.0, 0.0], "radius": 18.0},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, -30.0, 0.0], "end": [90.0, -30.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 30.0, 0.0], "end": [90.0, 30.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, -30.0, 0.0], "end": [0.0, 30.0, 0.0]},
+    ]
+
+    result = analyzer._analyze_explicit_two_view(
+        upper_main + lower_top,
+        {"轮廓线": upper_main + lower_top},
+    )
+
+    views = {view["name"]: view for view in result["views"]}
+    assert views["main"]["type"] == "主视图"
+    assert views["top"]["type"] == "俯视图"
+    assert views["main"]["centroid"][1] > views["top"]["centroid"][1]
+
+
+def test_explicit_vertical_two_view_keeps_lower_main_without_plate_projection_evidence():
+    analyzer = EngineeringViewAnalyzer({})
+    lower = [
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 0.0, 0.0], "end": [90.0, 0.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 60.0, 0.0], "end": [90.0, 60.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 0.0, 0.0], "end": [0.0, 60.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [90.0, 0.0, 0.0], "end": [90.0, 60.0, 0.0]},
+    ]
+    upper = [
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 120.0, 0.0], "end": [90.0, 120.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 140.0, 0.0], "end": [90.0, 140.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [0.0, 120.0, 0.0], "end": [0.0, 140.0, 0.0]},
+        {"type": "LINE", "layer": "轮廓线", "start": [90.0, 120.0, 0.0], "end": [90.0, 140.0, 0.0]},
+    ]
+
+    result = analyzer._analyze_explicit_two_view(
+        lower + upper,
+        {"轮廓线": lower + upper},
+    )
+
+    views = {view["name"]: view for view in result["views"]}
+    assert views["main"]["centroid"][1] < views["top"]["centroid"][1]

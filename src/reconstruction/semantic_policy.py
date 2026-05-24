@@ -165,12 +165,13 @@ class SemanticPolicy:
                 "diameter_value": dimension.get("diameter_value"),
                 "thread_value": dimension.get("thread_value"),
                 "callout": dimension.get("callout"),
+                "position": dimension.get("position"),
                 "semantic_role": semantic_role,
                 "confidence": confidence,
                 "evidence": evidence,
                 "span": cls._build_dimension_span(dimension, reconstruction_context),
             })
-        cls._apply_dimension_chain_roles(bindings)
+        cls._apply_dimension_chain_roles(bindings, reconstruction_context)
         return bindings
 
     @classmethod
@@ -185,6 +186,8 @@ class SemanticPolicy:
             "chamfer",
             "feature_depth",
             "feature_height",
+            "feature_total_height",
+            "extrusion_depth",
             "projected_profile_horizontal_extent",
             "projected_profile_vertical_extent",
         }
@@ -197,6 +200,7 @@ class SemanticPolicy:
             "chamfer",
             "feature_depth",
             "feature_height",
+            "feature_total_height",
         }
         allowed_dimensions = [
             cls._plan_item(binding)
@@ -282,6 +286,7 @@ class SemanticPolicy:
             "chamfer",
             "feature_depth",
             "feature_height",
+            "feature_total_height",
         }:
             return "feature_size"
         return ""
@@ -341,23 +346,141 @@ class SemanticPolicy:
             return None
 
         line = cls._nearest_associated_line(dimension)
-        if not line:
-            return None
-
-        orientation = cls._line_orientation(line)
-        if orientation is None:
-            return None
-
+        orientation = cls._line_orientation(line) if line else None
         view_name = cls._locate_dimension_view(dimension, reconstruction_context)
+        inferred_from_span = False
+        span = None
+        if orientation is None or view_name is None:
+            span = cls._build_dimension_span(dimension, reconstruction_context)
+            if span:
+                orientation = orientation or span.get("orientation")
+                view_name = view_name or span.get("view_name")
+                inferred_from_span = True
+
+        if orientation is None or view_name is None:
+            return None
+        if inferred_from_span and span and not cls._span_matches_view_extent(
+            span,
+            reconstruction_context,
+        ):
+            return None
+
         if orientation == "horizontal":
             if view_name == "main":
                 return "profile_length", 0.8, ["主视图中的水平标注线"]
-            if view_name in ("left", "right"):
+            if view_name in ("left", "right", "top"):
                 return "projected_profile_horizontal_extent", 0.8, [f"{view_name} 视图中的水平外形尺寸"]
-        elif orientation == "vertical" and view_name in ("main", "left", "right"):
-            return "profile_height", 0.7, ["竖直标注线"]
+        elif orientation == "vertical":
+            if view_name == "main":
+                return "profile_height", 0.8, ["主视图中的竖直外形尺寸"]
+            if view_name in ("left", "right", "top"):
+                return "projected_profile_vertical_extent", 0.85, [f"{view_name} 视图中的竖直外形尺寸"]
+
+        inferred_by_value = cls._infer_linear_role_from_value_and_near_view(
+            dimension,
+            reconstruction_context,
+        )
+        if inferred_by_value is not None:
+            return inferred_by_value
 
         return None
+
+    @staticmethod
+    def _span_matches_view_extent(
+        span: Dict[str, Any],
+        reconstruction_context: Dict[str, Any],
+    ) -> bool:
+        view_name = span.get("view_name")
+        orientation = span.get("orientation")
+        span_range = span.get("range") or []
+        if view_name is None or orientation not in ("horizontal", "vertical"):
+            return False
+        if len(span_range) < 2:
+            return False
+
+        axis = 0 if orientation == "horizontal" else 1
+        views = reconstruction_context.get("view_analysis", {}).get("views", []) or []
+        view = next((item for item in views if item.get("name") == view_name), None)
+        if not view:
+            return False
+        bbox = view.get("bbox") or []
+        if len(bbox) < 4:
+            return False
+
+        extent = [float(bbox[axis]), float(bbox[axis + 2])]
+        extent.sort()
+        span_min, span_max = sorted((float(span_range[0]), float(span_range[1])))
+        extent_size = max(extent[1] - extent[0], 1e-6)
+        tolerance = max(extent_size * 0.08, 1e-6)
+        return (
+            abs(span_min - extent[0]) <= tolerance
+            and abs(span_max - extent[1]) <= tolerance
+        )
+
+    @classmethod
+    def _infer_linear_role_from_value_and_near_view(
+        cls,
+        dimension: Dict[str, Any],
+        reconstruction_context: Dict[str, Any],
+    ) -> tuple[str, float, List[str]] | None:
+        value = dimension.get("value")
+        if not isinstance(value, (int, float)):
+            return None
+        position = dimension.get("position") or []
+        if len(position) < 2:
+            return None
+
+        view = cls._nearest_view_to_point(position, reconstruction_context)
+        if not view:
+            return None
+        view_name = str(view.get("name") or "")
+        bbox = view.get("bbox") or []
+        if len(bbox) < 4:
+            return None
+        width = abs(float(bbox[2]) - float(bbox[0]))
+        height = abs(float(bbox[3]) - float(bbox[1]))
+        if height <= 1e-6 or width <= 1e-6:
+            return None
+
+        if abs(float(value) - height) <= max(height * 0.08, 1e-6):
+            if view_name in ("top", "bottom", "left", "right"):
+                return "projected_profile_vertical_extent", 0.85, [
+                    f"线性尺寸值等于{view_name}视图竖向外形尺寸"
+                ]
+        if abs(float(value) - width) <= max(width * 0.08, 1e-6):
+            if view_name == "main":
+                return "profile_length", 0.8, [
+                    "线性尺寸值等于主视图水平外包络"
+                ]
+            if view_name in ("top", "bottom", "left", "right"):
+                return "projected_profile_horizontal_extent", 0.85, [
+                    f"线性尺寸值等于{view_name}视图水平外形尺寸"
+                ]
+        return None
+
+    @staticmethod
+    def _nearest_view_to_point(
+        point: List[float],
+        reconstruction_context: Dict[str, Any],
+    ) -> Dict[str, Any] | None:
+        x, y = float(point[0]), float(point[1])
+        best_view = None
+        best_distance = float("inf")
+        for view in reconstruction_context.get("view_analysis", {}).get("views", []) or []:
+            bbox = view.get("bbox") or []
+            if len(bbox) < 4:
+                continue
+            min_x, min_y, max_x, max_y = map(float, bbox[:4])
+            width = max(max_x - min_x, 1e-6)
+            height = max(max_y - min_y, 1e-6)
+            tolerance = max(width, height) * 0.5
+            dx = max(min_x - x, 0.0, x - max_x)
+            dy = max(min_y - y, 0.0, y - max_y)
+            distance = (dx * dx + dy * dy) ** 0.5
+            if distance <= tolerance and distance < best_distance:
+                best_distance = distance
+                best_view = view
+        return best_view
 
     @classmethod
     def _build_dimension_span(
@@ -413,7 +536,11 @@ class SemanticPolicy:
         return abs(float(point[0])) > 1e-9 or abs(float(point[1])) > 1e-9
 
     @classmethod
-    def _apply_dimension_chain_roles(cls, bindings: List[Dict[str, Any]]) -> None:
+    def _apply_dimension_chain_roles(
+        cls,
+        bindings: List[Dict[str, Any]],
+        reconstruction_context: Dict[str, Any],
+    ) -> None:
         span_bindings = [
             binding for binding in bindings
             if binding.get("semantic_role") == "unresolved_linear"
@@ -424,6 +551,7 @@ class SemanticPolicy:
         cls._apply_square_profile_roles(span_bindings)
         cls._append_main_view_composite_length(bindings, span_bindings)
         cls._apply_thread_length_roles(bindings)
+        cls._apply_plate_projection_thickness_roles(bindings, reconstruction_context)
 
     @classmethod
     def _apply_square_profile_roles(cls, bindings: List[Dict[str, Any]]) -> None:
@@ -542,6 +670,103 @@ class SemanticPolicy:
             binding["evidence"] = [
                 "螺栓/轴类图纸中该主视图内部水平尺寸位于杆部长度段内，裁决为螺纹长度",
             ]
+
+    @classmethod
+    def _apply_plate_projection_thickness_roles(
+        cls,
+        bindings: List[Dict[str, Any]],
+        reconstruction_context: Dict[str, Any],
+    ) -> None:
+        """Bind nested vertical dimensions in a narrow projection as plate thickness + raised detail."""
+        views = (reconstruction_context.get("view_analysis", {}) or {}).get("views", []) or []
+        for view in views:
+            if str(view.get("name") or "") != "main":
+                continue
+            bbox = view.get("bbox") or []
+            if len(bbox) < 4:
+                continue
+            width = abs(float(bbox[2]) - float(bbox[0]))
+            height = abs(float(bbox[3]) - float(bbox[1]))
+            if height <= 1e-6 or width / height < 3.0:
+                continue
+
+            vertical_candidates = []
+            outer_candidates = []
+            for binding in bindings:
+                if binding.get("semantic_role") != "unresolved_linear":
+                    continue
+                value = binding.get("value")
+                if not isinstance(value, (int, float)):
+                    continue
+                span = binding.get("span") or {}
+                if (
+                    span.get("view_name") == "main"
+                    and span.get("orientation") == "vertical"
+                ):
+                    vertical_candidates.append(binding)
+                    continue
+                near_view = cls._nearest_view_to_point(
+                    [0.0, 0.0]
+                    if not binding.get("position")
+                    else binding.get("position"),
+                    reconstruction_context,
+                )
+                if (
+                    near_view is view
+                    and abs(float(value) - height) <= max(height * 0.08, 1e-6)
+                ):
+                    outer_candidates.append(binding)
+
+            if not vertical_candidates or not outer_candidates:
+                continue
+
+            base = max(
+                (
+                    candidate for candidate in vertical_candidates
+                    if float(candidate.get("value")) < height
+                ),
+                key=lambda item: float(item.get("value")),
+                default=None,
+            )
+            outer = max(
+                outer_candidates,
+                key=lambda item: float(item.get("value")),
+                default=None,
+            )
+            if not base or not outer:
+                continue
+            protrusion = float(outer["value"]) - float(base["value"])
+            if protrusion <= 0:
+                continue
+
+            base["semantic_role"] = "extrusion_depth"
+            base["confidence"] = 0.9
+            base["evidence"] = [
+                "窄条主视图中较小竖向尺寸位于基板厚度范围内，裁决为板厚/挤出深度",
+            ]
+            outer["semantic_role"] = "feature_total_height"
+            outer["confidence"] = 0.85
+            outer["evidence"] = [
+                "窄条主视图中较大竖向尺寸等于局部凸起处总高度",
+            ]
+            bindings.append({
+                "text": f"{outer.get('text')}-{base.get('text')}",
+                "value": protrusion,
+                "type": "派生线性",
+                "semantic_role": "feature_height",
+                "confidence": 0.9,
+                "evidence": [
+                    "由局部总高度减去基板厚度得到凸出高度",
+                ],
+                "span": {
+                    "orientation": "vertical",
+                    "axis": "y",
+                    "view_name": "main",
+                    "components": [outer.get("text"), base.get("text")],
+                },
+                "source": "derived_from_annotation",
+            })
+            return
 
     @staticmethod
     def _has_bolt_thread_length_context(bindings: List[Dict[str, Any]]) -> bool:
@@ -914,34 +1139,32 @@ class SemanticPolicy:
             if binding.get("semantic_role") not in (None, "unresolved_linear")
         }
         questions: List[Dict[str, Any]] = []
-        required_roles = (
-            ("profile_length", "主视图中的水平总尺寸"),
-        )
-        for role, label in required_roles:
-            if role in bound_roles:
-                continue
+        if not (
+            "profile_length" in bound_roles
+            or "projected_profile_horizontal_extent" in bound_roles
+        ):
+            role = "profile_length"
             candidates = cls._subject_axis_candidates(bindings, role)
-            if not candidates:
-                continue
-            unresolved_options = [
-                choice_option(
-                    cls._binding_label(binding),
-                    cls._format_dimension_value(binding["value"]),
-                )
-                for binding in candidates
-            ]
-            unresolved_options.append(choice_option(
-                "我不确定 / 这些都不要绑定为总长",
-                cls.UNKNOWN_ANSWER,
-            ))
-            questions.append(clarification_question(
-                question_id=f"bind_{role}",
-                text=f"请确认哪个标注值表示{label}。如果你也看不出来，选择“不确定”。",
-                kind="single_choice",
-                options=unresolved_options,
-                reason="多视图重建缺少这个关键尺寸；不确定时不会强行把某个裸尺寸绑定为总长。",
-                example="选择图纸上表示总尺寸的值；不确定就选“不确定”。",
-            ))
+            if candidates:
+                unresolved_options = [
+                    choice_option(
+                        cls._binding_label(binding),
+                        cls._format_dimension_value(binding["value"]),
+                    )
+                    for binding in candidates
+                ]
+                unresolved_options.append(choice_option(
+                    "我不确定 / 这些都不要绑定为总长",
+                    cls.UNKNOWN_ANSWER,
+                ))
+                questions.append(clarification_question(
+                    question_id=f"bind_{role}",
+                    text="请确认哪个标注值表示主视图中的水平总尺寸。如果你也看不出来，选择“不确定”。",
+                    kind="single_choice",
+                    options=unresolved_options,
+                    reason="多视图重建缺少这个关键尺寸；不确定时不会强行把某个裸尺寸绑定为总长。",
+                    example="选择图纸上表示总尺寸的值；不确定就选“不确定”。",
+                ))
         return questions
 
     @classmethod

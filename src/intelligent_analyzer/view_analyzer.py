@@ -191,7 +191,10 @@ class EngineeringViewAnalyzer:
 
         if axis == "y":
             lower, upper = (group_a, group_b) if centroid_a[1] <= centroid_b[1] else (group_b, group_a)
-            view_defs = [("main", "主视图", lower), ("top", "俯视图", upper)]
+            if self._upper_group_looks_like_front_projection(upper, lower):
+                view_defs = [("main", "主视图", upper), ("top", "俯视图", lower)]
+            else:
+                view_defs = [("main", "主视图", lower), ("top", "俯视图", upper)]
         else:
             left, right = (group_a, group_b) if centroid_a[0] <= centroid_b[0] else (group_b, group_a)
             view_defs = [("main", "主视图", left), ("right", "右视图", right)]
@@ -246,6 +249,39 @@ class EngineeringViewAnalyzer:
         group_a = [entity for entity, _ in sorted_points[:split_index + 1]]
         group_b = [entity for entity, _ in sorted_points[split_index + 1:]]
         return axis, group_a, group_b
+
+    def _upper_group_looks_like_front_projection(
+        self,
+        upper: List[Dict],
+        lower: List[Dict],
+    ) -> bool:
+        """Recognize plate drawings where upper narrow strip is the main/front view."""
+        upper_bbox = self._compute_view_bbox(upper)
+        lower_bbox = self._compute_view_bbox(lower)
+        upper_width = max(float(upper_bbox[2]) - float(upper_bbox[0]), 1e-6)
+        upper_height = max(float(upper_bbox[3]) - float(upper_bbox[1]), 1e-6)
+        lower_width = max(float(lower_bbox[2]) - float(lower_bbox[0]), 1e-6)
+        lower_height = max(float(lower_bbox[3]) - float(lower_bbox[1]), 1e-6)
+
+        upper_is_strip = upper_width / upper_height >= 3.0
+        lower_is_broader = lower_height / upper_height >= 1.8
+        x_aligned = self._range_overlap(
+            (upper_bbox[0], upper_bbox[2]),
+            (lower_bbox[0], lower_bbox[2]),
+        ) >= 0.65
+        lower_has_plan_features = self._count_entity_types(lower, {"CIRCLE", "ARC", "LWPOLYLINE"}) >= 3
+        upper_mostly_lines = self._count_entity_types(upper, {"LINE"}) >= max(3, len(upper) * 0.7)
+        return (
+            upper_is_strip
+            and lower_is_broader
+            and x_aligned
+            and lower_has_plan_features
+            and upper_mostly_lines
+        )
+
+    @staticmethod
+    def _count_entity_types(entities: List[Dict], types: set[str]) -> int:
+        return sum(1 for entity in entities if str(entity.get("type") or "").upper() in types)
 
     def _adaptive_zone_detect(
         self, centers: List[Tuple[float, float]], entities: List[Dict]

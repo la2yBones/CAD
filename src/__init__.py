@@ -1,19 +1,30 @@
 # -*- coding: utf-8 -*-
-# 基于CAD图纸的3D建模系统
-# 毕业设计项目
+"""基于 CAD 图纸的 3D 建模系统。"""
 
-__version__ = "0.3.0"
-__author__ = "Your Name"
+from importlib import import_module
+from typing import Any
 
-from .cad_parser import CADParser, DXFParser
-from .geometry_analyzer import GeometryAnalyzer  # 已废弃, 请使用 IntelligentEngineeringAnalyzer
-from .model_generator import FreeCADModeler
-from .intelligent_analyzer import IntelligentEngineeringAnalyzer
+__version__ = "1.0.0"
 
-__all__ = [
-    "CADParser",
-    "DXFParser",
-    "GeometryAnalyzer",             # 已废弃
-    "IntelligentEngineeringAnalyzer",
-    "FreeCADModeler"
-]
+_EXPORTS = {
+    "CADParser": ("src.cad_parser", "CADParser"),
+    "DXFParser": ("src.cad_parser", "DXFParser"),
+    "GeometryAnalyzer": ("src.geometry_analyzer", "GeometryAnalyzer"),
+    "IntelligentEngineeringAnalyzer": (
+        "src.intelligent_analyzer",
+        "IntelligentEngineeringAnalyzer",
+    ),
+    "PlanarExtrudeModeler": ("src.model_generator", "PlanarExtrudeModeler"),
+    "FreeCADModeler": ("src.model_generator", "FreeCADModeler"),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _EXPORTS:
+        raise AttributeError(f"module 'src' has no attribute {name!r}")
+    module_name, attr_name = _EXPORTS[name]
+    value = getattr(import_module(module_name), attr_name)
+    globals()[name] = value
+    return value

@@ -120,12 +120,12 @@ class FreeCADBridge:
         """
         执行 FreeCAD Python 脚本（根据模式自动选择执行方式）
 
-        ??:
+        参数:
             script_content: FreeCAD Python 脚本内容
             output_dir: 输出文件目录
             timeout: 超时秒数
 
-        ??:
+        返回:
             {success, outputs, step_path, fcstd_path, stdout, stderr}
         """
         if not self.freecad_available:

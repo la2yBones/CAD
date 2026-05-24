@@ -34,8 +34,18 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
             },
             dimension_data={
                 "dimensions": [
-                    {"text": "30", "value": 30.0, "type": "线性"},
-                    {"text": "12", "value": 12.0, "type": "线性"},
+                    {
+                        "text": "30",
+                        "value": 30.0,
+                        "type": "线性",
+                        "definition_points": [[0, 10, 0], [30, 10, 0]],
+                    },
+                    {
+                        "text": "12",
+                        "value": 12.0,
+                        "type": "线性",
+                        "definition_points": [[5, 12, 0], [17, 12, 0]],
+                    },
                 ]
             },
             local_relationships=None,
@@ -97,8 +107,18 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
             },
             dimension_data={
                 "dimensions": [
-                    {"text": "30", "value": 30.0, "type": "线性"},
-                    {"text": "12", "value": 12.0, "type": "线性"},
+                    {
+                        "text": "30",
+                        "value": 30.0,
+                        "type": "线性",
+                        "definition_points": [[0, 10, 0], [30, 10, 0]],
+                    },
+                    {
+                        "text": "12",
+                        "value": 12.0,
+                        "type": "线性",
+                        "definition_points": [[5, 12, 0], [17, 12, 0]],
+                    },
                 ]
             },
             local_relationships=None,
@@ -224,7 +244,7 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
         self.assertTrue(result["modeling_instructions"]["routed_to_planar_extrude"])
         pipeline.instruction_generator.generate.assert_not_called()
 
-    def test_reconstruction_pipeline_asks_before_skipping_additive_feature_with_unbound_dimension(self):
+    def test_reconstruction_pipeline_does_not_block_on_unbound_additive_feature_dimension(self):
         pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
         pipeline.context_builder = ReconstructionContextBuilder()
         pipeline.semantic_policy = SemanticPolicy()
@@ -262,6 +282,15 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
             )
         )
         pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.modeling_path_registry = unittest.mock.Mock()
+        pipeline.modeling_path_registry.choose.return_value = {
+            "modeling_path": "semantic_reconstruction"
+        }
+        pipeline.modeling_path_registry.build_routed_modeling_result.return_value = None
+        pipeline.instruction_generator.generate.return_value = {
+            "freecad_script": "pass",
+            "warnings": [],
+        }
 
         result = pipeline.run(
             geometry_data={"entities": []},
@@ -272,13 +301,78 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
         )
 
         questions = result["semantic_policy"]["clarification_questions"]
-        self.assertEqual(["bind_feature_detail_dimension"], [question["id"] for question in questions])
-        self.assertEqual("single_choice", questions[0]["kind"])
-        self.assertIn("40", questions[0]["reason"])
-        self.assertIn("40 是该细节高度/深度", [option["label"] for option in questions[0]["options"]])
-        self.assertIn('"action": "bind_feature_dimension"', questions[0]["options"][0]["value"])
-        self.assertIn('"feature_description": "右视图中的凸台"', questions[0]["options"][0]["value"])
+        self.assertEqual([], questions)
+        self.assertFalse(result["modeling_instructions"].get("blocked_by_clarification", False))
+        pipeline.instruction_generator.generate.assert_called_once()
+
+    def test_reconstruction_pipeline_blocks_critical_missing_additive_geometry_before_modeling(self):
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.stage_confirmation = resolve_stage_confirmation({})
+        pipeline.config = {}
+        pipeline.semantic_generator = unittest.mock.Mock(
+            generate=unittest.mock.Mock(
+                return_value={
+                    "part_type": "bracket",
+                    "confidence": 0.9,
+                    "summary": "误判为带凸台零件",
+                    "evidence": [],
+                    "candidate_interpretations": [],
+                    "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
+                    "dimension_source": "annotation",
+                    "base_features": [{"kind": "profile_extrusion"}],
+                    "additive_features": [
+                        {"kind": "boss", "description": "中心圆被解释为凸台"}
+                    ],
+                    "subtractive_features": [],
+                    "planar_modeling_semantics": {
+                        "profile": {"kind": "profile_extrusion", "description": "base"},
+                        "extrusion_direction": "Z",
+                        "extrusion_depth": None,
+                        "cut_features": [],
+                        "dimension_bindings": [],
+                        "uncertainties": [
+                            "Extrusion depth not specified by any annotation",
+                            "Boss center location relative to profile not dimensioned",
+                        ],
+                    },
+                    "revolve_modeling_semantics": None,
+                    "preferred_modeling_path": "planar_extrude",
+                    "key_dimensions": [{"name": "boss_diameter", "value": 70.0}],
+                    "uncertainties": [
+                        "Extrusion depth missing",
+                        "Boss height missing",
+                    ],
+                    "warnings": [
+                        "Modeling will require assumptions for missing depth and boss height"
+                    ],
+                }
+            )
+        )
+        pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.modeling_path_registry = unittest.mock.Mock()
+
+        result = pipeline.run(
+            geometry_data={"entities": []},
+            view_analysis={
+                "drawing_type": "three_view",
+                "views": [
+                    {"name": "main", "bbox": [0, 100, 100, 150]},
+                    {"name": "bottom", "bbox": [0, 0, 100, 100]},
+                    {"name": "right", "bbox": [150, 100, 250, 150]},
+                ],
+            },
+            dimension_data={"dimensions": [{"text": "⌀70", "value": 70.0, "type": "直径"}]},
+            local_relationships=None,
+            extrude_height=10.0,
+        )
+
+        questions = result["semantic_policy"]["clarification_questions"]
+        self.assertEqual("user_modeling_hint", questions[0]["id"])
+        self.assertIn("孔/通孔", questions[0]["text"])
         self.assertTrue(result["modeling_instructions"]["blocked_by_clarification"])
+        pipeline.modeling_path_registry.choose.assert_not_called()
         pipeline.instruction_generator.generate.assert_not_called()
 
     def test_feature_detail_clarification_skips_when_user_modeling_hint_exists(self):

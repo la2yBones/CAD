@@ -13,9 +13,10 @@
 | 统一术语 | 说明 |
 |---|---|
 | CAD 解析 | DXF/DWG 到结构化几何数据 |
-| 智能分析 | 视图、尺寸、关系和建模指令的 AI/规则混合分析 |
-| 基础模式 | 不调用 AI 的通用建模流程 |
-| 智能模式 | 使用 DeepSeek 和 AI 脚本优先建模的流程 |
+| 智能处理 | 面向用户的统一处理入口，先完成图纸理解，再选择建模路径 |
+| 智能分析 | 视图、尺寸、关系、语义裁决和建模路径裁决的 AI/规则混合分析 |
+| 平面拉伸路径 | 智能处理内部的低复杂度专用建模路径 |
+| 语义重建路径 | 无法稳定归入专用路径时使用的兜底建模路径 |
 | 预览缓存 | 图纸 PNG 预览缓存，不等同分析缓存 |
 | 分析缓存 | 智能分析结果缓存 |
 | LLM 遥测 | 大模型调用指标记录 |
@@ -32,16 +33,18 @@
 | 模块 | 边界 |
 |---|---|
 | `cad_parser` | 只负责读取和标准化几何，不做业务建模决策 |
-| `intelligent_analyzer` | 负责分析和建模指令，不直接导出模型文件 |
-| `model_generator` | 负责 FreeCAD 脚本执行和模型导出 |
-| `batch_processor` | 负责流程编排、输出结构和结果汇总 |
+| `intelligent_analyzer` | 负责智能分析编排，不直接导出模型文件 |
+| `reconstruction` | 负责语义裁决、零件语义、建模路径裁决和建模任务载荷 |
+| `model_generator` | 负责 AI 脚本执行和 FreeCAD 桥接 |
+| `batch_processor` | 负责文件处理编排、输出结构、状态转换和结果汇总 |
 | `utils` | 只放跨模块通用能力 |
 | `gui_example.py` | 只编排 GUI 交互，不复制核心处理逻辑 |
+| `compat` / `legacy` | 仅承接旧导入路径和旧执行路径，新代码不应新增依赖 |
 
 ## 5. 测试规范
 
 ```powershell
-python -m pytest tests\unit -q
+D:\anaconda3\envs\cad_study\python.exe -m pytest tests\unit -q
 ```
 
 新增功能建议：

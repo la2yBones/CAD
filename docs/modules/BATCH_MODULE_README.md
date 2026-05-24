@@ -1,10 +1,8 @@
 ﻿# 批量处理模块使用手册
 
-版本：2.0.0
-
 ## 模块概述
 
-`src/batch_processor` 提供 CAD 文件扫描、验证、输出结构创建、单文件处理和目录批处理能力。CLI 和 GUI 均通过该模块编排处理流程。
+`src/batch_processor` 提供 CAD 文件扫描、验证、输出结构创建、单文件处理、建模执行分发和目录批处理能力。CLI 和 GUI 均通过该模块进入统一智能处理。
 
 ## 模块结构
 
@@ -22,8 +20,8 @@ src/batch_processor/
 | 组件 | 职责 |
 |---|---|
 | `CADFileManager` | 输入目录、文件验证、输出路径和预览缓存路径 |
-| `CADProcessor` | 单文件解析、分析、建模、导出和多视图保护 |
-| `CADPipeline` | 对外单文件、多文件、目录处理接口 |
+| `CADProcessor` | 单文件解析、智能分析、状态转换、建模执行分发和待恢复结果组装 |
+| `CADPipeline` | 对外单文件、多文件、目录处理入口，推荐使用智能处理入口 |
 | `CADProcessResult` | 标准处理结果对象 |
 | `PendingClarificationStore` | 持久化批量处理中等待恢复的 `needs_clarification` 项 |
 
@@ -31,9 +29,8 @@ src/batch_processor/
 
 ```powershell
 python cad_cli.py --list
-python cad_cli.py --file examples/cad_files/sample.dxf --height 10
-python cad_cli.py --file examples/cad_files/sample.dxf --basic
-python cad_cli.py --file examples/cad_files/sample.dxf --intelligent
+python cad_cli.py --file examples/cad_files/sample.dxf
+python cad_cli.py --file examples/cad_files/sample.dxf --analysis-only
 python cad_cli.py --dir examples/cad_files --output-dir examples/output
 ```
 
@@ -46,11 +43,12 @@ from src.utils import load_config
 config = load_config()
 pipeline = CADPipeline(config=config, input_dir="examples/cad_files", output_dir="examples/output")
 
-basic = pipeline.process_file_basic("sample.dxf", extrude_height=10.0)
-smart = pipeline.process_file_intelligent("sample.dxf", extrude_height=10.0)
-results = pipeline.process_directory_basic(extrude_height=10.0)
+smart = pipeline.process_file_intelligent("sample.dxf")
+results = pipeline.process_directory_intelligent()
 summary = pipeline.get_summary(results)
 ```
+
+`process_file_basic(...)`、`process_file_legacy_analysis(...)` 和 `process_directory_basic(...)` 仍可用于兼容或内部验证，但新业务流程不应直接绕过统一智能处理。
 
 ## 输出结构
 
@@ -60,7 +58,7 @@ examples/output/<图纸名>/
 ├── <图纸名>.step
 ├── <图纸名>.stl
 ├── <图纸名>_process.log
-├── <图纸名>_full.json       # 智能模式/仅分析模式
+├── <图纸名>_full.json       # 智能处理/仅分析模式
 ├── <图纸名>_freecad.py      # AI 生成脚本
 └── <图纸名>_report.txt      # 智能分析报告
 ```
@@ -69,7 +67,7 @@ examples/output/<图纸名>/
 
 ## 多视图保护
 
-`CADProcessor` 会分析图纸是否为二视图/三视图。若当前入口未执行可靠 AI 多视图建模脚本，则返回失败结果并说明原因，避免将多视图工程图当作单一闭合轮廓直接拉伸。
+`CADProcessor` 会通过智能分析和语义重建内核判断图纸结构，再依据建模路径裁决选择平面拉伸路径、回转体路径或语义重建路径。兼容平面拉伸入口仍保留多视图保护，避免将多视图工程图当作单一闭合轮廓直接拉伸。
 
 ## 进度回调
 

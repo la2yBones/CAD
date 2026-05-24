@@ -129,18 +129,28 @@ class PartSemanticsValidator:
 
         policy_plan: Dict[str, Any] = {}
         allowed_values: List[float] = []
+        construction_values: List[float] = []
         if reconstruction_context:
             policy_plan = (
                 reconstruction_context.get("semantic_policy", {}) or {}
             ).get("dimension_plan", {})
-            allowed_values = self._dimension_plan_allowed_values(policy_plan)
+            allowed_values = self._dimension_plan_values(
+                policy_plan,
+                "allowed_dimensions",
+            )
+            construction_values = self._dimension_plan_values(
+                policy_plan,
+                "construction_dimensions",
+            )
 
         if reconstruction_context and dimension_source == "annotation":
             annotation_values = self._annotation_values(reconstruction_context)
             # A semantic policy may adjudicate derived annotation values, such as
-            # a total length built from an adjacent dimension chain (9+39=48).
-            # Those are still annotation-derived and should pass this guard.
-            permitted_values = allowed_values or annotation_values
+            # a total length built from an adjacent dimension chain (9+39=48),
+            # and keep the source chain members as segment dimensions for
+            # construction. Those are still annotation-derived.
+            adjudicated_values = allowed_values + construction_values
+            permitted_values = adjudicated_values or annotation_values
             key_dimension_values = self._key_dimension_values(result)
             unexpected_values = sorted(
                 value for value in key_dimension_values
@@ -164,15 +174,27 @@ class PartSemanticsValidator:
                     "dimension_source 必须服从 semantic_policy.dimension_source；"
                     f"期望 {policy_dimension_source}，实际 {dimension_source}"
                 )
-            if allowed_values:
+            adjudicated_values = allowed_values + construction_values
+            if adjudicated_values:
                 unexpected_values = sorted(
                     value for value in self._key_dimension_values(result)
-                    if not self._matches_annotation_value(value, allowed_values)
+                    if not self._matches_annotation_value(value, adjudicated_values)
                 )
                 if unexpected_values:
                     errors.append(
-                        "key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；"
+                        "key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions "
+                        "或 construction_dimensions；"
                         f"发现未裁决尺寸值: {unexpected_values}"
+                    )
+                misnamed_values = self._misnamed_construction_key_dimensions(
+                    result,
+                    allowed_values,
+                    construction_values,
+                )
+                if misnamed_values:
+                    errors.append(
+                        "construction_dimensions 进入 key_dimensions 时必须保留具体构造语义；"
+                        f"发现主体关键名误用: {misnamed_values}"
                     )
 
         return not errors, errors
@@ -195,14 +217,53 @@ class PartSemanticsValidator:
                 values.append(float(value))
         return values
 
+    @classmethod
+    def _misnamed_construction_key_dimensions(
+        cls,
+        result: Dict[str, Any],
+        allowed_values: List[float],
+        construction_values: List[float],
+    ) -> List[str]:
+        misnamed: List[str] = []
+        for dimension in result.get("key_dimensions", []) or []:
+            value = dimension.get("value")
+            name = str(dimension.get("name") or "").strip()
+            if not isinstance(value, (int, float)) or not name:
+                continue
+            numeric_value = float(value)
+            if cls._matches_annotation_value(numeric_value, allowed_values):
+                continue
+            if not cls._matches_annotation_value(numeric_value, construction_values):
+                continue
+            if cls._is_forbidden_construction_key_name(name):
+                misnamed.append(f"{name}={numeric_value:g}")
+        return sorted(misnamed)
+
+    @staticmethod
+    def _is_forbidden_construction_key_name(name: str) -> bool:
+        normalized = name.lower().replace("-", "_").replace(" ", "_")
+        forbidden_names = {
+            "total_length",
+            "overall_length",
+            "profile_length",
+            "profile_height",
+            "depth",
+            "extrusion_depth",
+            "hole_diameter",
+            "flange_diameter",
+            "across_flats",
+            "across_corners",
+        }
+        return normalized in forbidden_names
+
     @staticmethod
     def _matches_annotation_value(value: float, annotation_values: List[float]) -> bool:
         return any(abs(value - annotated) <= 1e-6 for annotated in annotation_values)
 
     @staticmethod
-    def _dimension_plan_allowed_values(policy_plan: Dict[str, Any]) -> List[float]:
+    def _dimension_plan_values(policy_plan: Dict[str, Any], field: str) -> List[float]:
         values: List[float] = []
-        for dimension in policy_plan.get("allowed_dimensions", []) or []:
+        for dimension in policy_plan.get(field, []) or []:
             value = dimension.get("value")
             if isinstance(value, (int, float)):
                 values.append(float(value))

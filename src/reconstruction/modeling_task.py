@@ -79,8 +79,8 @@ class ModelingTaskBuilder:
             "allowed_dimensions": deepcopy(
                 dimension_plan.get("allowed_dimensions", []) or []
             ),
-            "segment_dimensions": deepcopy(
-                dimension_plan.get("segment_dimensions", []) or []
+            "construction_dimensions": deepcopy(
+                dimension_plan.get("construction_dimensions", []) or []
             ),
             "unresolved_dimensions": deepcopy(
                 dimension_plan.get("unresolved_dimensions", []) or []

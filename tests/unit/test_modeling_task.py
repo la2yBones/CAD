@@ -22,8 +22,13 @@ def test_modeling_task_payload_excludes_raw_context_and_entities():
             "semantic_policy": {
                 "dimension_source": "annotation",
                 "dimension_plan": {
-                    "allowed_dimensions": [
-                        {"text": "R15", "value": 15.0, "role": "radius"}
+                    "construction_dimensions": [
+                        {
+                            "text": "R15",
+                            "value": 15.0,
+                            "role": "radius",
+                            "dimension_kind": "feature_size",
+                        }
                     ],
                     "unresolved_dimensions": [
                         {"text": "24", "value": 24.0, "role": "unresolved_linear"}
@@ -50,5 +55,5 @@ def test_modeling_task_payload_excludes_raw_context_and_entities():
     assert "entity_pairs" not in payload_text
     assert "'entities'" not in payload_text
     assert payload["object"]["part_type"] == "bolt"
-    assert payload["dimensions"]["allowed_dimensions"][0]["text"] == "R15"
+    assert payload["dimensions"]["construction_dimensions"][0]["text"] == "R15"
     assert payload["recovery_hints"]["user_modeling_hint"] == "主体先生成，细节可以跳过。"

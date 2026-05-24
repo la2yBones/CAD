@@ -80,11 +80,12 @@ def test_semantic_understanding_payload_uses_preserved_geometry_summary_without_
         "semantic_policy": {
             "dimension_source": "annotation",
             "dimension_plan": {
-                "allowed_dimensions": [
+                "construction_dimensions": [
                     {
                         "text": "R=4x1.5",
                         "value": 1.5,
                         "role": "radius",
+                        "dimension_kind": "feature_count_size",
                         "repeat_count": 4,
                         "radius_value": 1.5,
                         "callout": "repeated_radius",

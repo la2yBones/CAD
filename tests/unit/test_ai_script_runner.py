@@ -127,6 +127,35 @@ class TestAIScriptRunner(unittest.TestCase):
         self.assertIn("arc_br = Part.ArcOfCircle(c, p1, p2).toShape()", normalized)
         self.assertIn("already = Part.LineSegment(p1, p2).toShape()", normalized)
 
+    def test_generated_script_adds_json_import_for_partial_metadata(self):
+        runner = AIScriptRunner.__new__(AIScriptRunner)
+        script = "\n".join(
+            [
+                "import FreeCAD",
+                "import Part",
+                "print('PARTIAL_MODELING_RESULT:' + json.dumps({}))",
+            ]
+        )
+
+        normalized = runner._normalize_generated_script(script)
+
+        self.assertIn("import json", normalized.splitlines()[:3])
+        self.assertIn("json.dumps", normalized)
+
+    def test_generated_script_normalizes_edge_vertex_aliases(self):
+        runner = AIScriptRunner.__new__(AIScriptRunner)
+        script = "\n".join(
+            [
+                "p1 = arc_edge.FirstVertex.Point",
+                "p2 = arc_edge.LastVertex.Point",
+            ]
+        )
+
+        normalized = runner._normalize_generated_script(script)
+
+        self.assertIn("p1 = arc_edge.Vertexes[0].Point", normalized)
+        self.assertIn("p2 = arc_edge.Vertexes[-1].Point", normalized)
+
     def test_generated_script_normalizes_four_arg_arc_of_circle(self):
         runner = AIScriptRunner.__new__(AIScriptRunner)
         script = "\n".join(

@@ -86,6 +86,9 @@ def build_semantic_stage_summary(payload: Dict[str, Any]) -> StageDecisionSummar
             risk_lines.insert(0, "置信度较低")
     except (TypeError, ValueError):
         pass
+    next_step = "继续进入建模路径选择和执行"
+    if _has_missing_body_dimension(uncertainties) or _has_missing_body_dimension(warnings):
+        next_step = "继续后进入建模前澄清，补充主体厚度或拉伸深度"
 
     return StageDecisionSummary(
         conclusion="{part_type}，置信度 {confidence}，尺寸来源 {dimension_source}".format(
@@ -98,7 +101,7 @@ def build_semantic_stage_summary(payload: Dict[str, Any]) -> StageDecisionSummar
             f"关键尺寸 {len(key_dimensions)} 个",
         ),
         risks=tuple(risk_lines),
-        next_step="继续进入建模路径选择和执行",
+        next_step=next_step,
     )
 
 
@@ -108,7 +111,46 @@ def _short_items(items: Iterable[Any], *, limit: int) -> list[str]:
         text = str(item).strip()
         if not text:
             continue
+        text = _localize_stage_risk_text(text)
         short.append(text[:60] + ("..." if len(text) > 60 else ""))
         if len(short) >= limit:
             break
     return short
+
+
+def _localize_stage_risk_text(text: str) -> str:
+    """Localize common model-emitted risk phrases before rendering UI text."""
+    lower = text.lower()
+    if "extrusion depth missing" in lower:
+        return "主体拉伸深度缺失，需补充主体厚度或拉伸深度"
+    if "modeling will require assumptions" in lower:
+        subjects = []
+        if "depth" in lower:
+            subjects.append("缺失深度")
+        if "boss" in lower:
+            subjects.append("凸台")
+        if subjects:
+            return f"建模需要对{'、'.join(subjects)}作额外假设，需补充确认"
+        return "建模需要额外假设，需补充确认"
+    if "reasonable default may be assumed" in lower:
+        return "存在缺失尺寸，不应直接假设默认值，需补充确认"
+    return text
+
+
+def _has_missing_body_dimension(items: Iterable[Any]) -> bool:
+    markers = (
+        "extrusion depth missing",
+        "missing depth",
+        "缺少拉伸深度",
+        "缺失拉伸深度",
+        "主体拉伸深度缺失",
+        "主体深度缺失",
+        "未标注的拉伸深度",
+        "厚度未标注",
+        "深度未标注",
+    )
+    for item in items:
+        text = str(item or "").strip().lower()
+        if any(marker in text for marker in markers):
+            return True
+    return False

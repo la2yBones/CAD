@@ -42,8 +42,8 @@ ArcOfCircle 固定模板：只能使用 3 个位置参数，例如 `arc_edge = P
 - Shape.extrude
 - Shape.revolve
 说明：使用 Shape.revolve 替代自动圆角/球面/倒角函数，生成轴对称圆弧面或回转切除体。
-圆角要求：若 modeling_task_payload.dimensions.allowed_dimensions 中存在 role=radius 的圆角/圆弧标注，尤其是 R=4x1.5 这类 repeat_count+radius_value 标注，不得因为 makeFillet 被禁用就直接跳过。应优先使用图纸中 ARC 摘要、Part.ArcOfCircle、Part.Wire、Part.Face、Shape.revolve 或显式轮廓构造来表达该圆角；只有缺少半径、位置和构造方向时，才允许记录为 skipped_features。
-重复孔要求：若 allowed_dimensions 中存在 repeated_diameter 或 repeated_thread 标注，例如 3xφ5、3×Φ5、3-φ5、3-M5，repeat_count 表示孔数量，diameter_value/thread_value 表示孔径或螺纹规格值；不得把前面的数量当作孔径，也不得只生成一个孔后忽略数量。
+圆角要求：若 modeling_task_payload.dimensions.allowed_dimensions 或 construction_dimensions 中存在 role=radius 的圆角/圆弧标注，尤其是 R=4x1.5 这类 repeat_count+radius_value 标注，不得因为 makeFillet 被禁用就直接跳过。应优先使用图纸中 ARC 摘要、Part.ArcOfCircle、Part.Wire、Part.Face、Shape.revolve 或显式轮廓构造来表达该圆角；只有缺少半径、位置和构造方向时，才允许记录为 skipped_features。
+重复孔要求：若 construction_dimensions 中存在 repeated_diameter 或 repeated_thread 标注，例如 3xφ5、3×Φ5、3-φ5、3-M5，repeat_count 表示孔数量，diameter_value/thread_value 表示孔径或螺纹规格值；不得把前面的数量当作孔径，也不得只生成一个孔后忽略数量。
 
 5. 基础布尔
 - Shape.fuse

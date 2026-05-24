@@ -106,6 +106,13 @@ class TestPartSemanticGenerator(unittest.TestCase):
 
         self.assertEqual({"type": "json_object"}, calls[0]["response_format"])
 
+    def test_semantic_prompts_require_chinese_user_facing_fields(self):
+        self.assertIn("所有面向用户阅读的自然语言字段必须使用中文", PartSemanticGenerator.SYSTEM_PROMPT)
+        self.assertIn("不要输出英文句子", PartSemanticGenerator.SYSTEM_PROMPT)
+        self.assertIn("不要输出英文风险句", PartSemanticGenerator.RETRY_SYSTEM_PROMPT)
+        self.assertIn("不得直接升级为圆柱凸台 boss", PartSemanticGenerator.SYSTEM_PROMPT)
+        self.assertIn("应优先解释为孔/通孔", PartSemanticGenerator.RETRY_SYSTEM_PROMPT)
+
 
 if __name__ == "__main__":
     unittest.main()

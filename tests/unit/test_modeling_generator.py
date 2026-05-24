@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 import unittest
+import sys
 from types import SimpleNamespace
 
+import src
 from src.intelligent_analyzer.modeling_generator import FreeCADInstructionGenerator
 from src.intelligent_analyzer.pipeline import IntelligentEngineeringAnalyzer
+from src.model_generator import FreeCADModeler, PlanarExtrudeModeler
+from src.compat.model_generator import FreeCADModeler as CompatFreeCADModeler
 from src.utils.stage_confirmation import (
     CallbackStageConfirmation,
     StageReview,
@@ -13,6 +17,23 @@ from src.reconstruction.modeling_constraints import ModelingConstraints
 
 
 class TestModelingGenerator(unittest.TestCase):
+    def test_package_root_uses_lazy_compat_exports(self):
+        self.assertEqual("1.0.0", src.__version__)
+        sys.modules.pop("src.geometry_analyzer", None)
+        src.__dict__.pop("GeometryAnalyzer", None)
+
+        self.assertNotIn("src.geometry_analyzer", sys.modules)
+        self.assertTrue(src.__all__)
+        self.assertIs(src.PlanarExtrudeModeler, PlanarExtrudeModeler)
+        self.assertNotIn("src.geometry_analyzer", sys.modules)
+
+        with self.assertRaises(AttributeError):
+            getattr(src, "MissingExport")
+
+    def test_planar_extrude_modeler_is_primary_internal_name(self):
+        self.assertIs(FreeCADModeler, PlanarExtrudeModeler)
+        self.assertIs(CompatFreeCADModeler, PlanarExtrudeModeler)
+
     def test_multiview_prompt_has_orthographic_guardrails(self):
         prompt = FreeCADInstructionGenerator.MODELING_SYSTEM_PROMPT
 
@@ -38,6 +59,9 @@ class TestModelingGenerator(unittest.TestCase):
         self.assertIn("不得把它建成向实体内部凹陷的槽", prompt)
         self.assertIn("传入 Part.Wire 的每一项必须是 Shape", prompt)
         self.assertIn("若轮廓点写成 `(x, y, 0)`", prompt)
+        self.assertIn("主体厚度、拉伸深度", prompt)
+        self.assertIn("不得编造默认值", prompt)
+        self.assertNotIn("应使用合理默认值", prompt)
 
     def test_prompt_uses_modeling_task_payload_only(self):
         generator = FreeCADInstructionGenerator.__new__(FreeCADInstructionGenerator)
@@ -205,6 +229,42 @@ class TestModelingGenerator(unittest.TestCase):
         analyzer.config = {"semantic_min_confidence": 0.7}
         self.assertFalse(analyzer._is_semantic_confidence_sufficient({"confidence": 0.4}))
         self.assertTrue(analyzer._is_semantic_confidence_sufficient({"confidence": 0.8}))
+
+    def test_transient_semantic_provider_failure_is_not_cacheable(self):
+        result = {
+            "part_semantics": {
+                "confidence": 0.0,
+                "warnings": ["Connection error."],
+            },
+            "modeling_instructions": {
+                "blocked_by_semantic_confidence": True,
+                "warnings": [
+                    "Part semantics confidence is insufficient; automatic modeling stopped."
+                ],
+            },
+        }
+
+        self.assertFalse(
+            IntelligentEngineeringAnalyzer._is_cacheable_analysis_result(result)
+        )
+
+    def test_non_transient_blocked_result_remains_cacheable(self):
+        result = {
+            "part_semantics": {
+                "confidence": 0.0,
+                "warnings": ["semantic adjudication needs user clarification"],
+            },
+            "modeling_instructions": {
+                "blocked_by_semantic_confidence": True,
+                "warnings": [
+                    "Part semantics confidence is insufficient; automatic modeling stopped."
+                ],
+            },
+        }
+
+        self.assertTrue(
+            IntelligentEngineeringAnalyzer._is_cacheable_analysis_result(result)
+        )
 
     def test_stage_confirmation_default_adapter_continues(self):
         confirmation = resolve_stage_confirmation({})

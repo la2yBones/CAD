@@ -36,10 +36,10 @@ class DimensionExtractor:
         """
         提取尺寸标注信息
 
-        ??:
+        参数:
             geometry_data: 几何数据
 
-        ??:
+        返回:
             尺寸标注结果
         """
         logger.info("开始提取尺寸标注")

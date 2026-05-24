@@ -94,6 +94,55 @@ class TestStageReport(unittest.TestCase):
         self.assertNotIn("这一段完整分析", report)
         self.assertIn("依据：关键尺寸 1 个", report)
 
+    def test_semantic_stage_summary_routes_missing_depth_to_clarification(self):
+        summary = build_semantic_stage_summary(
+            {
+                "part_semantics": {
+                    "part_type": "bracket",
+                    "confidence": 0.7,
+                    "dimension_source": "annotation",
+                    "key_dimensions": [],
+                    "base_features": [{"kind": "profile_extrusion"}],
+                    "additive_features": [],
+                    "subtractive_features": [],
+                    "uncertainties": ["Extrusion depth missing"],
+                    "warnings": [],
+                }
+            }
+        )
+
+        self.assertEqual(
+            "继续后进入建模前澄清，补充主体厚度或拉伸深度",
+            summary.next_step,
+        )
+
+    def test_semantic_stage_report_localizes_common_english_risks(self):
+        report = build_stage_report(
+            "semantic_reconstruction",
+            {
+                "part_semantics": {
+                    "part_type": "bracket",
+                    "confidence": 0.7,
+                    "dimension_source": "annotation",
+                    "key_dimensions": [],
+                    "base_features": [{"kind": "profile_extrusion"}],
+                    "additive_features": [{"kind": "boss"}],
+                    "subtractive_features": [],
+                    "uncertainties": [
+                        "Extrusion depth missing; a reasonable default may be assumed."
+                    ],
+                    "warnings": [
+                        "Modeling will require assumptions for missing depth and boss."
+                    ],
+                }
+            },
+        )
+
+        self.assertIn("主体拉伸深度缺失，需补充主体厚度或拉伸深度", report)
+        self.assertIn("建模需要对缺失深度、凸台作额外假设，需补充确认", report)
+        self.assertNotIn("Extrusion depth missing", report)
+        self.assertNotIn("Modeling will require assumptions", report)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -66,8 +66,8 @@ class FreeCADInstructionGenerator:
 - 中间变量若在后续步骤复用，必须在 try/except 外先给出默认值，避免前一步失败后后续引用未定义变量。
 - 若轮廓点写成 `(x, y, 0)`，则轮廓位于 XY 平面，拉伸方向必须沿 Z 轴；若需要沿 Y 轴拉伸，则轮廓点必须写成 `(x, 0, z)`，确保拉伸方向垂直于轮廓平面。
 - 对板件、法兰、底座这类正视图轮廓，默认优先在 XY 平面构造轮廓，再按深度沿 Z 轴拉伸，除非图纸语义明确要求其他坐标系。
-- 若输入包含 semantic_policy.dimension_plan，key_dimensions 只能使用 allowed_dimensions 中已裁决的尺寸；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
-- segment_dimensions 可作为建模构造步骤的分段尺寸；不得单独当成总长、深度、对边、对角、法兰直径或孔径。
+- 若输入包含 semantic_policy.dimension_plan，key_dimensions 可使用 allowed_dimensions 中已裁决的主体关键尺寸；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
+- construction_dimensions 可作为建模构造步骤的局部分段、局部特征或重复特征尺寸；若写入 key_dimensions，必须保留具体构造语义，不得单独当成总长、深度、对边、对角、法兰直径或孔径。
 - unresolved_dimensions 不得用于创建关键几何；如果缺少这些尺寸会影响建模，必须在 warnings 中说明并保守降级。
 - `1x45°`、`2x45°` 等倒角标注表示外部尖角被削掉形成斜面；实现时只能去除外角材料，不得把它建成向实体内部凹陷的槽、坑、沉孔或内切缺口。
 - 若 semantic_policy.dimension_plan.allowed_dimensions 或 part_semantics 中存在 chamfer，且语义里已经定位到外部边，不得因为“FreeCAD 基本 API 限制”直接跳过。必须至少尝试用白名单 API 建出可见斜面。
@@ -81,14 +81,14 @@ class FreeCADInstructionGenerator:
 - except 中不得静默忽略错误，必须将错误信息追加到 runtime_warnings 列表。
 - 脚本末尾必须打印 runtime_warnings，便于调试。
 - 主体建模必须优先完成并保存；孔、倒角、圆角、槽、螺纹、局部切除等细节特征应逐项尝试，局部失败时写入 skipped_features，不得让细节失败拖垮已经可靠生成的主体模型。
-- 脚本中应维护 completed_features、skipped_features 和 partial_completion_reason；若 skipped_features 非空，脚本末尾必须打印一行 `PARTIAL_MODELING_RESULT:` 加 JSON 字符串，包含 completed_features、skipped_features、partial_completion_reason。
+- 脚本中应维护 completed_features、skipped_features 和 partial_completion_reason；若脚本使用 json.dumps 打印 `PARTIAL_MODELING_RESULT:` 元数据，必须显式 `import json`。
 
 {MODELING_CONSTRAINTS_PROMPT}
 
 【FreeCAD 脚本要求】
 freecad_script 必须：
 - 是严格合法的 Python 代码字符串。
-- 包含必要导入：import FreeCAD, import Part。
+- 包含必要导入：import FreeCAD, import Part；若使用 json.dumps 输出元数据，必须包含 import json。
 - 创建文档：doc = FreeCAD.newDocument("GeneratedModel")。
 - 使用清晰变量名。
 - 缩进、括号、字符串引号必须正确。
@@ -120,7 +120,8 @@ JSON 必须包含以下字段：
 }
 
 【输出质量要求】
-- 如果尺寸缺失，不得编造精确数值；应使用合理默认值并在 warnings 中说明。
+- 如果主体厚度、拉伸深度、主体外形或关键建模尺寸缺失，不得编造默认值，也不得输出会生成无效实体的线框脚本；应输出空脚本或保守失败说明，并通过 warnings/skipped_features 明确需要用户补充。
+- 只有局部细节尺寸缺失且主体模型已经可靠可导出时，才允许跳过该局部细节并写入 skipped_features。
 - 如果轮廓不闭合，不得强行生成面；应跳过该轮廓并记录 warning。
 - 如果检测到二视图或三视图，但无法可靠重建三维结构，应在 warnings 中明确说明，并生成保守脚本或空脚本。
 - 主体外形、主要体量、方向或关键尺寸来源不确定时，不得伪装成部分完成；应输出空脚本或保守失败说明。只有主体可靠且可导出时，才允许把细节缺失记录为 skipped_features。
@@ -152,13 +153,13 @@ JSON 必须包含以下字段：
         """
         生成FreeCAD建模指令
 
-        ??:
+        参数:
             geometry_data: 几何数据
             view_analysis: 视图分析结果（可选）
             dimension_data: 尺寸标注结果（可选）
             extrude_height: 默认拉伸高度
 
-        ??:
+        返回:
             包含建模指令的结果字典
         """
         logger.info("开始生成FreeCAD建模指令")

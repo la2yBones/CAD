@@ -1,5 +1,6 @@
 from .ai_script_runner import AIScriptRunner
 from .freecad_bridge import FreeCADBridge
-from src.legacy.basic_modeling import FreeCADModeler
+from .planar_extrude import PlanarExtrudeModeler
+from src.compat.model_generator import FreeCADModeler
 
-__all__ = ["FreeCADModeler", "AIScriptRunner", "FreeCADBridge"]
+__all__ = ["PlanarExtrudeModeler", "FreeCADModeler", "AIScriptRunner", "FreeCADBridge"]

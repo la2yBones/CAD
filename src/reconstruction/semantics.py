@@ -28,15 +28,18 @@ class PartSemanticGenerator:
 - 对二视图/三视图，先解释为同一零件的正交投影。
 - 必须服从 semantic_policy.dimension_source，并把同一值原样写入 dimension_source；不得在语义生成阶段重新裁决尺寸来源。
 - 优先使用 semantic_policy.dimension_bindings 中已经完成的尺寸语义绑定；对 unresolved_linear 不得擅自命名为总长、对边、对角、法兰直径或孔径。
-- key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions 中的值和角色；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
-- semantic_policy.dimension_plan.segment_dimensions 可作为组合尺寸证据，也可作为建模构造步骤的分段尺寸；但不能单独命名为总长、深度、对边、对角、法兰直径或孔径。
+- key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions 中的值和角色；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
+- semantic_policy.dimension_plan.construction_dimensions 可作为组合尺寸证据、局部分段尺寸、局部特征尺寸或重复特征尺寸，也可作为建模构造步骤的尺寸；如果进入 key_dimensions，名称必须保留为 head_length、thread_length、fillet_radius 等具体构造含义，不能单独命名为总长、深度、对边、对角、法兰直径或孔径。
 - semantic_policy.dimension_plan.unresolved_dimensions 不得进入 key_dimensions；若建模需要这些值，必须写入 uncertainties。
-- 若 dimension_source=annotation，key_dimensions 只能来自 dimensions 中已有标注值或 semantic_policy.dimension_plan.allowed_dimensions 中已裁决的标注派生值；不得混入从实体坐标反算出的图形测量值。
+- 若 dimension_source=annotation，key_dimensions 只能来自 dimensions 中已有标注值、semantic_policy.dimension_plan.allowed_dimensions 中已裁决的标注派生值，或 construction_dimensions 中已裁决且保留具体构造语义的值；不得混入从实体坐标反算出的图形测量值。
 - 必须遵守 semantic_policy.feature_constraints；隐藏线、同心圆或孤立投影不能单独升级为孔、槽、切除。
 - 若 dimension_plan 中存在 chamfer（如 1x45°），只能解释为外部尖角削除；不得解释为内陷槽、凹坑、孔口沉槽或向实体内部新增的负形特征。
 - 若 dimension_plan 中存在 radius（如 R15），必须根据标注位置解释为圆弧/圆角特征。对六角头螺栓头部侧面的 R15，应表达为绕螺栓轴线形成的圆弧面/承面，而不是简单忽略为普通风险。
+- 对二视图/三视图中的中心圆、同心圆或直径标注，必须结合外轮廓和侧向视图判断。若圆位于六边形、正多边形、法兰或板件中心，且侧向视图没有明确凸出高度/轴向伸出证据，应优先解释为孔/通孔等 subtractive_features，不得直接升级为圆柱凸台 boss。
+- 若确实判断为凸台，必须能说明至少两个视图或标注共同支持其凸出方向、高度/深度和位置；否则写入 uncertainties 并等待澄清，不要生成 boss 语义。
 - 必须保留 semantic_policy.assumptions 施加的限制；若仍有未决事项，写入 uncertainties，不要绕过裁决继续硬猜。
 - 如果证据不足，写入 uncertainties，不要硬猜。
+- 所有面向用户阅读的自然语言字段必须使用中文，包括 summary、evidence、candidate_interpretations.summary/evidence、description、reason、uncertainties 和 warnings；除字段名、API 名称、单位和必要缩写外，不要输出英文句子。
 - additive_features 表示需要添加的凸台、肋、轴肩等。
 - subtractive_features 表示孔、槽、切除等。
 - 只输出 JSON，不要输出 Markdown 或推理过程。
@@ -99,12 +102,14 @@ class PartSemanticGenerator:
 这是第二次请求，上一次因输出过长被截断。请输出极简 JSON，只保留建模必需字段。
 砍掉 evidence、candidate_interpretations 和长 description。
 uncertainties/warnings 用短句。
+所有面向用户阅读的自然语言字段必须使用中文；不要输出英文风险句。
 必须服从 semantic_policy.dimension_source，并把同一值原样写入 dimension_source。
 优先使用 semantic_policy.dimension_bindings 中已完成的绑定；不得重命名 unresolved_linear。
-key_dimensions 只能使用 semantic_policy.dimension_plan.allowed_dimensions；allowed_dimensions 可包含由标注尺寸链组合得到的派生值。segment 尺寸可用于建模构造步骤，但不能直接命名为总长/深度等关键语义；unresolved 尺寸不能进入 key_dimensions。
+key_dimensions 优先使用 semantic_policy.dimension_plan.allowed_dimensions；allowed_dimensions 可包含由标注尺寸链组合得到的派生值。construction_dimensions 可用于建模构造步骤，必要时可进入 key_dimensions，但必须命名为具体构造语义，不能直接命名为总长/深度等关键语义；unresolved 尺寸不能进入 key_dimensions。
 必须遵守 semantic_policy.feature_constraints，不得把隐藏线、同心圆或孤立投影单独升级为孔、槽、切除。
 若存在 chamfer，只能表示外部尖角削除，不得输出内陷槽/凹坑语义。
 若存在 radius/R15，应保留为圆弧面或圆角语义；六角头螺栓头部 R15 表示绕轴线的圆弧面/承面。
+中心圆/直径标注若位于六边形、正多边形、法兰或板件中心，且没有侧向凸出高度证据，应优先解释为孔/通孔，不得直接解释为 boss；若凸台高度/位置不明，写入 uncertainties 并等待澄清。
 
 输出 JSON 必须包含（极简版）：
 {

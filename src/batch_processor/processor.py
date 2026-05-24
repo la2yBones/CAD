@@ -138,7 +138,7 @@ class CADProcessor:
         """
         初始化处理器
 
-        ??:
+        参数:
             config: 配置字典
         """
         self.config = config or {}
@@ -169,8 +169,8 @@ class CADProcessor:
     def _get_modeler(self):
         """获取或创建模型生成器"""
         if self._modeler is None:
-            from src.legacy.basic_modeling import FreeCADModeler
-            self._modeler = FreeCADModeler
+            from src.model_generator import PlanarExtrudeModeler
+            self._modeler = PlanarExtrudeModeler
         return self._modeler
 
     def _get_modeling_executor(self):
@@ -190,7 +190,7 @@ class CADProcessor:
         intelligent_analysis_result: Optional[Dict[str, Any]] = None,
         source_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """为智能模式准备可供后续语义校正使用的视图上下文。"""
+        """为统一智能处理准备可供后续语义校正使用的视图上下文。"""
         view_analysis = {}
 
         if intelligent_analysis_result:
@@ -244,13 +244,13 @@ class CADProcessor:
         """
         处理单个CAD文件
 
-        ??:
+        参数:
             file_path: CAD文件路径
             output_structure: 输出结构字典
             extrude_height: 拉伸高度
             enable_analysis: 是否启用AI分析
 
-        ??:
+        返回:
             处理结果对象
         """
         result = CADProcessResult(
@@ -351,14 +351,14 @@ class CADProcessor:
     def process_with_intelligent_analysis(self, file_path: str, output_structure: Dict[str, Path],
                                          extrude_height: float = 10.0) -> CADProcessResult:
         """
-        使用智能分析处理图纸（视图识别、尺寸提取、建模指令生成）
+        使用统一智能处理处理图纸。
 
-        ??:
+        参数:
             file_path: CAD文件路径
             output_structure: 输出结构
             extrude_height: 拉伸高度
 
-        ??:
+        返回:
             处理结果
         """
         result = CADProcessResult(
@@ -468,16 +468,29 @@ class CADProcessor:
                     logger.warning(traceback.format_exc())
                     return result
             else:
-                result.error_message = "智能模式需要有效的 DeepSeek API Key，未进入建模阶段"
+                result.error_message = "统一智能处理需要有效的 DeepSeek API Key，未进入建模阶段"
                 logger.warning(result.error_message)
                 return result
 
             if has_ai_script and self._is_fallback_modeling_result(modeling_instructions):
                 result.error_message = (
                     "AI 未能生成可靠的建模脚本，当前结果属于基础拉伸降级方案；"
-                    "智能模式不会调用通用建模器兜底"
+                    "统一智能处理不会调用通用建模器兜底"
                 )
                 logger.warning(result.error_message)
+                return result
+
+            if self._needs_pre_modeling_clarification(modeling_instructions):
+                result.mark_needs_clarification(
+                    self._build_pre_modeling_clarification_questions(modeling_instructions),
+                    self._build_pre_modeling_clarification_context(
+                        result.intelligent_analysis or {},
+                        geometry_data=geometry_data,
+                        extrude_height=extrude_height,
+                        file_path=file_path,
+                    ),
+                )
+                logger.info("建模指令表明主体实体无法生成，已转入用户澄清")
                 return result
 
             self._notify_progress_stage("modeling", "建模中")
@@ -487,8 +500,8 @@ class CADProcessor:
                 geometry_data=geometry_data,
                 output_structure=output_structure,
                 extrude_height=extrude_height,
-                missing_script_message="未获得可执行的 AI FreeCAD 建模脚本；智能模式不会调用通用建模器兜底",
-                script_failure_prefix="AI脚本执行失败，智能模式不会调用通用建模器兜底",
+                missing_script_message="未获得可执行的 AI FreeCAD 建模脚本；统一智能处理不会调用通用建模器兜底",
+                script_failure_prefix="AI脚本执行失败，统一智能处理不会调用通用建模器兜底",
                 completion_message=f"智能分析处理完成: {Path(file_path).name}",
             )
             self._attach_partial_modeling_clarification(
@@ -555,6 +568,125 @@ class CADProcessor:
             seen_keys.update(keys)
             deduplicated.append(question)
         return deduplicated
+
+    @classmethod
+    def _needs_pre_modeling_clarification(cls, modeling_instructions: Dict[str, Any]) -> bool:
+        """Pause before FreeCAD when instructions admit the main solid cannot be built."""
+        if not modeling_instructions:
+            return False
+        if modeling_instructions.get("completed_features"):
+            return False
+
+        skipped = modeling_instructions.get("skipped_features") or []
+        if isinstance(skipped, dict):
+            skipped = [skipped]
+        if not isinstance(skipped, list):
+            skipped = []
+        if any(cls._is_required_body_skipped_feature(feature) for feature in skipped):
+            return True
+
+        warnings = modeling_instructions.get("warnings", []) or []
+        if not isinstance(warnings, list):
+            warnings = [warnings]
+        text = " ".join(
+            str(item)
+            for item in [
+                modeling_instructions.get("analysis_summary", ""),
+                modeling_instructions.get("modeling_strategy", ""),
+                modeling_instructions.get("partial_completion_reason", ""),
+                *warnings,
+            ]
+        ).lower()
+        no_solid_markers = (
+            "no valid shape",
+            "cannot generate solid",
+            "no solid",
+            "无法生成solid",
+            "无法生成实体",
+            "不生成实体",
+            "缺失拉伸深度",
+            "主体拉伸深度缺失",
+        )
+        return any(marker in text for marker in no_solid_markers)
+
+    @staticmethod
+    def _is_required_body_skipped_feature(feature: Any) -> bool:
+        if not isinstance(feature, dict):
+            return False
+        text = " ".join(
+            str(feature.get(key, ""))
+            for key in ("name", "kind", "reason", "risk")
+        ).lower()
+        body_markers = (
+            "base",
+            "body",
+            "profile",
+            "main",
+            "主体",
+            "基体",
+            "基座",
+            "外轮廓",
+        )
+        failure_markers = (
+            "missing",
+            "cannot",
+            "failed",
+            "缺失",
+            "无法",
+            "失败",
+            "未生成",
+        )
+        return any(marker in text for marker in body_markers) and any(
+            marker in text for marker in failure_markers
+        )
+
+    @staticmethod
+    def _build_pre_modeling_clarification_questions(
+        modeling_instructions: Dict[str, Any],
+    ) -> list[Dict[str, Any]]:
+        skipped_text = CADProcessor._format_skipped_features_for_question(
+            modeling_instructions.get("skipped_features") or []
+        )
+        reason = skipped_text or "\n".join(
+            str(item) for item in modeling_instructions.get("warnings", []) or []
+        )
+        return [
+            {
+                "id": "user_modeling_hint",
+                "kind": "text",
+                "text": (
+                    "建模指令显示主体实体无法生成。请补充主体厚度、拉伸深度或可接受的建模假设，"
+                    "系统会基于当前图纸上下文重新生成模型。"
+                ),
+                "reason": reason,
+                "required": True,
+                "example": "例如：主体厚度按49处理；或主体厚度未标注，先按10生成主体供检查。",
+            }
+        ]
+
+    @staticmethod
+    def _build_pre_modeling_clarification_context(
+        intelligent_analysis_result: Dict[str, Any],
+        *,
+        geometry_data: Dict[str, Any],
+        extrude_height: float,
+        file_path: str,
+    ) -> Dict[str, Any]:
+        modeling_instructions = intelligent_analysis_result.get("modeling_instructions", {}) or {}
+        return {
+            "geometry_data": geometry_data,
+            "view_analysis": intelligent_analysis_result.get("view_analysis", {}),
+            "dimension_data": intelligent_analysis_result.get("dimension_extraction", {}),
+            "local_relationships": intelligent_analysis_result.get("local_relationships"),
+            "extrude_height": extrude_height,
+            "file_path": file_path,
+            "reconstruction_context": intelligent_analysis_result.get("reconstruction_context", {}),
+            "clarification_stage": "semantic_policy",
+            "pre_modeling_recovery": True,
+            "previous_modeling_instructions": modeling_instructions,
+            "skipped_features": list(modeling_instructions.get("skipped_features", []) or []),
+            "partial_completion_reason": modeling_instructions.get("partial_completion_reason"),
+        }
 
     def _execute_intelligent_modeling_path(
         self,
@@ -623,6 +755,12 @@ class CADProcessor:
                 return result
 
             self._notify_progress_stage("modeling", "建模中")
+            output_dir = output_structure.get("directory", Path(".") / "output")
+            base_name = Path(
+                result.clarification_context.get("file_path", result.input_file)
+            ).stem
+            analyzer.save_results(resumed_analysis, str(output_dir), base_name)
+
             modeled_result = self._execute_intelligent_modeling_path(
                 result=result,
                 intelligent_analysis_result=resumed_analysis,
@@ -747,13 +885,13 @@ class CADProcessor:
         """
         直接从几何数据开始处理（跳过CAD解析阶段）
 
-        ??:
+        参数:
             geometry_data: 几何数据字典
             output_structure: 输出结构
             extrude_height: 拉伸高度
             relationships: 关系数据
 
-        ??:
+        返回:
             处理结果
         """
         result = CADProcessResult(

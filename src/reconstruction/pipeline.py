@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """Semantic reconstruction pipeline decoupled from drawing-analysis orchestration."""
 
-import json
 from typing import Any, Dict, Optional
 
 from .context import ReconstructionContextBuilder
@@ -388,95 +387,98 @@ class SemanticReconstructionPipeline:
         part_semantics: Dict[str, Any],
         policy_result: Dict[str, Any],
     ) -> list[Dict[str, Any]]:
-        semantic_policy = (
-            policy_result.get("adjudicated_context", {}) or {}
-        ).get("semantic_policy", {}) or {}
-        if semantic_policy.get("user_modeling_hint"):
+        adjudicated_context = policy_result.get("adjudicated_context", {}) or {}
+        semantic_policy = adjudicated_context.get("semantic_policy", {}) or {}
+        if (
+            semantic_policy.get("user_modeling_hint")
+            or policy_result.get("user_modeling_hint")
+        ):
             return []
 
-        additive_features = part_semantics.get("additive_features", []) or []
-        detail_features = [
-            feature for feature in additive_features
-            if str(feature.get("kind") or "").lower() in {"boss", "rib", "shoulder"}
-        ]
-        if not detail_features:
-            return []
-
-        dimension_plan = policy_result.get("dimension_plan", {}) or {}
-        unresolved = dimension_plan.get("unresolved_dimensions", []) or []
-        unresolved_linear = [
-            item for item in unresolved
-            if isinstance(item.get("value"), (int, float))
-        ]
-        if not unresolved_linear:
-            return []
-
-        feature_names = [
-            str(feature.get("description") or feature.get("kind") or "增材细节")
-            for feature in detail_features[:3]
-        ]
-        dimension_options = [
-            str(item.get("text") or item.get("value"))
-            for item in unresolved_linear[:6]
-        ]
-        options = "、".join(
-            str(item.get("text") or item.get("value"))
-            for item in unresolved_linear[:6]
+        risks = SemanticReconstructionPipeline._critical_modeling_uncertainties(
+            part_semantics
         )
-        primary_feature = feature_names[0]
-        choice_options: list[Dict[str, str]] = []
-        for dimension_text in dimension_options:
-            choice_options.append({
-                "label": f"{dimension_text} 是该细节高度/深度",
-                "value": json.dumps({
-                    "action": "bind_feature_dimension",
-                    "dimension_text": dimension_text,
-                    "role": "feature_depth",
-                    "feature_kind": str(detail_features[0].get("kind") or ""),
-                    "feature_description": primary_feature,
-                }, ensure_ascii=False),
-            })
-        choice_options.extend([
+        if not risks:
+            return []
+
+        return [
             {
-                "label": "这些尺寸不是该细节尺寸",
-                "value": json.dumps({
-                    "action": "exclude_feature_dimensions",
-                    "dimension_texts": dimension_options,
-                    "feature_description": primary_feature,
-                }, ensure_ascii=False),
-            },
-            {
-                "label": "该细节不需要建模",
-                "value": json.dumps({
-                    "action": "skip_feature",
-                    "dimension_texts": dimension_options,
-                    "feature_description": primary_feature,
-                }, ensure_ascii=False),
-            },
-            {
-                "label": "不确定",
-                "value": json.dumps({
-                    "action": "unknown_feature_dimension",
-                    "dimension_texts": dimension_options,
-                    "feature_description": primary_feature,
-                }, ensure_ascii=False),
-            },
-        ])
-        return [{
-            "id": "bind_feature_detail_dimension",
-            "kind": "single_choice",
-            "required": True,
-            "text": (
-                "语义阶段识别到可能需要额外建模的凸台、肋或轴肩，但相关高度/深度尺寸尚未绑定。"
-                "请确认哪些未绑定尺寸用于这些细节。"
-            ),
-            "options": choice_options,
-            "reason": (
-                f"候选细节：{'；'.join(feature_names)}。"
-                f" 未绑定尺寸：{options}。不确认时系统可能只能生成主体并跳过这些细节。"
-            ),
-            "example": "优先选择候选项；如果候选项说不清，可在下方建模提示中补充说明。",
-        }]
+                "id": "user_modeling_hint",
+                "kind": "text",
+                "text": (
+                    "语义阶段仍有关键建模信息未裁决。请补充主体厚度/拉伸深度、"
+                    "凸台高度/位置，或说明相关圆形特征是否应作为孔/通孔处理。"
+                ),
+                "reason": "\n".join(risks[:6]),
+                "required": True,
+                "example": (
+                    "例如：这是六角螺母，⌀70 是中心通孔，49 是厚度；"
+                    "不存在凸台。"
+                ),
+            }
+        ]
+
+    @staticmethod
+    def _critical_modeling_uncertainties(part_semantics: Dict[str, Any]) -> list[str]:
+        risk_items = []
+        risk_items.extend(part_semantics.get("uncertainties", []) or [])
+        risk_items.extend(part_semantics.get("warnings", []) or [])
+        planar = part_semantics.get("planar_modeling_semantics") or {}
+        risk_items.extend(planar.get("uncertainties", []) or [])
+
+        has_additive = bool(part_semantics.get("additive_features") or [])
+        critical = []
+        for item in risk_items:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            lower = text.lower()
+            is_missing = any(
+                marker in lower
+                for marker in (
+                    "missing",
+                    "not specified",
+                    "not annotated",
+                    "not dimensioned",
+                    "未标注",
+                    "缺失",
+                    "缺少",
+                    "不明确",
+                )
+            )
+            if not is_missing:
+                continue
+            mentions_body_depth = any(
+                marker in lower
+                for marker in (
+                    "extrusion depth",
+                    "missing depth",
+                    "body depth",
+                    "thickness",
+                    "主体厚度",
+                    "拉伸深度",
+                    "主体深度",
+                    "厚度",
+                    "深度",
+                )
+            )
+            mentions_additive_detail = has_additive and any(
+                marker in lower
+                for marker in (
+                    "boss",
+                    "additive",
+                    "height",
+                    "center location",
+                    "position",
+                    "凸台",
+                    "增材",
+                    "高度",
+                    "位置",
+                )
+            )
+            if mentions_body_depth or mentions_additive_detail:
+                critical.append(text)
+        return list(dict.fromkeys(critical))
 
     def _path_clarification_payload(
         self,

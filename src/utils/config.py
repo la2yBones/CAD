@@ -52,10 +52,10 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
       2. .env file in project root
       3. 配置文件字面值（兜底）
 
-    ??:
+    Args:
         config_path: Path to config YAML file. Defaults to config/config.yaml.
 
-    ??:
+    Returns:
         Resolved configuration dictionary.
     """
     if config_path is None:

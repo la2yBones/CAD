@@ -52,11 +52,11 @@ class AIScriptRunner:
         """
         运行AI生成的FreeCAD脚本（双模式自适应）
 
-        ??:
+        参数:
             script_content: Python脚本内容
             output_path: 可选的STEP输出路径
 
-        ??:
+        返回:
             包含执行结果的字典
         """
         if not self.bridge or not self.bridge.freecad_available:
@@ -79,6 +79,8 @@ class AIScriptRunner:
 
     def _normalize_generated_script(self, script_content: str) -> str:
         """发送到 FreeCAD 前修正常见 AI 几何脚本问题。"""
+        script_content = self._ensure_json_import(script_content)
+        script_content = self._normalize_edge_vertex_aliases(script_content)
         script_content = self._normalize_arc_of_circle_calls(script_content)
         pattern = re.compile(
             r"^(?P<prefix>\s*\w+\s*=\s*Part\.(?:LineSegment|ArcOfCircle)\(.*\))\s*$",
@@ -92,6 +94,35 @@ class AIScriptRunner:
             return f"{line}.toShape()"
 
         return pattern.sub(add_to_shape, script_content)
+
+    @staticmethod
+    def _ensure_json_import(script_content: str) -> str:
+        if "json." not in script_content:
+            return script_content
+        if re.search(r"^\s*import\s+json\s*$", script_content, re.MULTILINE):
+            return script_content
+        if re.search(r"^\s*from\s+json\s+import\s+", script_content, re.MULTILINE):
+            return script_content
+
+        lines = script_content.splitlines()
+        insert_at = 0
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("import ") or stripped.startswith("from "):
+                insert_at = index + 1
+                continue
+            if stripped == "":
+                continue
+            break
+        lines.insert(insert_at, "import json")
+        trailing_newline = "\n" if script_content.endswith("\n") else ""
+        return "\n".join(lines) + trailing_newline
+
+    @staticmethod
+    def _normalize_edge_vertex_aliases(script_content: str) -> str:
+        script_content = re.sub(r"\.LastVertex\b", ".Vertexes[-1]", script_content)
+        script_content = re.sub(r"\.FirstVertex\b", ".Vertexes[0]", script_content)
+        return script_content
 
     @staticmethod
     def _normalize_arc_of_circle_calls(script_content: str) -> str:
@@ -435,11 +466,11 @@ import Part
         """
         从文件运行脚本
 
-        ??:
+        参数:
             script_file: .py脚本文件路径
             output_path: 可选的STEP输出路径
 
-        ??:
+        返回:
             执行结果
         """
         try:

@@ -181,22 +181,38 @@ class SemanticPolicy:
             "radius",
             "diameter",
             "thread_size",
+            "thread_length",
             "chamfer",
             "feature_depth",
             "feature_height",
             "projected_profile_horizontal_extent",
             "projected_profile_vertical_extent",
         }
-        segment_roles = {"profile_length_segment"}
+        construction_roles = {
+            "profile_length_segment",
+            "radius",
+            "diameter",
+            "thread_size",
+            "thread_length",
+            "chamfer",
+            "feature_depth",
+            "feature_height",
+        }
         allowed_dimensions = [
             cls._plan_item(binding)
             for binding in bindings
-            if binding.get("semantic_role") in allowed_roles
+            if (
+                binding.get("semantic_role") in allowed_roles
+                and not cls._is_construction_dimension(binding)
+            )
         ]
-        segment_dimensions = [
+        construction_dimensions = [
             cls._plan_item(binding)
             for binding in bindings
-            if binding.get("semantic_role") in segment_roles
+            if (
+                binding.get("semantic_role") in construction_roles
+                or cls._is_construction_dimension(binding)
+            )
         ]
         unresolved_dimensions = [
             cls._plan_item(binding)
@@ -210,19 +226,19 @@ class SemanticPolicy:
         ]
         return {
             "allowed_dimensions": allowed_dimensions,
-            "segment_dimensions": segment_dimensions,
+            "construction_dimensions": construction_dimensions,
             "unresolved_dimensions": unresolved_dimensions,
             "excluded_dimensions": excluded_dimensions,
             "rules": [
-                "key_dimensions 只能使用 allowed_dimensions 中的值和语义角色。",
-                "segment_dimensions 只能作为组合尺寸的证据，不能单独命名为总长、深度、对边、对角、法兰直径或孔径。",
+                "key_dimensions 只能直接使用 allowed_dimensions 中的主体关键尺寸。",
+                "construction_dimensions 可用于建模构造；若进入 key_dimensions，必须保留具体构造语义，不得命名为总长、深度、对边、对角、法兰直径或孔径。",
                 "unresolved_dimensions 不得进入 key_dimensions；若建模需要它们，必须写入 uncertainties 或触发追问。",
             ],
         }
 
     @classmethod
     def _plan_item(cls, binding: Dict[str, Any]) -> Dict[str, Any]:
-        return {
+        item = {
             "text": binding.get("text"),
             "value": binding.get("value"),
             "role": binding.get("semantic_role"),
@@ -238,6 +254,48 @@ class SemanticPolicy:
             "feature_description": binding.get("feature_description"),
             "source": binding.get("source"),
         }
+        dimension_kind = cls._construction_dimension_kind(binding)
+        if dimension_kind:
+            item["dimension_kind"] = dimension_kind
+            item["binding_status"] = "adjudicated"
+        if not item.get("feature_kind"):
+            feature_kind = cls._feature_kind_from_callout(binding)
+            if feature_kind:
+                item["feature_kind"] = feature_kind
+        return item
+
+    @classmethod
+    def _is_construction_dimension(cls, binding: Dict[str, Any]) -> bool:
+        return bool(cls._construction_dimension_kind(binding))
+
+    @classmethod
+    def _construction_dimension_kind(cls, binding: Dict[str, Any]) -> str:
+        if binding.get("repeat_count"):
+            return "feature_count_size"
+        if binding.get("semantic_role") == "profile_length_segment":
+            return "linear_segment"
+        if binding.get("semantic_role") in {
+            "radius",
+            "diameter",
+            "thread_size",
+            "thread_length",
+            "chamfer",
+            "feature_depth",
+            "feature_height",
+        }:
+            return "feature_size"
+        return ""
+
+    @staticmethod
+    def _feature_kind_from_callout(binding: Dict[str, Any]) -> str:
+        callout = binding.get("callout")
+        if callout == "repeated_radius":
+            return "radius"
+        if callout == "repeated_diameter":
+            return "diameter"
+        if callout == "repeated_thread":
+            return "thread"
+        return ""
 
     @classmethod
     def _classify_dimension(
@@ -279,7 +337,7 @@ class SemanticPolicy:
         dimension: Dict[str, Any],
         reconstruction_context: Dict[str, Any],
     ) -> tuple[str, float, List[str]] | None:
-        if str(dimension.get("type") or "") != "线性":
+        if not cls._is_linear_dimension_type(dimension):
             return None
 
         line = cls._nearest_associated_line(dimension)
@@ -307,7 +365,7 @@ class SemanticPolicy:
         dimension: Dict[str, Any],
         reconstruction_context: Dict[str, Any],
     ) -> Dict[str, Any] | None:
-        if str(dimension.get("type") or "") != "线性":
+        if not cls._is_linear_dimension_type(dimension):
             return None
         raw_points = dimension.get("definition_points", []) or []
         points = raw_points[:2]
@@ -344,6 +402,11 @@ class SemanticPolicy:
         }
 
     @staticmethod
+    def _is_linear_dimension_type(dimension: Dict[str, Any]) -> bool:
+        dim_type = str(dimension.get("type") or "")
+        return dim_type in {"线性", "绾挎€?", "Япад"}
+
+    @staticmethod
     def _is_real_point(point: Any) -> bool:
         if not isinstance(point, list) or len(point) < 2:
             return False
@@ -360,6 +423,7 @@ class SemanticPolicy:
         cls._apply_projected_profile_extent_roles(span_bindings)
         cls._apply_square_profile_roles(span_bindings)
         cls._append_main_view_composite_length(bindings, span_bindings)
+        cls._apply_thread_length_roles(bindings)
 
     @classmethod
     def _apply_square_profile_roles(cls, bindings: List[Dict[str, Any]]) -> None:
@@ -450,6 +514,58 @@ class SemanticPolicy:
                 binding["semantic_role"] = "profile_length_segment"
                 binding["confidence"] = 0.85
                 binding["evidence"] = ["主视图总长尺寸链的一段"]
+
+    @classmethod
+    def _apply_thread_length_roles(cls, bindings: List[Dict[str, Any]]) -> None:
+        if not cls._has_bolt_thread_length_context(bindings):
+            return
+
+        containers = [
+            binding for binding in bindings
+            if binding.get("semantic_role") in ("profile_length_segment", "profile_length")
+            and (binding.get("span") or {}).get("view_name") == "main"
+            and (binding.get("span") or {}).get("orientation") == "horizontal"
+        ]
+        if not containers:
+            return
+
+        for binding in bindings:
+            span = binding.get("span") or {}
+            if binding.get("semantic_role") != "unresolved_linear":
+                continue
+            if span.get("view_name") != "main" or span.get("orientation") != "horizontal":
+                continue
+            if not any(cls._is_span_inside(binding, container) for container in containers):
+                continue
+            binding["semantic_role"] = "thread_length"
+            binding["confidence"] = 0.9
+            binding["evidence"] = [
+                "螺栓/轴类图纸中该主视图内部水平尺寸位于杆部长度段内，裁决为螺纹长度",
+            ]
+
+    @staticmethod
+    def _has_bolt_thread_length_context(bindings: List[Dict[str, Any]]) -> bool:
+        roles = {binding.get("semantic_role") for binding in bindings}
+        has_head_or_end_detail = "chamfer" in roles and "radius" in roles
+        projected_roles = {
+            "projected_profile_horizontal_extent",
+            "projected_profile_vertical_extent",
+        }
+        has_end_view_extent = bool(projected_roles & roles)
+        return has_head_or_end_detail and has_end_view_extent
+
+    @classmethod
+    def _is_span_inside(cls, inner: Dict[str, Any], outer: Dict[str, Any]) -> bool:
+        inner_range = (inner.get("span") or {}).get("range") or []
+        outer_range = (outer.get("span") or {}).get("range") or []
+        if len(inner_range) < 2 or len(outer_range) < 2:
+            return False
+        tolerance = cls._span_tolerance(inner, outer)
+        return (
+            outer_range[0] - tolerance <= inner_range[0]
+            and inner_range[1] <= outer_range[1] + tolerance
+            and (outer_range[1] - outer_range[0]) > (inner_range[1] - inner_range[0]) + tolerance
+        )
 
     @classmethod
     def _outer_adjacent_chain(cls, bindings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -728,13 +844,21 @@ class SemanticPolicy:
         bindings: List[Dict[str, Any]],
         question_id: str,
     ) -> None:
-        if question_id != "bind_profile_length":
+        role_by_question = {
+            "bind_profile_length": "profile_length",
+            "bind_profile_height": "profile_height",
+        }
+        role = role_by_question.get(question_id)
+        if role is None:
             return
         for binding in bindings:
-            if binding.get("semantic_role") == "unresolved_linear":
+            if (
+                binding.get("semantic_role") == "unresolved_linear"
+                and cls._is_subject_axis_candidate(binding, role)
+            ):
                 binding["semantic_role"] = "excluded_by_user"
                 binding["confidence"] = 0.0
-                binding["evidence"] = ["用户不确定该标注是否为主视图总长，已排除自动绑定"]
+                binding["evidence"] = ["用户不确定该标注是否为主体关键尺寸，已排除自动绑定"]
 
     @classmethod
     def _questions_for_conflicting_key_roles(
@@ -789,26 +913,6 @@ class SemanticPolicy:
             for binding in bindings
             if binding.get("semantic_role") not in (None, "unresolved_linear")
         }
-        unresolved = [
-            binding for binding in bindings
-            if binding.get("semantic_role") == "unresolved_linear"
-            and isinstance(binding.get("value"), (int, float))
-        ]
-        if not unresolved:
-            return []
-
-        unresolved_options = [
-            choice_option(
-                cls._binding_label(binding),
-                cls._format_dimension_value(binding["value"]),
-            )
-            for binding in unresolved
-        ]
-        unresolved_options.append(choice_option(
-            "我不确定 / 这些都不要绑定为总长",
-            cls.UNKNOWN_ANSWER,
-        ))
-
         questions: List[Dict[str, Any]] = []
         required_roles = (
             ("profile_length", "主视图中的水平总尺寸"),
@@ -816,6 +920,20 @@ class SemanticPolicy:
         for role, label in required_roles:
             if role in bound_roles:
                 continue
+            candidates = cls._subject_axis_candidates(bindings, role)
+            if not candidates:
+                continue
+            unresolved_options = [
+                choice_option(
+                    cls._binding_label(binding),
+                    cls._format_dimension_value(binding["value"]),
+                )
+                for binding in candidates
+            ]
+            unresolved_options.append(choice_option(
+                "我不确定 / 这些都不要绑定为总长",
+                cls.UNKNOWN_ANSWER,
+            ))
             questions.append(clarification_question(
                 question_id=f"bind_{role}",
                 text=f"请确认哪个标注值表示{label}。如果你也看不出来，选择“不确定”。",
@@ -825,6 +943,34 @@ class SemanticPolicy:
                 example="选择图纸上表示总尺寸的值；不确定就选“不确定”。",
             ))
         return questions
+
+    @classmethod
+    def _subject_axis_candidates(
+        cls,
+        bindings: List[Dict[str, Any]],
+        role: str,
+    ) -> List[Dict[str, Any]]:
+        return [
+            binding for binding in bindings
+            if binding.get("semantic_role") == "unresolved_linear"
+            and isinstance(binding.get("value"), (int, float))
+            and cls._is_subject_axis_candidate(binding, role)
+        ]
+
+    @staticmethod
+    def _is_subject_axis_candidate(binding: Dict[str, Any], role: str) -> bool:
+        span = binding.get("span") or {}
+        if role == "profile_length":
+            return (
+                span.get("view_name") == "main"
+                and span.get("orientation") == "horizontal"
+            )
+        if role == "profile_height":
+            return (
+                span.get("view_name") == "main"
+                and span.get("orientation") == "vertical"
+            )
+        return False
 
     @staticmethod
     def _role_display_label(role: str) -> str:

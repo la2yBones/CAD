@@ -1,9 +1,5 @@
 # API 与模块参考
 
-版本：1.0.0
-变更日期：2026-05-13
-影响范围：配置 API、日志 API、解析器预览 API、FreeCAD 桥接、Result 类型
-
 ## 公共工具
 
 ### `src.utils.load_config(config_path: Optional[str] = None) -> dict`
@@ -106,34 +102,36 @@ examples/output/<图纸名>/<图纸名>_preview.png
 
 ## 批处理
 
-### `src.batch_processor.BatchPipeline`
+### `src.batch_processor.CADPipeline`
 
 职责：
 
 - 扫描输入目录
 - 调用解析器
-- 执行基础或智能分析
-- 调用模型生成器
+- 执行统一智能处理或内部平面拉伸兼容路径
+- 调用建模执行分发
 - 汇总每个文件的处理结果
 
 典型入口：
 
 ```python
-from src.batch_processor import BatchPipeline
+from src.batch_processor import CADPipeline
 from src.utils import load_config
 
-pipeline = BatchPipeline(load_config())
-result = pipeline.process_file_basic("sample.dxf", extrude_height=10.0)
+pipeline = CADPipeline(config=load_config())
+result = pipeline.process_file_intelligent("sample.dxf")
 ```
 
-新代码优先使用语义明确的入口：
+推荐入口：
 
 ```python
 smart = pipeline.process_file_intelligent("sample.dxf")
-basic = pipeline.process_file_basic("sample.dxf")
+batch = pipeline.process_directory_intelligent()
 ```
 
-`process_file(..., enable_analysis=True/False)` 仅保留为兼容入口；新代码应使用语义明确的模式入口。
+`process_file(...)`、`process_file_basic(...)` 和 `process_file_legacy_analysis(...)` 仅保留为兼容或内部专用入口；新业务代码应从统一智能处理进入，让系统依据建模路径裁决选择平面拉伸路径或语义重建路径。
+
+兼容入口的冻结范围与迁移条件见 [兼容入口冻结清单](../compatibility.md)。
 
 ## 智能处理编排
 
@@ -146,7 +144,7 @@ basic = pipeline.process_file_basic("sample.dxf")
 - 调用 `SemanticReconstructionPipeline` 这个语义重建内核
 - 返回包含语义结果和 `modeling_path_decision` 的智能分析结果
 
-智能模式需要 `DEEPSEEK_API_KEY` 配置可用。当前本地规则和聚类逻辑仍是智能分析子过程的重要组成部分。
+统一智能处理需要 `DEEPSEEK_API_KEY` 配置可用。当前本地规则和聚类逻辑仍是智能分析子过程的重要组成部分。
 
 LLM 输入采用阶段化载荷：
 
@@ -172,13 +170,17 @@ LLM 输入采用阶段化载荷：
 FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 ```
 
-### `src.legacy.basic_modeling.FreeCADModeler`
+### `src.model_generator.PlanarExtrudeModeler`
 
 职责：
 
-- 依据解析结果和分析结果生成 FreeCAD 脚本
+- 承接平面拉伸路径的旧执行实现
 - 导出 STEP、STL、FCStd
 - 汇总生成结果和错误信息
+
+`PlanarExtrudeModeler` 是平面拉伸路径的内部 adapter 名称，当前复用旧 `FreeCADModeler` 实现。`FreeCADModeler` 仍可通过兼容层导入，但它不是新代码的主入口；新流程应经由 `CADPipeline.process_file_intelligent(...)` 和建模执行分发调用。
+
+旧导入路径只做兼容转发，详见 [兼容入口冻结清单](../compatibility.md)。
 
 ## 安全边界
 

@@ -195,7 +195,7 @@ class TestPartSemanticsValidator(unittest.TestCase):
                         "allowed_dimensions": [
                             {"text": "9+39", "value": 48.0, "role": "profile_length"}
                         ],
-                        "segment_dimensions": [
+                        "construction_dimensions": [
                             {"text": "9", "value": 9.0, "role": "profile_length_segment"},
                             {"text": "39", "value": 39.0, "role": "profile_length_segment"},
                         ],
@@ -206,6 +206,109 @@ class TestPartSemanticsValidator(unittest.TestCase):
 
         self.assertTrue(valid)
         self.assertEqual([], errors)
+
+    def test_part_semantics_validator_allows_adjudicated_construction_dimensions(self):
+        valid, errors = PartSemanticsValidator().validate(
+            {
+                "part_type": "bolt",
+                "confidence": 0.9,
+                "summary": "",
+                "evidence": [],
+                "candidate_interpretations": [],
+                "coordinate_system": {},
+                "dimension_source": "annotation",
+                "base_features": [],
+                "additive_features": [],
+                "subtractive_features": [],
+                "planar_modeling_semantics": {
+                    "profile": None,
+                    "extrusion_direction": "unknown",
+                    "extrusion_depth": None,
+                    "cut_features": [],
+                    "dimension_bindings": [],
+                    "uncertainties": [],
+                },
+                "revolve_modeling_semantics": None,
+                "preferred_modeling_path": None,
+                "key_dimensions": [
+                    {"name": "head_length", "value": 9.0, "unit": "mm"},
+                    {"name": "threaded_shank_length", "value": 39.0, "unit": "mm"},
+                ],
+                "uncertainties": [],
+                "warnings": [],
+            },
+            {
+                "dimensions": [
+                    {"text": "9", "value": 9.0},
+                    {"text": "39", "value": 39.0},
+                    {"text": "30", "value": 30.0},
+                ],
+                "semantic_policy": {
+                    "dimension_source": "annotation",
+                    "dimension_plan": {
+                        "allowed_dimensions": [
+                            {"text": "9+39", "value": 48.0, "role": "profile_length"}
+                        ],
+                        "construction_dimensions": [
+                            {"text": "9", "value": 9.0, "role": "profile_length_segment"},
+                            {"text": "39", "value": 39.0, "role": "profile_length_segment"},
+                        ],
+                        "unresolved_dimensions": [
+                            {"text": "30", "value": 30.0, "role": "unresolved_linear"}
+                        ],
+                    },
+                },
+            },
+        )
+
+        self.assertTrue(valid)
+        self.assertEqual([], errors)
+
+    def test_part_semantics_validator_rejects_misnamed_construction_dimensions(self):
+        valid, errors = PartSemanticsValidator().validate(
+            {
+                "part_type": "bolt",
+                "confidence": 0.9,
+                "summary": "",
+                "evidence": [],
+                "candidate_interpretations": [],
+                "coordinate_system": {},
+                "dimension_source": "annotation",
+                "base_features": [],
+                "additive_features": [],
+                "subtractive_features": [],
+                "planar_modeling_semantics": {
+                    "profile": None,
+                    "extrusion_direction": "unknown",
+                    "extrusion_depth": None,
+                    "cut_features": [],
+                    "dimension_bindings": [],
+                    "uncertainties": [],
+                },
+                "revolve_modeling_semantics": None,
+                "preferred_modeling_path": None,
+                "key_dimensions": [
+                    {"name": "total_length", "value": 9.0, "unit": "mm"},
+                ],
+                "uncertainties": [],
+                "warnings": [],
+            },
+            {
+                "dimensions": [{"text": "9", "value": 9.0}],
+                "semantic_policy": {
+                    "dimension_source": "annotation",
+                    "dimension_plan": {
+                        "allowed_dimensions": [],
+                        "construction_dimensions": [
+                            {"text": "9", "value": 9.0, "role": "profile_length_segment"}
+                        ],
+                    },
+                },
+            },
+        )
+
+        self.assertFalse(valid)
+        self.assertTrue(any("construction_dimensions" in error for error in errors))
 
     def test_part_semantics_validator_requires_planar_modeling_semantics(self):
         valid, errors = PartSemanticsValidator().validate(

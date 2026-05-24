@@ -1,17 +1,12 @@
 # 快速开始
 
-版本：1.0.0
-变更日期：2026-05-13
-影响范围：安装、配置、测试、CLI、GUI
-
 ## 1. 准备环境
 
 推荐使用已创建的 Conda 环境：
 
 ```powershell
-conda activate cad_study
 cd E:\Code\CAD
-python --version
+D:\anaconda3\envs\cad_study\python.exe --version
 ```
 
 已验证环境：
@@ -26,20 +21,18 @@ python --version
 
 在当前 PowerShell 中，如果 `conda run` 出现临时文件或 `chcp` 相关报错，可直接调用：
 
-```powershell
-D:\anaconda3\envs\cad_study\python.exe
-```
+后续命令默认使用该解释器，避免混到系统 Python。
 
 ## 2. 安装依赖
 
 ```powershell
-python -m pip install -r requirements.txt
+D:\anaconda3\envs\cad_study\python.exe -m pip install -r requirements.txt
 ```
 
 或使用项目元数据安装开发依赖：
 
 ```powershell
-python -m pip install -e ".[dev]"
+D:\anaconda3\envs\cad_study\python.exe -m pip install -e ".[dev]"
 ```
 
 ## 3. 配置 `.env`
@@ -72,12 +65,6 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 
 ```powershell
 D:\anaconda3\envs\cad_study\python.exe -m pytest tests\unit -q
-```
-
-当前单元测试验证结果：
-
-```text
-3 passed
 ```
 
 `ezdxf/pyparsing` 可能输出弃用警告，不影响当前测试通过。

@@ -203,7 +203,7 @@ class EngineeringViewAnalyzer:
                 "type": view_type,
                 "entities": group,
                 "entity_count": len(group),
-                "bbox": self._compute_bbox_for_cluster(group),
+                "bbox": self._compute_view_bbox(group),
                 "centroid": list(self._compute_centroid(group)),
                 "layers": list(set(e.get("layer", "default") for e in group)),
             })
@@ -501,7 +501,7 @@ class EngineeringViewAnalyzer:
                 "type": "单视图",
                 "entities": view_groups[label],
                 "entity_count": len(view_groups[label]),
-                "bbox": self._compute_bbox(view_groups[label]),
+                "bbox": self._compute_view_bbox(view_groups[label]),
             }]
 
         centroids: Dict[int, Tuple[float, float]] = {}
@@ -546,7 +546,7 @@ class EngineeringViewAnalyzer:
                 "type": type_map[name],
                 "entities": merged_entities,
                 "entity_count": len(merged_entities),
-                "bbox": self._compute_bbox(merged_entities),
+                "bbox": self._compute_view_bbox(merged_entities),
                 "centroid": list(self._compute_centroid(merged_entities)),
             })
 
@@ -642,6 +642,33 @@ class EngineeringViewAnalyzer:
             return (0.0, 0.0)
         return (sum(xs) / len(xs), sum(ys) / len(ys))
 
+    def _compute_view_bbox(self, entities: List[Dict]) -> Tuple[float, float, float, float]:
+        """Compute a view outline bbox without letting construction centerlines span views."""
+        outline_entities = [
+            entity for entity in entities
+            if not self._is_construction_entity(entity)
+        ]
+        if outline_entities:
+            return self._compute_bbox_for_cluster(outline_entities)
+        return self._compute_bbox_for_cluster(entities)
+
+    @staticmethod
+    def _is_construction_entity(entity: Dict) -> bool:
+        layer = str(entity.get("layer", "") or "").lower()
+        entity_type = str(entity.get("type", "") or "").upper()
+        construction_layer_markers = (
+            "点划线",
+            "center",
+            "centre",
+            "axis",
+            "dash",
+            "phantom",
+            "construction",
+        )
+        return entity_type == "LINE" and any(
+            marker in layer for marker in construction_layer_markers
+        )
+
     def _compute_bbox(self, entities: List[Dict]) -> Tuple[float, float, float, float]:
         xs, ys = [], []
         for e in entities:
@@ -723,6 +750,7 @@ class EngineeringViewAnalyzer:
                 "type": self._determine_view_type(view_name),
                 "entities": group_entities,
                 "entity_count": len(group_entities),
+                "bbox": self._compute_view_bbox(group_entities),
                 "layers": list(set(e.get("layer", "default") for e in group_entities))
             })
 

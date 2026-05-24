@@ -95,11 +95,14 @@ class TestSemanticPolicy(unittest.TestCase):
             }
         )
 
-        allowed = policy_result["dimension_plan"]["allowed_dimensions"][0]
-        self.assertEqual("radius", allowed["role"])
-        self.assertEqual(1.5, allowed["value"])
-        self.assertEqual("repeated_radius", allowed["callout"])
-        self.assertEqual(4, allowed["repeat_count"])
+        construction = policy_result["dimension_plan"]["construction_dimensions"][0]
+        self.assertEqual("radius", construction["role"])
+        self.assertEqual("feature_count_size", construction["dimension_kind"])
+        self.assertEqual("adjudicated", construction["binding_status"])
+        self.assertEqual(1.5, construction["value"])
+        self.assertEqual("repeated_radius", construction["callout"])
+        self.assertEqual(4, construction["repeat_count"])
+        self.assertEqual("radius", construction["feature_kind"])
 
     def test_semantic_policy_preserves_repeated_diameter_metadata(self):
         policy_result = SemanticPolicy().evaluate(
@@ -119,12 +122,14 @@ class TestSemanticPolicy(unittest.TestCase):
             }
         )
 
-        allowed = policy_result["dimension_plan"]["allowed_dimensions"][0]
-        self.assertEqual("diameter", allowed["role"])
-        self.assertEqual(5.0, allowed["value"])
-        self.assertEqual("repeated_diameter", allowed["callout"])
-        self.assertEqual(3, allowed["repeat_count"])
-        self.assertEqual(5.0, allowed["diameter_value"])
+        construction = policy_result["dimension_plan"]["construction_dimensions"][0]
+        self.assertEqual("diameter", construction["role"])
+        self.assertEqual("feature_count_size", construction["dimension_kind"])
+        self.assertEqual(5.0, construction["value"])
+        self.assertEqual("repeated_diameter", construction["callout"])
+        self.assertEqual(3, construction["repeat_count"])
+        self.assertEqual(5.0, construction["diameter_value"])
+        self.assertEqual("diameter", construction["feature_kind"])
 
     def test_semantic_policy_preserves_repeated_thread_metadata(self):
         policy_result = SemanticPolicy().evaluate(
@@ -144,12 +149,14 @@ class TestSemanticPolicy(unittest.TestCase):
             }
         )
 
-        allowed = policy_result["dimension_plan"]["allowed_dimensions"][0]
-        self.assertEqual("thread_size", allowed["role"])
-        self.assertEqual(5.0, allowed["value"])
-        self.assertEqual("repeated_thread", allowed["callout"])
-        self.assertEqual(3, allowed["repeat_count"])
-        self.assertEqual(5.0, allowed["thread_value"])
+        construction = policy_result["dimension_plan"]["construction_dimensions"][0]
+        self.assertEqual("thread_size", construction["role"])
+        self.assertEqual("feature_count_size", construction["dimension_kind"])
+        self.assertEqual(5.0, construction["value"])
+        self.assertEqual("repeated_thread", construction["callout"])
+        self.assertEqual(3, construction["repeat_count"])
+        self.assertEqual(5.0, construction["thread_value"])
+        self.assertEqual("thread", construction["feature_kind"])
 
     def test_semantic_policy_promotes_user_confirmed_feature_dimension(self):
         answer = (
@@ -176,12 +183,13 @@ class TestSemanticPolicy(unittest.TestCase):
         )
 
         self.assertEqual([], policy_result["dimension_plan"]["unresolved_dimensions"])
-        allowed = policy_result["dimension_plan"]["allowed_dimensions"][0]
-        self.assertEqual("feature_depth", allowed["role"])
-        self.assertEqual(40.0, allowed["value"])
-        self.assertEqual("boss", allowed["feature_kind"])
-        self.assertEqual("中心圆柱凸台", allowed["feature_description"])
-        self.assertEqual("user_confirmed", allowed["source"])
+        construction = policy_result["dimension_plan"]["construction_dimensions"][0]
+        self.assertEqual("feature_depth", construction["role"])
+        self.assertEqual("feature_size", construction["dimension_kind"])
+        self.assertEqual(40.0, construction["value"])
+        self.assertEqual("boss", construction["feature_kind"])
+        self.assertEqual("中心圆柱凸台", construction["feature_description"])
+        self.assertEqual("user_confirmed", construction["source"])
 
     def test_semantic_policy_binds_linear_dimension_when_view_and_line_agree(self):
         policy_result = SemanticPolicy().evaluate(
@@ -378,8 +386,18 @@ class TestSemanticPolicy(unittest.TestCase):
             {
                 "context_version": "reconstruction_context_v1",
                 "dimensions": [
-                    {"text": "30", "value": 30.0, "type": "线性"},
-                    {"text": "12", "value": 12.0, "type": "线性"},
+                    {
+                        "text": "30",
+                        "value": 30.0,
+                        "type": "线性",
+                        "definition_points": [[0, 10, 0], [30, 10, 0]],
+                    },
+                    {
+                        "text": "12",
+                        "value": 12.0,
+                        "type": "线性",
+                        "definition_points": [[5, 12, 0], [17, 12, 0]],
+                    },
                 ],
                 "view_analysis": {
                     "drawing_type": "two_view",
@@ -400,6 +418,27 @@ class TestSemanticPolicy(unittest.TestCase):
             [option["value"] for option in questions["bind_profile_length"]["options"]],
         )
         self.assertIn("不确定", questions["bind_profile_length"]["text"])
+
+    def test_semantic_policy_does_not_ask_when_unresolved_dimensions_lack_subject_axis_evidence(self):
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {"text": "40", "value": 40.0, "type": "线性"},
+                ],
+                "view_analysis": {
+                    "drawing_type": "two_view",
+                    "views": [
+                        {"name": "main", "bbox": [0, 0, 96, 96]},
+                        {"name": "right", "bbox": [140, 0, 200, 96]},
+                    ],
+                },
+            }
+        )
+
+        self.assertEqual([], policy_result["clarification_questions"])
+        unresolved = policy_result["dimension_plan"]["unresolved_dimensions"]
+        self.assertEqual(["40"], [item["text"] for item in unresolved])
 
     def test_semantic_policy_derives_composite_main_length_from_dimension_chain(self):
         policy_result = SemanticPolicy().evaluate(
@@ -442,12 +481,77 @@ class TestSemanticPolicy(unittest.TestCase):
 
         plan = policy_result["dimension_plan"]
         allowed = {item["text"]: item for item in plan["allowed_dimensions"]}
-        segments = {item["text"]: item for item in plan["segment_dimensions"]}
+        construction = {item["text"]: item for item in plan["construction_dimensions"]}
         unresolved = {item["text"]: item for item in plan["unresolved_dimensions"]}
         self.assertEqual("profile_length", allowed["9+39"]["role"])
-        self.assertEqual("profile_length_segment", segments["9"]["role"])
-        self.assertEqual("profile_length_segment", segments["39"]["role"])
+        self.assertEqual("profile_length_segment", construction["9"]["role"])
+        self.assertEqual("linear_segment", construction["9"]["dimension_kind"])
+        self.assertEqual("profile_length_segment", construction["39"]["role"])
+        self.assertEqual("linear_segment", construction["39"]["dimension_kind"])
         self.assertEqual("unresolved_linear", unresolved["30"]["role"])
+
+    def test_semantic_policy_binds_bolt_internal_length_as_thread_length(self):
+        policy_result = SemanticPolicy().evaluate(
+            {
+                "context_version": "reconstruction_context_v1",
+                "dimensions": [
+                    {"text": "1x45%%d", "value": 1.0, "type": "线性"},
+                    {"text": "R15", "value": 15.0, "type": "半径"},
+                    {
+                        "text": "9",
+                        "value": 9.0,
+                        "type": "线性",
+                        "definition_points": [[0, 10, 0], [9, 10, 0]],
+                    },
+                    {
+                        "text": "39",
+                        "value": 39.0,
+                        "type": "线性",
+                        "definition_points": [[9, 10, 0], [48, 10, 0]],
+                    },
+                    {
+                        "text": "30",
+                        "value": 30.0,
+                        "type": "线性",
+                        "definition_points": [[18, 12, 0], [48, 12, 0]],
+                    },
+                    {
+                        "text": "21",
+                        "value": 21.0,
+                        "type": "线性",
+                        "position": [72, 10, 0],
+                        "associated_lines": [
+                            {"line": {"start": [60, 10, 0], "end": [84, 10, 0]}},
+                        ],
+                    },
+                    {
+                        "text": "24",
+                        "value": 24.0,
+                        "type": "线性",
+                        "position": [72, 12, 0],
+                        "associated_lines": [
+                            {"line": {"start": [72, 0, 0], "end": [72, 24, 0]}},
+                        ],
+                    },
+                ],
+                "view_analysis": {
+                    "drawing_type": "two_view",
+                    "views": [
+                        {"name": "main", "bbox": [0, 0, 50, 30]},
+                        {"name": "right", "bbox": [60, 0, 90, 30]},
+                    ],
+                },
+            }
+        )
+
+        bindings = {item["text"]: item for item in policy_result["dimension_bindings"]}
+        self.assertEqual("thread_length", bindings["30"]["semantic_role"])
+        plan = policy_result["dimension_plan"]
+        construction = {item["text"]: item for item in plan["construction_dimensions"]}
+        unresolved = {item["text"]: item for item in plan["unresolved_dimensions"]}
+        self.assertEqual("thread_length", construction["30"]["role"])
+        self.assertEqual("feature_size", construction["30"]["dimension_kind"])
+        self.assertNotIn("30", unresolved)
 
     def test_semantic_policy_binds_equal_orthogonal_main_dimensions_as_square(self):
         policy_result = SemanticPolicy().evaluate(
@@ -485,16 +589,35 @@ class TestSemanticPolicy(unittest.TestCase):
         self.assertEqual([], policy_result["clarification_questions"])
         allowed = policy_result["dimension_plan"]["allowed_dimensions"]
         self.assertEqual(
-            ["profile_length", "profile_height", "diameter", "diameter"],
+            ["profile_length", "profile_height"],
             [item["role"] for item in allowed],
+        )
+        construction = policy_result["dimension_plan"]["construction_dimensions"]
+        self.assertEqual(
+            ["diameter", "diameter"],
+            [item["role"] for item in construction],
+        )
+        self.assertEqual(
+            ["feature_size", "feature_size"],
+            [item["dimension_kind"] for item in construction],
         )
 
     def test_semantic_policy_applies_clarification_answers(self):
         context = {
             "context_version": "reconstruction_context_v1",
             "dimensions": [
-                {"text": "30", "value": 30.0, "type": "线性"},
-                {"text": "12", "value": 12.0, "type": "线性"},
+                {
+                    "text": "30",
+                    "value": 30.0,
+                    "type": "线性",
+                    "definition_points": [[0, 10, 0], [30, 10, 0]],
+                },
+                {
+                    "text": "12",
+                    "value": 12.0,
+                    "type": "线性",
+                    "definition_points": [[5, 12, 0], [17, 12, 0]],
+                },
             ],
             "view_analysis": {
                 "drawing_type": "two_view",
@@ -520,8 +643,18 @@ class TestSemanticPolicy(unittest.TestCase):
         context = {
             "context_version": "reconstruction_context_v1",
             "dimensions": [
-                {"text": "30", "value": 30.0, "type": "线性"},
-                {"text": "12", "value": 12.0, "type": "线性"},
+                {
+                    "text": "30",
+                    "value": 30.0,
+                    "type": "线性",
+                    "definition_points": [[0, 10, 0], [30, 10, 0]],
+                },
+                {
+                    "text": "12",
+                    "value": 12.0,
+                    "type": "线性",
+                    "definition_points": [[5, 12, 0], [17, 12, 0]],
+                },
             ],
             "view_analysis": {
                 "drawing_type": "two_view",

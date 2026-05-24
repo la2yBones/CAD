@@ -37,9 +37,13 @@
 语义裁决对下游输出 `dimension_plan`：
 
 - `allowed_dimensions`：允许进入 `key_dimensions` 的已裁决尺寸，可包含由标注尺寸链组合得到的派生总尺寸；
-- `segment_dimensions`：局部段，可作为组合尺寸证据和建模构造步骤的分段尺寸，但不能被单独命名为总长、深度、对边、对角等关键语义；
+- `construction_dimensions`：构造尺寸，可作为组合尺寸证据、局部分段尺寸、局部特征尺寸或重复特征尺寸，用于建模构造步骤，但不能被单独命名为总长、深度、对边、对角等主体关键语义。构造尺寸按通用角色族表达，例如 `linear_segment`、`feature_size`、`feature_count_size`、`chain_component` 和 `candidate_binding`；可附带 `feature_kind` 作为特征上下文，但不得引入按具体图纸或具体零件命名的特殊角色；
 - `unresolved_dimensions`：尚未裁决的裸尺寸，不得被 LLM 擅自命名或用于关键几何；
 - `rules`：下游语义生成和建模指令必须遵守的尺寸使用纪律。
+
+`construction_dimensions` 默认进入建模任务载荷而不是主体关键尺寸池；只有在名称保留具体构造语义时才能进入 `key_dimensions`，例如 `thread_length`、`head_length`、`fillet_radius`。它不得以 `total_length`、`depth`、`hole_diameter`、`across_flats` 等主体关键名出现。`unresolved_dimensions` 永远不得进入 `key_dimensions`。
+
+迁移时不保留旧 `segment_dimensions` 兼容读取；新产物、新缓存和新测试统一使用 `construction_dimensions`。如果旧分析缓存中仍存在 `segment_dimensions`，应通过清空或重新生成缓存解决，而不是在运行时代码中长期保留双字段分支。
 
 投影视图外形尺寸使用中性角色表达，例如 `projected_profile_horizontal_extent` 和 `projected_profile_vertical_extent`。这些角色只说明“某个正交投影视图中的外形水平/竖直尺寸”，不直接声明它是深度、对边、对角或某个特定零件特征。
 

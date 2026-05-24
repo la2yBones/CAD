@@ -1,17 +1,12 @@
 # Conda 环境配置指南
 
-版本：1.0.0
-变更日期：2026-05-13
-影响范围：开发环境、测试命令、依赖安装
-
 ## 推荐环境
 
 项目推荐使用 `cad_study`：
 
 ```powershell
-conda activate cad_study
 cd E:\Code\CAD
-python --version
+D:\anaconda3\envs\cad_study\python.exe --version
 ```
 
 当前已验证：

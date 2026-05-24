@@ -1,31 +1,29 @@
-# 快速参考卡片
+# 快速参考
 
 ## 🚀 开始使用
 
 ### 第一步：激活环境
-```bash
-conda activate cad_study
-cd e:\Code\CAD
+```powershell
+cd E:\Code\CAD
+D:\anaconda3\envs\cad_study\python.exe --version
 ```
 
 ### 第二步：安装依赖
-```bash
-pip install -r requirements.txt
+```powershell
+D:\anaconda3\envs\cad_study\python.exe -m pip install -r requirements.txt
 ```
 
-### 第三步：运行测试
-```bash
-# 1. 测试配置
-python examples\scripts\test_config.py
+### 第三步：配置密钥
+```powershell
+Copy-Item .env.example .env
+```
 
-# 2. 测试DeepSeek API
-python examples\scripts\test_api.py
+在 `.env` 中填写 `DEEPSEEK_API_KEY`。`config/config.example.yaml` 使用 `${DEEPSEEK_API_KEY}` 占位符，不应写入真实密钥。
 
-# 3. 创建示例DXF
-python examples\scripts\create_sample_dxf.py
-
-# 4. 运行完整示例
-python examples\scripts\quickstart.py
+### 第四步：运行验证
+```powershell
+D:\anaconda3\envs\cad_study\python.exe -m pytest tests\unit -q
+D:\anaconda3\envs\cad_study\python.exe cad_cli.py --list
 ```
 
 ## 📁 项目结构
@@ -33,14 +31,16 @@ python examples\scripts\quickstart.py
 ```
 e:\Code\CAD\
 ├── config/
-│   ├── config.yaml          # 当前配置（已包含API密钥）
-│   └── config.example.yaml  # 配置模板
+│   └── config.example.yaml  # 配置模板，本地 config.yaml 不提交
 ├── src/
-│   ├── cad_parser/          # CAD解析模块（通用，支持扩展）
-│   ├── reconstruction/      # 新语义重建内核
-│   ├── legacy/              # 旧兼容模块
-│   ├── model_generator/     # 建模生成模块
-│   └── utils/               # 工具函数
+│   ├── cad_parser/          # CAD 解析与预览
+│   ├── intelligent_analyzer/ # 智能处理编排与分析子过程
+│   ├── reconstruction/      # 语义重建内核
+│   ├── model_generator/     # AI 脚本运行与 FreeCAD 桥接
+│   ├── batch_processor/     # 文件扫描、单文件处理、批处理
+│   ├── compat/              # 旧 import 路径兼容层
+│   ├── legacy/              # 旧组件兼容实现
+│   └── utils/               # 配置、缓存、日志、遥测
 ├── examples/
 │   ├── cad_files/           # 示例DXF/DWG图纸
 │   └── scripts/             # 示例脚本
@@ -49,19 +49,21 @@ e:\Code\CAD\
 
 ## ⚙️ 配置文件
 
-### config/config.yaml (已配置好)
+### `.env`
+```env
+DEEPSEEK_API_KEY=your-deepseek-api-key-here
+FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
+```
+
+### `config/config.example.yaml`
 ```yaml
 api:
   deepseek:
-    api_key: "sk-xxxxxxxxxxxxxxxx"
+    api_key: "${DEEPSEEK_API_KEY}"
     base_url: "https://api.deepseek.com"
     model: "deepseek-v4-pro"
-```
 dxf_parser:
-  # libredwg_path: "D:\\Code\\libredwg-0.13.4.8160-win64"  # 可选，项目已内置 tools/bin/dwg2dxf.exe
-
-freecad:
-  bin_path: "D:\\FreeCAD 1.0\\bin"
+  libredwg_path: "${LIBREDWG_PATH}"
 ```
 
 ## 📝 CAD文件处理
@@ -98,39 +100,35 @@ parser = CADParser("examples/cad_files/your_file.dxf", config.get("dxf_parser", 
 geometry_data = parser.parse()
 ```
 
-### 向后兼容性
-仍然可以使用旧的类名：
-```python
-from src.cad_parser import DXFParser  # 仍然可用！
-```
+兼容入口和旧类名迁移见 [兼容入口冻结清单](compatibility.md)。
 
 ## 📝 常用命令
 
 | 操作 | 命令 |
 |------|------|
-| 激活环境 | `conda activate cad_study` |
-| 运行API测试 | `python examples\scripts\test_api.py` |
-| 运行完整示例 | `python examples\scripts\quickstart.py` |
-| 创建DXF示例 | `python examples\scripts\create_sample_dxf.py` |
-| 测试DWG处理 | `python examples\scripts\test_dwg_conversion.py` |
+| 列出图纸 | `D:\anaconda3\envs\cad_study\python.exe cad_cli.py --list` |
+| 统一智能处理 | `D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples\cad_files\sample.dxf` |
+| 仅分析模式 | `D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples\cad_files\sample.dxf --analysis-only` |
+| 运行 GUI | `D:\anaconda3\envs\cad_study\python.exe gui_example.py` |
+| 运行单元测试 | `D:\anaconda3\envs\cad_study\python.exe -m pytest tests\unit -q` |
 
 ## 🔧 问题排查
 
 ### Q: 找不到Python模块？
-```bash
+```powershell
 # 确保在项目根目录
-cd e:\Code\CAD
+cd E:\Code\CAD
 
-# 使用python命令而不是python
-python examples\scripts\test_config.py
+# 使用 cad_study 环境解释器
+D:\anaconda3\envs\cad_study\python.exe examples\scripts\test_config.py
 ```
 
-### Q: 找不到FreeCAD？
-- 检查 config.yaml 中的 freecad.bin_path 路径
+### Q: 找不到 FreeCAD？
+- 检查 `.env` 中的 `FREECAD_BIN_PATH`
 - 确保路径指向 bin 目录
 
 ### Q: API调用失败？
-- 确认API密钥正确
+- 确认 `.env` 中的 `DEEPSEEK_API_KEY` 正确
 - 检查网络连接
 - 检查API额度是否充足
 

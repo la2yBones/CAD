@@ -1,9 +1,5 @@
 # 配置与密钥管理
 
-版本：1.0.0
-变更日期：2026-05-13
-影响范围：`config/config.yaml`、`config/config.example.yaml`、`.env.example`、`src/utils/config.py`、`src/utils/logging.py`
-
 ## 配置优先级
 
 项目通过 `load_config()` 加载 YAML，并解析 `${VAR}` 占位符。优先级从高到低为：
@@ -50,9 +46,9 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 
 | 配置项 | 来源 | 作用 | 必需性 |
 |---|---|---|---|
-| `api.deepseek.api_key` | `${DEEPSEEK_API_KEY}` | 智能分析调用 DeepSeek API | 智能模式必需 |
-| `api.deepseek.base_url` | YAML | DeepSeek API 地址 | 智能模式必需 |
-| `api.deepseek.model` | YAML | 模型名称，默认 `deepseek-v4-pro` | 智能模式必需 |
+| `api.deepseek.api_key` | `${DEEPSEEK_API_KEY}` | 智能处理调用 DeepSeek API | 统一智能处理必需 |
+| `api.deepseek.base_url` | YAML | DeepSeek API 地址 | 统一智能处理必需 |
+| `api.deepseek.model` | YAML | 模型名称，默认 `deepseek-v4-pro` | 统一智能处理必需 |
 | `dxf_parser.libredwg_path` | `${LIBREDWG_PATH}` | DWG 转 DXF 工具路径（可选） | DWG 转换外部覆盖 |
 | `dxf_parser.output_dir` | YAML | CAD 预览图默认输出目录 | 可选 |
 | `dxf_parser.overlay_dimension_text` | YAML，默认 `auto` | DIMENSION 匿名块文字补绘策略，支持 `auto`、`true`、`false` | 可选 |
@@ -101,5 +97,5 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 ## 兼容性影响
 
 - 旧版直接在 `config.yaml` 写入 API Key 的方式仍可作为 YAML 字面值回退，但不推荐。
-- 使用 `${VAR}` 后，部署环境必须确保变量存在，否则智能模式会因无有效 API Key 失败。
+- 使用 `${VAR}` 后，部署环境必须确保变量存在，否则统一智能处理会因无有效 API Key 失败。
 - `.env` 解析器是轻量实现，支持简单 `KEY=VALUE`，不支持复杂 shell 表达式。

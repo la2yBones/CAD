@@ -16,7 +16,7 @@ class GeometryAnalyzer:
 
     IntelligentEngineeringAnalyzer 整合了视图识别、尺寸提取、本地几何分析回退
     和 AI 建模指令生成，功能更完整且性能更优（STRtree 空间索引）。
-    此分析器保留以确保向后兼容，将在 v1.0 中移除。
+    此分析器保留以确保向后兼容，迁移状态以 docs/compatibility.md 为准。
     """
 
     def __init__(self, api_key: str, config: Optional[Dict] = None):
@@ -41,10 +41,10 @@ class GeometryAnalyzer:
         """
         分析几何实体间的关系
 
-        ??:
+        参数:
             geometry_data: 从DXF解析得到的几何数据
 
-        ??:
+        返回:
             包含关系分析结果的字典
         """
         logger.info("开始分析几何关系")

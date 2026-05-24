@@ -42,7 +42,7 @@ class IntelligentEngineeringAnalyzer:
         """
         初始化分析器
 
-        ??:
+        参数:
             api_key: DeepSeek API密钥
             config: 配置字典
             enable_cache: 是否启用缓存
@@ -86,12 +86,12 @@ class IntelligentEngineeringAnalyzer:
         """
         执行智能处理编排，返回可供后续执行消费的智能分析结果
 
-        ??:
+        参数:
             geometry_data: CAD解析得到的几何数据
             extrude_height: 默认拉伸高度
             file_path: 原始图纸文件路径（用于缓存）
 
-        ??:
+        返回:
             完整分析结果字典
         """
         analysis_params = {"analysis_version": self.ANALYSIS_VERSION}
@@ -152,13 +152,15 @@ class IntelligentEngineeringAnalyzer:
         logger.info("=== 智能分析完成 ===")
 
         # 保存到缓存
-        if self.cache and file_path:
+        if self.cache and file_path and self._is_cacheable_analysis_result(result):
             self.cache.set(
                 file_path,
                 extrude_height,
                 result,
                 analysis_params=analysis_params
             )
+        elif self.cache and file_path:
+            logger.info("Skipping analysis cache because result has transient provider failure")
 
         return result
 
@@ -220,12 +222,47 @@ class IntelligentEngineeringAnalyzer:
         threshold = float(self.config.get("semantic_min_confidence", 0.70))
         return confidence >= threshold
 
+    @classmethod
+    def _is_cacheable_analysis_result(cls, analysis_result: Dict[str, Any]) -> bool:
+        """Do not persist transient provider failures as reusable analysis cache."""
+        modeling_result = analysis_result.get("modeling_instructions", {}) or {}
+        if not modeling_result.get("blocked_by_semantic_confidence"):
+            return True
+        part_semantics = analysis_result.get("part_semantics", {}) or {}
+        warnings = list(part_semantics.get("warnings", []) or [])
+        warnings.extend(modeling_result.get("warnings", []) or [])
+        return not any(cls._looks_like_transient_llm_failure(item) for item in warnings)
+
+    @staticmethod
+    def _looks_like_transient_llm_failure(message: Any) -> bool:
+        text = str(message or "").lower()
+        transient_markers = (
+            "connection error",
+            "connect error",
+            "connection reset",
+            "timeout",
+            "timed out",
+            "readtimeout",
+            "api connection",
+            "network",
+            "temporarily unavailable",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "rate limit",
+            "429",
+            "502",
+            "503",
+            "504",
+        )
+        return any(marker in text for marker in transient_markers)
+
     def save_results(self, analysis_result: Dict[str, Any],
                      output_dir: str, base_name: str = "analysis") -> None:
         """
         保存分析结果到文件
 
-        ??:
+        参数:
             analysis_result: 分析结果
             output_dir: 输出目录
             base_name: 文件基名

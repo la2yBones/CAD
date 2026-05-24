@@ -6,6 +6,7 @@ from src.intelligent_analyzer.view_schema import (
     ViewAnalysisValidator,
     build_standard_view_analysis,
 )
+from src.intelligent_analyzer.view_analyzer import EngineeringViewAnalyzer
 
 
 def test_standard_view_analysis_passes_validator():
@@ -63,3 +64,34 @@ def test_validator_rejects_low_confidence():
 
     assert not valid
     assert any("confidence" in error for error in errors)
+
+
+def test_view_bbox_uses_outline_entities_not_cross_view_centerlines():
+    analyzer = EngineeringViewAnalyzer({})
+    entities = [
+        {
+            "type": "LINE",
+            "layer": "点划线",
+            "start": [50.0, -100.0, 0.0],
+            "end": [50.0, 200.0, 0.0],
+        },
+        {
+            "type": "CIRCLE",
+            "layer": "轮廓线",
+            "center": [50.0, 0.0, 0.0],
+            "radius": 30.0,
+        },
+        {
+            "type": "LWPOLYLINE",
+            "layer": "轮廓线",
+            "vertices": [
+                [10.0, -20.0],
+                [90.0, -20.0],
+                [90.0, 20.0],
+                [10.0, 20.0],
+            ],
+            "closed": True,
+        },
+    ]
+
+    assert analyzer._compute_view_bbox(entities) == (10.0, -30.0, 90.0, 30.0)

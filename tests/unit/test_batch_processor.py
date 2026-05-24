@@ -84,6 +84,49 @@ class TestBatchProcessor(unittest.TestCase):
         self.assertEqual("semantic_policy", result.clarification_context["clarification_stage"])
         self.assertEqual("R15", result.clarification_context["skipped_features"][0]["name"])
 
+    def test_processor_detects_pre_modeling_main_solid_failure(self):
+        instructions = {
+            "analysis_summary": "cannot generate solid because depth is missing",
+            "completed_features": [],
+            "skipped_features": [
+                {
+                    "name": "base_profile_extrusion",
+                    "kind": "base",
+                    "reason": "missing extrusion depth",
+                    "risk": "cannot build main body",
+                }
+            ],
+            "warnings": ["no solid can be generated"],
+        }
+
+        self.assertTrue(CADProcessor._needs_pre_modeling_clarification(instructions))
+
+        questions = CADProcessor._build_pre_modeling_clarification_questions(instructions)
+        context = CADProcessor._build_pre_modeling_clarification_context(
+            {"modeling_instructions": instructions},
+            geometry_data={"entities": []},
+            extrude_height=10.0,
+            file_path="drawing.dxf",
+        )
+
+        self.assertEqual(["user_modeling_hint"], [q["id"] for q in questions])
+        self.assertTrue(context["pre_modeling_recovery"])
+        self.assertEqual("base_profile_extrusion", context["skipped_features"][0]["name"])
+
+    def test_processor_allows_partial_script_when_main_body_completed(self):
+        instructions = {
+            "completed_features": [{"name": "base_body", "kind": "base"}],
+            "skipped_features": [
+                {
+                    "name": "fillet",
+                    "kind": "fillet",
+                    "reason": "missing edge reference",
+                }
+            ],
+        }
+
+        self.assertFalse(CADProcessor._needs_pre_modeling_clarification(instructions))
+
     def test_cad_process_result_supports_stopped_by_user_status(self):
         result = CADProcessResult(success=False, input_file="drawing.dxf")
 
@@ -323,6 +366,64 @@ class TestBatchProcessor(unittest.TestCase):
 
         self.assertIs(result, routed_result)
         executor.execute.assert_called_once()
+
+    def test_continue_with_clarification_saves_resumed_analysis_outputs(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {
+            "api": {
+                "deepseek": {"api_key": "test-key"},
+            }
+        }
+        processor._notify_progress_stage = unittest.mock.Mock()
+        resumed_result = CADProcessResult(
+            success=True,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+        resumed_result.mark_completed()
+        processor._execute_intelligent_modeling_path = unittest.mock.Mock(
+            return_value=resumed_result
+        )
+        processor._attach_partial_modeling_clarification = unittest.mock.Mock()
+
+        pending = CADProcessResult(
+            success=False,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+        pending.mark_needs_clarification(
+            [{"id": "bind_feature_detail_dimension", "kind": "single_choice"}],
+            {
+                "geometry_data": {"entities": []},
+                "extrude_height": 10.0,
+                "file_path": "drawings/base_plate.dxf",
+            },
+        )
+
+        fake_analyzer = unittest.mock.Mock()
+        resumed_analysis = {
+            "modeling_instructions": {"freecad_script": "pass"},
+        }
+        fake_analyzer.continue_with_clarification.return_value = resumed_analysis
+
+        with patch(
+            "src.intelligent_analyzer.IntelligentEngineeringAnalyzer",
+            return_value=fake_analyzer,
+        ):
+            result = processor.continue_with_clarification(
+                pending,
+                {"bind_feature_detail_dimension": "40"},
+                {"directory": "out"},
+            )
+
+        self.assertIs(result, resumed_result)
+        fake_analyzer.save_results.assert_called_once_with(
+            resumed_analysis,
+            "out",
+            "base_plate",
+        )
 
 
 

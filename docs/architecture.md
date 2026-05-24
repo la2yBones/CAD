@@ -8,7 +8,7 @@ DXF/DWG
   ▼
 CADParser ──► geometry_data ──► CADProcessor/CADPipeline
   │                                      │
-  ├─ preview_cache PNG                   ├─ 平面拉伸路径: FreeCADModeler
+  ├─ preview_cache PNG                   ├─ 平面拉伸路径: PlanarExtrudeModeler
   │                                      │
   └─ DWG: LibreDWG 转换                  └─ 统一智能处理: IntelligentEngineeringAnalyzer
                                              │
@@ -29,7 +29,7 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
                                                        │
                        ┌───────────────────────────────┼───────────────────────────────┐
                        ▼                               ▼                               ▼
-               FreeCADModeler 平面拉伸        revolve_executor 回转体          AIScriptRunner AI 脚本
+            PlanarExtrudeModeler 平面拉伸      revolve_executor 回转体          AIScriptRunner AI 脚本
                                                        │
                                                        ▼
                                              STEP / STL / FCStd / 报告
@@ -45,7 +45,7 @@ CADParser ──► geometry_data ──► CADProcessor/CADPipeline
 | 语义重建内核 | `src/reconstruction/` | 重建上下文、零件语义、建模路径裁决和脚本生成 |
 | 智能处理编排 | `src/intelligent_analyzer/` | 串联分析子过程并调用语义重建内核 |
 | 建模执行分发 | `src/batch_processor/modeling_execution.py` | 消费建模路径裁决并分发到平面拉伸、回转体或 AI 脚本执行 |
-| 平面拉伸执行 | `src/legacy/basic_modeling/` | `FreeCADModeler` 平面拉伸执行路径 |
+| 平面拉伸执行 | `src/model_generator/planar_extrude.py` | `PlanarExtrudeModeler` 平面拉伸路径 adapter，当前复用旧实现 |
 | 模型执行 | `src/model_generator/` | AI 脚本运行和 FreeCAD direct/subprocess 桥接 |
 | 批处理 | `src/batch_processor/` | 文件扫描、输出结构、处理编排、结果汇总 |
 | 工具层 | `src/utils/` | 配置、日志、Result、缓存、预览路径、LLM 遥测 |

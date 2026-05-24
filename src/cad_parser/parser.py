@@ -31,7 +31,7 @@ class CADParser:
         """
         解析DXF文件
 
-        ??:
+        返回:
             包含版本、单位和实体数据的字典
         """
         if not self.file_path.exists():
@@ -487,7 +487,7 @@ class CADParser:
         """
         导出解析结果为JSON文件
 
-        ??:
+        参数:
             output_path: 输出文件路径
         """
         if not self.entities:
@@ -509,7 +509,7 @@ class CADParser:
         """
         可视化DXF文件（使用matplotlib）
 
-        ??:
+        参数:
             output_path: 可选，保存为图片文件。不指定时自动保存到output_dir
         """
         import os as _os

@@ -8,7 +8,7 @@
 | Python | 3.10+ |
 | 建议环境 | Conda `cad_study` |
 | 外部工具 | LibreDWG、FreeCAD 1.0+ |
-| 网络 | 智能模式需要访问 DeepSeek API |
+| 网络 | 统一智能处理需要访问 DeepSeek API |
 
 ## 2. 安装步骤
 
@@ -33,7 +33,7 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 
 | 配置 | 作用 | 必需场景 |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 默认智能重建、`--legacy-analysis`、`--intelligent`、`--analysis-only` |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 统一智能处理、仅分析模式 |
 | `LIBREDWG_PATH` | LibreDWG 目录（可选，项目已内置 tools/bin/dwg2dxf.exe） | DWG 转换外部覆盖 |
 | `FREECAD_BIN_PATH` | FreeCAD `bin` 目录 | 建模导出 |
 | `CAD_PREVIEW_CACHE_DIR` | 预览图缓存目录 | 可选 |
@@ -42,8 +42,8 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 
 ```powershell
 python cad_cli.py --list
-python cad_cli.py --file examples/cad_files/sample.dxf --height 10
-python cad_cli.py --file examples/cad_files/sample.dxf --intelligent
+python cad_cli.py --file examples/cad_files/sample.dxf
+python cad_cli.py --file examples/cad_files/sample.dxf --analysis-only
 python cad_cli.py --dir examples/cad_files --output-dir examples/output
 python gui_example.py
 python tools/cache_tool.py stats
@@ -67,7 +67,7 @@ python tools/diagnose_export.py
 - `python tools/cache_tool.py stats` 能读取缓存目录。
 - `FREECAD_BIN_PATH` 指向的目录下存在 `python.exe`。
 - `tools/bin/dwg2dxf.exe` 存在（项目内置），或 `LIBREDWG_PATH` 指向有效 LibreDWG。
-- 智能模式前确认 `DEEPSEEK_API_KEY` 不是模板值。
+- 统一智能处理前确认 `DEEPSEEK_API_KEY` 不是模板值。
 
 ## 7. 故障处理
 
@@ -77,7 +77,7 @@ python tools/diagnose_export.py
 | DWG 转换失败 | 确认 `tools/bin/dwg2dxf.exe` 存在，或检查 `LIBREDWG_PATH` |
 | FreeCAD 不可用 | 检查 `FREECAD_BIN_PATH`，或确认 FreeCAD 是否安装 |
 | 预览图为空 | 检查 CAD 是否包含实体、matplotlib/ezdxf 是否安装 |
-| 智能模式很慢 | 查看 GUI 的 AI 调用监控或 `.cache/llm_telemetry` |
+| 统一智能处理很慢 | 查看 GUI 的 AI 调用监控或 `.cache/llm_telemetry` |
 | 多视图未生成模型 | 这是保护行为，需要可靠 AI 多视图脚本或实现多视图重建算法 |
 
 ## 8. 安全与清理

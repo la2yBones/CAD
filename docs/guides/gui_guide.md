@@ -1,13 +1,8 @@
 # GUI 使用指南
 
-版本：1.0.0
-变更日期：2026-05-13
-影响范围：`gui_example.py`、CAD 预览输出、配置说明
-
 ## 启动
 
 ```powershell
-conda activate cad_study
 cd E:\Code\CAD
 D:\anaconda3\envs\cad_study\python.exe gui_example.py
 ```

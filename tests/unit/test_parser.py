@@ -14,7 +14,7 @@ sys.path.insert(0, str(project_root))
 
 import ezdxf
 
-from src.cad_parser import CADParser, DXFParser
+from src.cad_parser import CADParser
 from src.intelligent_analyzer.dimension_extractor import DimensionExtractor
 
 
@@ -31,12 +31,6 @@ class TestCADParser(unittest.TestCase):
         """测试解析器初始化"""
         if self.sample_dxf.exists():
             parser = CADParser(str(self.sample_dxf))
-            self.assertIsNotNone(parser)
-
-    def test_backward_compatibility(self):
-        """测试向后兼容性（DXFParser别名）"""
-        if self.sample_dxf.exists():
-            parser = DXFParser(str(self.sample_dxf))
             self.assertIsNotNone(parser)
 
     def test_file_not_found(self):

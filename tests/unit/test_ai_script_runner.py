@@ -9,6 +9,7 @@ from unittest.mock import patch
 from src.model_generator.ai_script_runner import AIScriptRunner
 from src.model_generator.freecad_bridge import FreeCADBridge
 from src.reconstruction.modeling_constraints import ModelingConstraints
+from src.reconstruction.modeling_script_readiness import ModelingScriptReadinessChecker
 
 
 class TestAIScriptRunner(unittest.TestCase):
@@ -86,6 +87,34 @@ class TestAIScriptRunner(unittest.TestCase):
         )
 
         self.assertTrue(result.is_ok)
+
+    def test_ai_script_runner_rejects_script_that_is_not_executable_enough(self):
+        class Bridge:
+            freecad_available = True
+            mode = "subprocess"
+
+        runner = AIScriptRunner.__new__(AIScriptRunner)
+        runner.bridge = Bridge()
+        runner.constraints = ModelingConstraints()
+        runner.script_readiness = ModelingScriptReadinessChecker()
+
+        result = runner.run_script(
+            "\n".join([
+                "import FreeCAD",
+                "import Part",
+                "doc = FreeCAD.newDocument('GeneratedModel')",
+                "unknown_shape = Part.makeBox(10, 10, 10)",
+                "Part.show(unknown_shape, 'GeneratedModel')",
+                "doc.recompute()",
+            ]),
+            None,
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIn("可执行性校验", result["error"])
+        self.assertIn("final_shape", result["error"])
+        self.assertEqual("script_readiness", result["failure_stage"])
+        self.assertTrue(result["recoverable"])
 
     def test_bridge_copy_failure_is_reported(self):
         runner = AIScriptRunner.__new__(AIScriptRunner)
@@ -172,6 +201,32 @@ class TestAIScriptRunner(unittest.TestCase):
             "Part.ArcOfCircle(Part.Circle(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1), 1.5), 0, 1.57).toShape()",
             normalized,
         )
+
+    def test_generated_script_adds_readiness_contract_for_body_shape(self):
+        runner = AIScriptRunner.__new__(AIScriptRunner)
+        script = "\n".join([
+            "import FreeCAD",
+            "import Part",
+            "doc = FreeCAD.newDocument('GeneratedModel')",
+            "wire = Part.Wire(edges)",
+            "face = Part.Face(wire)",
+            "body = face.extrude(FreeCAD.Vector(0, 0, 10))",
+            "Part.show(body, 'Body')",
+            "doc.recompute()",
+            "partial_result = {'skipped_features': []}",
+            "print(json.dumps({'PARTIAL_MODELING_RESULT': partial_result}))",
+        ])
+
+        normalized = runner._normalize_generated_script(script)
+
+        self.assertIn("if not wire.isClosed():", normalized)
+        self.assertIn("final_shape = body", normalized)
+        self.assertIn('Part.show(final_shape, "GeneratedModel")', normalized)
+        self.assertIn(
+            "print('PARTIAL_MODELING_RESULT:' + json.dumps(partial_result, ensure_ascii=False))",
+            normalized,
+        )
+        self.assertTrue(ModelingScriptReadinessChecker().check(normalized).success)
 
     def test_partial_metadata_from_script_variables_is_normalized(self):
         metadata = AIScriptRunner._extract_partial_metadata_from_vars({

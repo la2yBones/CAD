@@ -7,6 +7,7 @@ from src.utils.stage_confirmation import (
     StageConfirmationStopped,
     StageReview,
     default_stage_stop_message,
+    default_stage_action_message,
     ensure_stage_stop_message,
     request_stage_confirmation,
     stage_display_name,
@@ -94,6 +95,47 @@ class TestStageConfirmation(unittest.TestCase):
         self.assertEqual("cancel", error.result.action)
         self.assertEqual("view_analysis", error.result.stage)
         self.assertIn("视图语义校正", str(error))
+
+    def test_default_stage_action_message_uses_action_specific_text(self):
+        self.assertEqual(
+            "用户在 视图语义校正 阶段确认后要求重跑当前阶段",
+            default_stage_action_message("retry_stage", "view_analysis"),
+        )
+        self.assertEqual(
+            "用户在 视图语义校正 阶段确认后要求模型自纠",
+            default_stage_action_message("self_correct", "view_analysis"),
+        )
+
+    def test_retry_stage_result_records_supervision_action(self):
+        result = StageConfirmationResult.retry_stage(
+            stage="semantic_reconstruction",
+        )
+        result = ensure_stage_stop_message(result, "semantic_reconstruction")
+
+        self.assertFalse(result.continue_processing)
+        self.assertEqual("retry_stage", result.action)
+        self.assertEqual(
+            "用户在 零件语义重建 阶段确认后要求重跑当前阶段",
+            result.message,
+        )
+        self.assertTrue(result.requests_retry)
+        self.assertFalse(result.requests_self_correction)
+        self.assertTrue(result.blocks_auto_continue)
+        self.assertFalse(result.is_stop)
+
+    def test_self_correct_result_records_supervision_action(self):
+        result = StageConfirmationResult.self_correct(
+            stage="view_analysis",
+        )
+        result = ensure_stage_stop_message(result, "view_analysis")
+
+        self.assertFalse(result.continue_processing)
+        self.assertEqual("self_correct", result.action)
+        self.assertEqual("用户在 视图语义校正 阶段确认后要求模型自纠", result.message)
+        self.assertFalse(result.requests_retry)
+        self.assertTrue(result.requests_self_correction)
+        self.assertTrue(result.blocks_auto_continue)
+        self.assertFalse(result.is_stop)
 
 
 if __name__ == "__main__":

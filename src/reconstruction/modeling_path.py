@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
-from .clarification_questions import clarification_question, choice_option
+from .clarification_helpers import clarification_question, choice_option
 from .path_contracts import (
     build_planar_contract_clarification_questions,
     evaluate_planar_extrude_contract,

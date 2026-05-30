@@ -28,9 +28,9 @@ with open(json_path, 'r', encoding='utf-8') as f:
 logger.info(f"加载到 {len(geometry_data['entities'])} 个实体")
 
 # 导入FreeCADModeler
-from src.model_generator.generator import FreeCADModeler
+from src.model_generator import PlanarExtrudeModeler
 
-modeler = FreeCADModeler({"default_extrude_height": 10.0})
+modeler = PlanarExtrudeModeler({"default_extrude_height": 10.0})
 modeler.generate(geometry_data, {})
 
 # 导出

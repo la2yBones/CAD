@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build the stage-specific payload for part semantic understanding."""
+"""构建零件语义理解阶段的专用载荷。"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -11,7 +11,7 @@ from .semantic_adjudication_view import SemanticAdjudicationView
 
 
 class SemanticUnderstandingPayloadBuilder:
-    """Summarize reconstruction context into evidence for semantic generation."""
+    """将重建上下文摘要为语义生成阶段的证据载荷。"""
 
     PAYLOAD_VERSION = "semantic_understanding_payload_v1"
 
@@ -53,6 +53,7 @@ class SemanticUnderstandingPayloadBuilder:
             "drawing_type": view_analysis.get("drawing_type"),
             "confidence": view_analysis.get("confidence"),
             "reason_summary": view_analysis.get("reason_summary", ""),
+            "evidence": deepcopy(view_analysis.get("evidence", []) or []),
             "warnings": deepcopy(view_analysis.get("warnings", []) or []),
             "views": [
                 self._compact_view(view)
@@ -137,14 +138,20 @@ class SemanticUnderstandingPayloadBuilder:
                         "closed",
                         "vertex_count",
                         "layer",
+                        "center",
+                        "radius",
+                        "bbox",
+                        "start_angle",
+                        "end_angle",
                     ),
                 )
                 for item in package.get("geometry_candidates", []) or []
             ],
             "spatial_relations": deepcopy(package.get("spatial_relations", []) or []),
             "measurement_policy": (
-                "geometry candidate measurements are shape evidence only; "
-                "use annotated dimension_candidates for numeric key dimensions"
+                "circle/arc center, radius and bbox are executable shape evidence "
+                "for locating cut features, but annotated dimension_candidates remain "
+                "the only source for numeric key dimensions"
             ),
         }
 
@@ -193,7 +200,9 @@ class SemanticUnderstandingPayloadBuilder:
         }
         if compact_measurements:
             evidence["measurement_policy"] = (
-                "geometry measurements are omitted because dimension_source is annotation"
+                "aggregate geometry measurements are omitted because dimension_source "
+                "is annotation; per-candidate circle/arc center and radius may still "
+                "be used as cut-feature geometry evidence, not as key dimensions"
             )
             evidence["line_summary"].pop("length_range", None)
             for key in ("circle_summary", "arc_summary"):
@@ -305,16 +314,21 @@ class SemanticUnderstandingPayloadBuilder:
     def _build_dimension_evidence(context: Dict[str, Any]) -> Dict[str, Any]:
         semantic_policy = context.get("semantic_policy", {}) or {}
         payload = {
-            "dimensions": [
-                SemanticUnderstandingPayloadBuilder._compact_dimension(dimension)
-                for dimension in context.get("dimensions", []) or []
-            ],
             "dimension_source": semantic_policy.get("dimension_source"),
         }
         adjudication_view = SemanticAdjudicationView.from_policy(semantic_policy)
         if adjudication_view.is_successful:
             payload["semantic_adjudication"] = adjudication_view.to_dict()
+            payload["modeling_dimensions"] = adjudication_view.modeling_dimensions
+            payload["dimensions_policy"] = (
+                "raw dimensions omitted after successful semantic adjudication; "
+                "use modeling_dimensions as the primary dimension pool"
+            )
         else:
+            payload["dimensions"] = [
+                SemanticUnderstandingPayloadBuilder._compact_dimension(dimension)
+                for dimension in context.get("dimensions", []) or []
+            ]
             payload["dimension_bindings"] = deepcopy(
                 semantic_policy.get("dimension_bindings", []) or []
             )

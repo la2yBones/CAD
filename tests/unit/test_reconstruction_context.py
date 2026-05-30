@@ -2,7 +2,7 @@
 
 import unittest
 
-from src.intelligent_analyzer.reconstruction_context import ReconstructionContextBuilder
+from src.reconstruction.context import ReconstructionContextBuilder
 
 
 class TestReconstructionContext(unittest.TestCase):

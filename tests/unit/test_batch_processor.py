@@ -3,9 +3,11 @@
 import unittest
 from unittest.mock import patch
 
+from src.reconstruction.analysis_result import IntelligentAnalysisResult, ModelingInstructionsResult
 from src.batch_processor.pipeline import CADPipeline
-from src.batch_processor.processor import CADProcessor, CADProcessResult, PipelineStatus
-from src.utils.stage_confirmation import CallbackStageConfirmation
+from src.batch_processor.processor import CADProcessor
+from src.batch_processor.result import CADProcessResult, PipelineStatus
+from src.utils.stage_confirmation import CallbackStageConfirmation, StageConfirmationResult
 
 
 class TestBatchProcessor(unittest.TestCase):
@@ -31,6 +33,29 @@ class TestBatchProcessor(unittest.TestCase):
 
         self.assertEqual("intelligent", result.to_dict()["mode"])
         self.assertEqual("semantic_reconstruction", result.to_dict()["modeling_path"])
+
+    def test_task_readiness_block_enters_pre_modeling_clarification(self):
+        instructions = ModelingInstructionsResult.from_dict({
+            "analysis_summary": "建模任务载荷尚不足以生成可靠主体模型。",
+            "warnings": [
+                "建模任务完整性诊断阻塞第三阶段大模型调用。",
+                "缺失项: body_closure_risk",
+                "风险: D2尺寸40含义不明，可能为拉伸深度或台阶长度",
+            ],
+            "blocked_by_task_readiness": True,
+            "task_readiness": {
+                "ready": False,
+                "missing": ["body_closure_risk"],
+                "risks": ["D2尺寸40含义不明，可能为拉伸深度或台阶长度"],
+            },
+        })
+
+        self.assertTrue(CADProcessor._needs_pre_modeling_clarification(instructions))
+        questions = CADProcessor._build_pre_modeling_clarification_questions(instructions)
+
+        self.assertEqual("user_modeling_hint", questions[0]["id"])
+        self.assertIn("body_closure_risk", questions[0]["reason"])
+        self.assertIn("D2尺寸40含义不明", questions[0]["reason"])
 
     def test_cad_process_result_supports_partial_completed_status(self):
         result = CADProcessResult(success=False, input_file="drawing.dxf")
@@ -63,13 +88,15 @@ class TestBatchProcessor(unittest.TestCase):
             skipped_features=[{"name": "R15", "reason": "圆弧面未实现"}],
             reason="主体模型已生成，R15 跳过",
         )
-        analysis = {
-            "view_analysis": {"view_type": "two_view"},
-            "dimension_extraction": {"dimensions": []},
-            "local_relationships": {"relations": []},
-            "reconstruction_context": {"context_version": "test"},
-            "modeling_instructions": {"analysis_summary": "summary"},
-        }
+        analysis = IntelligentAnalysisResult(
+            view_analysis={"view_type": "two_view"},
+            dimension_extraction={"dimensions": []},
+            local_relationships={"relations": []},
+            reconstruction_context={"context_version": "test"},
+            modeling_instructions=ModelingInstructionsResult(
+                analysis_summary="summary",
+            ),
+        )
 
         processor._attach_partial_modeling_clarification(
             result,
@@ -85,10 +112,10 @@ class TestBatchProcessor(unittest.TestCase):
         self.assertEqual("R15", result.clarification_context["skipped_features"][0]["name"])
 
     def test_processor_detects_pre_modeling_main_solid_failure(self):
-        instructions = {
-            "analysis_summary": "cannot generate solid because depth is missing",
-            "completed_features": [],
-            "skipped_features": [
+        instructions = ModelingInstructionsResult(
+            analysis_summary="cannot generate solid because depth is missing",
+            completed_features=[],
+            skipped_features=[
                 {
                     "name": "base_profile_extrusion",
                     "kind": "base",
@@ -96,14 +123,14 @@ class TestBatchProcessor(unittest.TestCase):
                     "risk": "cannot build main body",
                 }
             ],
-            "warnings": ["no solid can be generated"],
-        }
+            warnings=["no solid can be generated"],
+        )
 
         self.assertTrue(CADProcessor._needs_pre_modeling_clarification(instructions))
 
         questions = CADProcessor._build_pre_modeling_clarification_questions(instructions)
         context = CADProcessor._build_pre_modeling_clarification_context(
-            {"modeling_instructions": instructions},
+            IntelligentAnalysisResult(modeling_instructions=instructions),
             geometry_data={"entities": []},
             extrude_height=10.0,
             file_path="drawing.dxf",
@@ -114,16 +141,16 @@ class TestBatchProcessor(unittest.TestCase):
         self.assertEqual("base_profile_extrusion", context["skipped_features"][0]["name"])
 
     def test_processor_allows_partial_script_when_main_body_completed(self):
-        instructions = {
-            "completed_features": [{"name": "base_body", "kind": "base"}],
-            "skipped_features": [
+        instructions = ModelingInstructionsResult(
+            completed_features=[{"name": "base_body", "kind": "base"}],
+            skipped_features=[
                 {
                     "name": "fillet",
                     "kind": "fillet",
                     "reason": "missing edge reference",
                 }
             ],
-        }
+        )
 
         self.assertFalse(CADProcessor._needs_pre_modeling_clarification(instructions))
 
@@ -139,15 +166,33 @@ class TestBatchProcessor(unittest.TestCase):
         self.assertEqual("stop", result.to_dict()["stage_stop_action"])
         self.assertIsNone(result.to_dict()["stage_stop_stage"])
 
+    def test_cad_process_result_supports_stage_action_requested_status(self):
+        result = CADProcessResult(success=False, input_file="drawing.dxf")
+
+        result.mark_stage_action_requested(
+            "用户要求模型自纠",
+            action="self_correct",
+            stage="view_analysis",
+        )
+
+        data = result.to_dict()
+        self.assertFalse(result.success)
+        self.assertEqual(PipelineStatus.STAGE_ACTION_REQUESTED, result.status)
+        self.assertEqual("stage_action_requested", data["status"])
+        self.assertEqual("self_correct", data["stage_supervision_action"])
+        self.assertEqual("view_analysis", data["stage_supervision_stage"])
+
     def test_processor_collects_semantic_and_path_contract_questions(self):
-        questions = CADProcessor._collect_clarification_questions({
-            "semantic_policy": {
-                "clarification_questions": [{"id": "bind_profile_length"}],
-            },
-            "modeling_instructions": {
-                "clarification_questions": [{"id": "provide_extrusion_depth"}],
-            },
-        })
+        questions = CADProcessor._collect_clarification_questions(
+            IntelligentAnalysisResult(
+                semantic_policy={
+                    "clarification_questions": [{"id": "bind_profile_length"}],
+                },
+                modeling_instructions=ModelingInstructionsResult(
+                    clarification_questions=[{"id": "provide_extrusion_depth"}],
+                ),
+            )
+        )
 
         self.assertEqual(
             ["bind_profile_length", "provide_extrusion_depth"],
@@ -155,32 +200,34 @@ class TestBatchProcessor(unittest.TestCase):
         )
 
     def test_processor_deduplicates_clarification_questions(self):
-        questions = CADProcessor._collect_clarification_questions({
-            "semantic_policy": {
-                "clarification_questions": [
-                    {
-                        "id": "bind_profile_length",
-                        "text": "请确认哪个标注值表示主视图中的水平总尺寸。",
-                    },
-                    {
-                        "id": "choose_depth",
-                        "text": "请确认拉伸深度。",
-                    },
-                ],
-            },
-            "modeling_instructions": {
-                "clarification_questions": [
-                    {
-                        "id": "bind_profile_length",
-                        "text": "请确认哪个标注值表示主视图中的水平总尺寸。",
-                    },
-                    {
-                        "id": "another_depth_id",
-                        "text": " 请确认拉伸深度。 ",
-                    },
-                ],
-            },
-        })
+        questions = CADProcessor._collect_clarification_questions(
+            IntelligentAnalysisResult(
+                semantic_policy={
+                    "clarification_questions": [
+                        {
+                            "id": "bind_profile_length",
+                            "text": "请确认哪个标注值表示主视图中的水平总尺寸。",
+                        },
+                        {
+                            "id": "choose_depth",
+                            "text": "请确认拉伸深度。",
+                        },
+                    ],
+                },
+                modeling_instructions=ModelingInstructionsResult(
+                    clarification_questions=[
+                        {
+                            "id": "bind_profile_length",
+                            "text": "请确认哪个标注值表示主视图中的水平总尺寸。",
+                        },
+                        {
+                            "id": "another_depth_id",
+                            "text": " 请确认拉伸深度。 ",
+                        },
+                    ],
+                ),
+            )
+        )
 
         self.assertEqual(
             ["bind_profile_length", "choose_depth"],
@@ -217,6 +264,38 @@ class TestBatchProcessor(unittest.TestCase):
         self.assertEqual("stop", result.stage_stop_action)
         self.assertEqual("view_analysis", result.stage_stop_stage)
 
+    def test_processor_maps_stage_self_correction_request_to_supervision_status(self):
+        processor = CADProcessor.__new__(CADProcessor)
+        processor.config = {
+            "api": {
+                "deepseek": {
+                    "api_key": "test-key",
+                    "_stage_confirmation": CallbackStageConfirmation(
+                        lambda stage, payload: StageConfirmationResult.self_correct(
+                            stage=stage
+                        )
+                    ),
+                }
+            }
+        }
+        processor._get_parser = unittest.mock.Mock()
+        parser = unittest.mock.Mock()
+        parser.parse.return_value = {"entities": []}
+        parser.export_json.return_value = None
+        processor._get_parser.return_value = unittest.mock.Mock(return_value=parser)
+        processor._prepare_intelligent_view_context = unittest.mock.Mock(return_value={})
+
+        result = processor.process_with_intelligent_analysis(
+            "drawing.dxf",
+            {},
+            10.0,
+        )
+
+        self.assertEqual(PipelineStatus.STAGE_ACTION_REQUESTED, result.status)
+        self.assertIn("要求模型自纠", result.error_message)
+        self.assertEqual("self_correct", result.stage_stop_action)
+        self.assertEqual("view_analysis", result.stage_stop_stage)
+
     def test_processor_progress_callback_is_best_effort(self):
         processor = CADProcessor.__new__(CADProcessor)
         processor.config = {
@@ -239,6 +318,8 @@ class TestBatchProcessor(unittest.TestCase):
         )
         stopped = CADProcessResult(success=False, input_file="stop.dxf")
         stopped.mark_stopped_by_user()
+        action_requested = CADProcessResult(success=False, input_file="self_correct.dxf")
+        action_requested.mark_stage_action_requested(action="self_correct", stage="view_analysis")
         failed = CADProcessResult(success=False, input_file="bad.dxf")
         failed.mark_failed("bad")
 
@@ -247,28 +328,15 @@ class TestBatchProcessor(unittest.TestCase):
             "ok": completed,
             "partial": partial,
             "stop": stopped,
+            "self_correct": action_requested,
             "bad": failed,
         })
 
         self.assertEqual(2, summary["success"])
         self.assertEqual(1, summary["partial_completed"])
         self.assertEqual(1, summary["stopped_by_user"])
+        self.assertEqual(1, summary["stage_action_requested"])
         self.assertEqual(1, summary["failed"])
-
-    def test_pipeline_basic_directory_entry_uses_basic_file_entry(self):
-        pipeline = CADPipeline.__new__(CADPipeline)
-        pipeline.list_available_files = unittest.mock.Mock(return_value=[{"name": "a.dxf"}])
-        pipeline.set_input_dir = unittest.mock.Mock()
-        pipeline.process_multiple_files_basic = unittest.mock.Mock(return_value={"a.dxf": "ok"})
-
-        result = pipeline.process_directory_basic("drawings", 12.0)
-
-        self.assertEqual({"a.dxf": "ok"}, result)
-        pipeline.process_multiple_files_basic.assert_called_once_with(
-            ["a.dxf"],
-            12.0,
-            None,
-        )
 
     def test_basic_processing_skips_multiview_analysis(self):
         processor = CADProcessor.__new__(CADProcessor)
@@ -425,7 +493,7 @@ class TestBatchProcessor(unittest.TestCase):
 
         self.assertIs(result, resumed_result)
         fake_analyzer.save_results.assert_called_once_with(
-            resumed_analysis,
+            IntelligentAnalysisResult.from_dict(resumed_analysis).to_dict(),
             "out",
             "base_plate",
         )
@@ -483,7 +551,7 @@ class TestBatchProcessor(unittest.TestCase):
 
         self.assertEqual(PipelineStatus.NEEDS_CLARIFICATION, result.status)
         fake_analyzer.save_results.assert_called_once_with(
-            pending_analysis,
+            IntelligentAnalysisResult.from_dict(pending_analysis).to_dict(),
             "out",
             "drawing",
         )
@@ -557,7 +625,7 @@ class TestBatchProcessor(unittest.TestCase):
         self.assertEqual("user_modeling_hint", result.clarification_questions[0]["id"])
         self.assertTrue(result.clarification_context["pre_modeling_recovery"])
         fake_analyzer.save_results.assert_called_once_with(
-            resumed_analysis,
+            IntelligentAnalysisResult.from_dict(resumed_analysis).to_dict(),
             "out",
             "base_plate",
         )

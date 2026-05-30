@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build traceable drawing evidence without deciding final engineering semantics."""
+"""构建可追溯的图纸证据候选，不做最终工程语义裁决。"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 class DrawingEvidencePackageBuilder:
-    """Convert reconstruction context into stable evidence candidates."""
+    """将重建上下文转换为稳定的证据候选包。"""
 
     PACKAGE_VERSION = "drawing_evidence_package_v1"
 
@@ -23,7 +23,8 @@ class DrawingEvidencePackageBuilder:
             reconstruction_context,
             view_candidates,
         )
-        return {
+        view_analysis = reconstruction_context.get("view_analysis", {}) or {}
+        result = {
             "package_version": self.PACKAGE_VERSION,
             "view_candidates": view_candidates,
             "dimension_candidates": dimension_candidates,
@@ -35,8 +36,16 @@ class DrawingEvidencePackageBuilder:
                 view_candidates,
                 dimension_candidates,
                 geometry_candidates,
+                reconstruction_context,
             ),
         }
+        reason_summary = view_analysis.get("reason_summary", "")
+        if reason_summary:
+            result["view_reason_summary"] = reason_summary
+        evidence = view_analysis.get("evidence", [])
+        if evidence:
+            result["view_evidence"] = deepcopy(evidence)
+        return result
 
     def _build_view_candidates(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
         views = list((context.get("view_analysis", {}) or {}).get("views", []) or [])
@@ -132,6 +141,7 @@ class DrawingEvidencePackageBuilder:
                 "candidate_kind": summary.pop("candidate_kind"),
                 "source_entity_type": entity_type,
                 "source_view_candidate_id": view_id,
+                "layer": entity.get("layer"),
                 **summary,
             }
             candidates.append({k: v for k, v in candidate.items() if v not in (None, [])})
@@ -166,6 +176,7 @@ class DrawingEvidencePackageBuilder:
         views: List[Dict[str, Any]],
         dimensions: List[Dict[str, Any]],
         geometry: List[Dict[str, Any]],
+        context: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         relations: List[Dict[str, Any]] = []
         for left_index, left in enumerate(views):
@@ -217,6 +228,34 @@ class DrawingEvidencePackageBuilder:
                         [left["id"], right["id"]],
                         confidence=1.0,
                     ))
+
+        view_relationships = (
+            (context.get("view_analysis") or {}).get("relationships") or []
+        )
+        view_id_map = {}
+        for idx, view in enumerate(
+            (context.get("view_analysis") or {}).get("views") or [], start=1
+        ):
+            name = view.get("name") or ""
+            if name:
+                view_id_map[name] = f"V{idx}"
+
+        for rel in view_relationships:
+            rel_type = rel.get("type", "")
+            if rel_type not in ("projection", "section", "detail", "alignment"):
+                continue
+            view_ids = []
+            for vid in rel.get("view_ids") or rel.get("views") or []:
+                if isinstance(vid, str) and vid in view_id_map:
+                    view_ids.append(view_id_map[vid])
+                elif isinstance(vid, str) and vid.startswith("V"):
+                    view_ids.append(vid)
+            if len(view_ids) >= 2:
+                relations.append(self._relation(
+                    rel_type,
+                    view_ids,
+                    confidence=rel.get("confidence", 0.8),
+                ))
 
         for index, relation in enumerate(relations, start=1):
             relation["id"] = f"R{index}"

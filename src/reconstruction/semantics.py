@@ -9,9 +9,16 @@ from typing import Any, Dict, Optional
 
 from openai import OpenAI
 
+from src.utils.deepseek_options import (
+    STAGE_SEMANTIC_GENERATION,
+    apply_stage_request_options,
+    client_timeout,
+)
 from src.utils.llm_telemetry import default_llm_telemetry_store
+from src.utils.stage_self_correction import SelfCorrectionRequest
 
 from .semantic_payload import SemanticUnderstandingPayloadBuilder
+from .semantic_postprocessor import PartSemanticsPostprocessor
 from .semantic_schema import PartSemanticsValidator
 
 logger = logging.getLogger(__name__)
@@ -30,11 +37,14 @@ class PartSemanticGenerator:
 - 若 semantic_policy.semantic_adjudication 存在且 status 不是 failed，必须优先服从其中的 view_roles、dimension_roles、feature_roles 和 derived_dimensions；这些裁决是基于图纸证据包的最新语义判断。
 - 在 semantic_policy.semantic_adjudication 成功时，旧 dimension_bindings / dimension_plan 只能作为兼容背景，不得覆盖 semantic_adjudication，也不得补强 semantic_adjudication；不得把旧 unresolved_linear 重新命名为总长、深度、对边、对角、法兰直径或孔径。
 - 只有 semantic_policy.semantic_adjudication 缺失或 status=failed 时，才允许优先使用 semantic_policy.dimension_bindings 中已经完成的尺寸语义绑定；对 unresolved_linear 不得擅自命名为总长、对边、对角、法兰直径或孔径。
-- 只有 semantic_policy.semantic_adjudication 缺失或 status=failed 时，key_dimensions 才优先使用 semantic_policy.dimension_plan.allowed_dimensions 中的值和角色；allowed_dimensions 可能包含由标注尺寸链组合得到的派生值，例如 9+39=48。
-- semantic_policy.dimension_plan.construction_dimensions 仅作为兼容兜底下的组合尺寸证据、局部分段尺寸、局部特征尺寸或重复特征尺寸；如果进入 key_dimensions，名称必须保留为 head_length、thread_length、fillet_radius 等具体构造含义，不能单独命名为总长、深度、对边、对角、法兰直径或孔径。
+- 只有 semantic_policy.semantic_adjudication 缺失或 status=failed 时，key_dimensions 才可退回使用 semantic_policy.dimension_plan.allowed_dimensions 中 binding_status=adjudicated 的值和角色。
+- semantic_policy.dimension_plan.construction_dimensions 仅作为兼容兜底下已确认的局部分段尺寸、局部特征尺寸或重复特征尺寸；如果进入 key_dimensions，名称必须保留为 head_length、thread_length、fillet_radius 等具体构造含义，不能单独命名为总长、深度、对边、对角、法兰直径或孔径。
+- semantic_policy.dimension_plan.candidate_dimensions 只表示本地候选证据，不是最终建模权限；未被 semantic_adjudication 或用户澄清确认前，不得进入 key_dimensions。
 - semantic_policy.dimension_plan.unresolved_dimensions 不得进入 key_dimensions；若建模需要这些值，必须写入 uncertainties。
-- 若 dimension_source=annotation，key_dimensions 只能来自 semantic_adjudication 裁决的标注值/派生值；当 semantic_adjudication 缺失或失败时，才退回 dimensions 中已有标注值、semantic_policy.dimension_plan.allowed_dimensions 中已裁决的标注派生值，或 construction_dimensions 中已裁决且保留具体构造语义的值；不得混入从实体坐标反算出的图形测量值。
+- 若 dimension_source=annotation，key_dimensions 只能来自 semantic_adjudication 裁决的标注值/派生值；当 semantic_adjudication 缺失或失败时，才退回 dimensions 中已有明确文本语义标注值、semantic_policy.dimension_plan.allowed_dimensions 中 binding_status=adjudicated 的值，或 construction_dimensions 中已裁决且保留具体构造语义的值；不得混入 candidate_dimensions 或从实体坐标反算出的图形测量值。
 - geometry_evidence 和 drawing_evidence_package 中的几何测量只能作为形状证据；当 dimension_source=annotation 时，不得把圆半径、线段长度、bbox 差值或坐标反算值写入 key_dimensions。
+- drawing_evidence_package.geometry_candidates 中若存在 source_entity_type=CIRCLE 的中心、半径和 bbox，它们是可执行的孔/圆弧定位证据；对板件、基板、法兰、底座等平面拉伸零件，应优先把轮廓层或实体线上的圆解释为通孔/切除，并在 subtractive_features 或 planar_modeling_semantics.cut_features 中保留 center、radius、diameter 和 evidence。不得因为缺少孔距/定位尺寸标注就丢弃这些已经由 CIRCLE 实体明确给出的孔位。
+- 若 CIRCLE 位于点划线、中心线、构造线、隐藏线等图层，或半径明显表示节圆/中心辅助圆，不能直接切孔；应把它作为定位/构造证据，并在 uncertainties 中说明。
 - 必须遵守 semantic_policy.feature_constraints；隐藏线、同心圆或孤立投影不能单独升级为孔、槽、切除。
 - 若 semantic_adjudication 或兼容 dimension_plan 中存在 chamfer（如 1x45°），只能解释为外部尖角削除；不得解释为内陷槽、凹坑、孔口沉槽或向实体内部新增的负形特征。
 - 若 semantic_adjudication 或兼容 dimension_plan 中存在 radius（如 R15），必须根据标注位置解释为圆弧/圆角特征。对六角头螺栓头部侧面的 R15，应表达为绕螺栓轴线形成的圆弧面/承面，而不是简单忽略为普通风险。
@@ -92,6 +102,13 @@ class PartSemanticGenerator:
     "uncertainties": []
   } 或 null,
   "preferred_modeling_path": "planar_extrude|revolve|null",
+  "modeling_operations": [
+    {
+      "operation": "extrude_profile|revolve_profile|add_feature|subtract_feature",
+      "description": "用中文描述这一步建模操作，例如：在XY平面拉伸矩形轮廓49mm生成主体",
+      "dimensions": {"具体尺寸键值对": "数值"}
+    }
+  ],
   "key_dimensions": [
     {"name": "尺寸名", "value": 数值, "unit": "mm"}
   ],
@@ -109,8 +126,9 @@ uncertainties/warnings 用短句。
 必须服从 semantic_policy.dimension_source，并把同一值原样写入 dimension_source。
 若 semantic_policy.semantic_adjudication 存在且 status 不是 failed，必须优先服从其中的视图、尺寸和特征角色裁决，旧 dimension_bindings 只能作为兼容提示，旧 dimension_plan 只能作为兼容背景；不得覆盖 semantic_adjudication，也不得补强 semantic_adjudication。
 仅在 semantic_policy.semantic_adjudication 缺失或 status=failed 时，才优先使用 semantic_policy.dimension_bindings 中已完成的绑定；不得重命名 unresolved_linear。
-key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值；仅在 semantic_adjudication 缺失或失败时，才退回 semantic_policy.dimension_plan.allowed_dimensions。construction_dimensions 可用于建模构造步骤，必要时可进入 key_dimensions，但必须命名为具体构造语义，不能直接命名为总长/深度等关键语义；unresolved 尺寸不能进入 key_dimensions。
+key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值；仅在 semantic_adjudication 缺失或失败时，才退回 semantic_policy.dimension_plan.allowed_dimensions 中 binding_status=adjudicated 的值。construction_dimensions 可用于建模构造步骤，必要时可进入 key_dimensions，但必须命名为具体构造语义，不能直接命名为总长/深度等关键语义；candidate_dimensions 和 unresolved 尺寸不能进入 key_dimensions。
 当 dimension_source=annotation 时，geometry_evidence 和 drawing_evidence_package 里的几何数值只能辅助判断形状，不能作为 key_dimensions 的数值来源。
+drawing_evidence_package.geometry_candidates 中的 CIRCLE center/radius/bbox 可作为孔/切除定位证据；板件、基板、法兰、底座上的轮廓层圆不得因缺少孔距标注而丢弃，应写入 subtractive_features 或 planar_modeling_semantics.cut_features。点划线/中心线/构造线圆只作辅助定位，不能直接切孔。
 必须遵守 semantic_policy.feature_constraints，不得把隐藏线、同心圆或孤立投影单独升级为孔、槽、切除。
 若存在 chamfer，只能表示外部尖角削除，不得输出内陷槽/凹坑语义。
 若存在 radius/R15，应保留为圆弧面或圆角语义；六角头螺栓头部 R15 表示绕轴线的圆弧面/承面。
@@ -129,6 +147,9 @@ key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值�
   "planar_modeling_semantics": {"profile": null, "extrusion_direction": "unknown", "extrusion_depth": null, "cut_features": [], "dimension_bindings": [], "uncertainties": []},
   "revolve_modeling_semantics": null,
   "preferred_modeling_path": null,
+  "modeling_operations": [
+    {"operation": "extrude_profile|revolve_profile|add_feature|subtract_feature", "description": "一句话", "dimensions": {}}
+  ],
   "key_dimensions": [{"name": "尺寸名", "value": 数值, "unit": "mm"}],
   "uncertainties": ["短句"],
   "warnings": ["短句"]
@@ -139,10 +160,12 @@ key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值�
         self.client = OpenAI(
             api_key=api_key,
             base_url=self.config.get("base_url", "https://api.deepseek.com"),
+            timeout=client_timeout(self.config),
         )
         self.model = self.config.get("semantic_model") or self.config.get("model", "deepseek-v4-pro")
         self.telemetry_store = default_llm_telemetry_store(self.config)
         self.validator = PartSemanticsValidator()
+        self.postprocessor = PartSemanticsPostprocessor()
         self.payload_builder = SemanticUnderstandingPayloadBuilder()
         self.min_confidence = float(self.config.get("semantic_min_confidence", 0.70))
 
@@ -165,6 +188,64 @@ key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值�
             )
             result = self._generate_once(retry_context, thinking=False, file_path=file_path)
         return result
+
+    def generate_from_self_correction(
+        self,
+        correction_request: SelfCorrectionRequest,
+        *,
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """根据阶段内自纠请求重新生成零件语义。"""
+        context = correction_request.stage_payload
+        request_payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": self._build_self_correction_user_content(
+                        correction_request
+                    ),
+                },
+            ],
+            "max_tokens": int(self.config.get("semantic_max_tokens", 30000)),
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+        }
+        request_payload = apply_stage_request_options(
+            request_payload,
+            self.config,
+            stage=STAGE_SEMANTIC_GENERATION,
+            default_thinking=False,
+            default_effort="high",
+        )
+        call_span = self.telemetry_store.start_call(
+            stage="semantic_reconstruction",
+            model=self.model,
+            provider="deepseek",
+            request=request_payload,
+            file_path=file_path,
+        )
+        response = None
+        try:
+            response = self.client.chat.completions.create(**request_payload)
+            content = response.choices[0].message.content or ""
+            result = self._normalize_part_semantics(
+                self._extract_json(content),
+                context,
+            )
+            result.setdefault("evidence", [])
+            result.setdefault("candidate_interpretations", [])
+            valid, errors = self.validator.validate(result, context)
+            if not valid:
+                raise ValueError("; ".join(errors))
+            call_span.finish(response=response)
+            logger.info("零件语义模型自纠成功")
+            return result
+        except Exception as error:
+            call_span.finish(response=response, error=error)
+            logger.error(f"零件语义模型自纠失败: {error}")
+            return self._fallback_semantics(str(error))
 
     def _generate_once(
         self,
@@ -189,12 +270,14 @@ key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值�
             "temperature": temperature,
             "response_format": {"type": "json_object"},
         }
-        if thinking:
-            request_payload["extra_body"] = {
-                "thinking": {"type": "enabled", "reasoning_effort": "medium"}
-            }
-        else:
-            request_payload["extra_body"] = {"thinking": {"type": "disabled"}}
+        request_payload = apply_stage_request_options(
+            request_payload,
+            self.config,
+            stage=STAGE_SEMANTIC_GENERATION,
+            default_thinking=False,
+            default_effort="high",
+            force_thinking=thinking,
+        )
 
         finish_reason = ""
         call_span = self.telemetry_store.start_call(
@@ -219,7 +302,10 @@ key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值�
                 return {"confidence": 0.0, "finish_reason": "length",
                         "error": str(error)}
 
-            result = self._normalize_part_semantics(self._extract_json(content))
+            result = self._normalize_part_semantics(
+                self._extract_json(content),
+                context,
+            )
             if use_retry:
                 result.setdefault("evidence", [])
                 result.setdefault("candidate_interpretations", [])
@@ -250,6 +336,39 @@ key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值�
         hint_section = self._build_user_modeling_hint_section(context)
         if hint_section:
             parts.append(hint_section)
+        retained = context.get("retained_items") if isinstance(context, dict) else None
+        if retained:
+            parts.append(
+                "用户已确认以下部分成果，你必须遵守这些已确认结果，"
+                "只重新生成未确认的部分：\n"
+                + json.dumps(retained, ensure_ascii=False, indent=2)
+            )
+        directives = context.get("stage_retry_directives") if isinstance(context, dict) else None
+        if isinstance(directives, dict):
+            parts.append(
+                "=== 阶段重跑要求 ===\n"
+                "本次请求是用户触发的语义阶段重跑，必须把 focus_issues 当作优先任务处理；"
+                "不要仅复述上一轮结果。\n"
+                + json.dumps(directives, ensure_ascii=False, indent=2)
+            )
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _build_self_correction_user_content(
+        correction_request: SelfCorrectionRequest,
+    ) -> str:
+        parts = [
+            "请执行零件语义重建阶段的模型自纠，并只输出一个合法 JSON 对象。",
+            "不要输出推理过程、Markdown 或额外解释。",
+            "只能使用 self_correction_request.stage_payload 中的语义理解载荷和 previous_output 中的上一次零件语义。",
+            "必须修复 validation_issues 中列出的问题；如果仍不确定，请用 uncertainties 或 warnings 表达。",
+        ]
+        if correction_request.correction_goal:
+            parts.append(f"【自纠目标】{correction_request.correction_goal}")
+        parts.extend([
+            "=== self_correction_request ===",
+            json.dumps(correction_request.to_dict(), ensure_ascii=False, indent=2),
+        ])
         return "\n\n".join(parts)
 
     def _build_user_modeling_hint_section(self, context: Dict[str, Any]) -> str:
@@ -314,63 +433,11 @@ key_dimensions 优先使用 semantic_adjudication 裁决的标注值/派生值�
         }
 
     @staticmethod
-    def _normalize_part_semantics(result: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(result, dict):
-            return result
-
-        path_aliases = {
-            "旋转建模": "revolve",
-            "回转建模": "revolve",
-            "旋转": "revolve",
-            "回转": "revolve",
-            "平面拉伸": "planar_extrude",
-            "拉伸": "planar_extrude",
-            "语义重建": "semantic_reconstruction",
-            "通用语义重建": "semantic_reconstruction",
-        }
-        preferred_path = result.get("preferred_modeling_path")
-        if isinstance(preferred_path, str):
-            normalized_path = (
-                path_aliases.get(preferred_path.strip())
-                or PartSemanticGenerator._normalize_modeling_path_token(preferred_path)
-            )
-            if normalized_path:
-                result["preferred_modeling_path"] = normalized_path
-
-        revolve = result.get("revolve_modeling_semantics")
-        if not isinstance(revolve, dict):
-            return result
-
-        required_revolve_fields = {
-            "axis_point",
-            "axis_direction",
-            "profile_points",
-            "angle_degrees",
-            "uncertainties",
-        }
-        if required_revolve_fields.issubset(revolve):
-            return result
-
-        result["revolve_modeling_semantics"] = None
-        if result.get("preferred_modeling_path") == "revolve":
-            result["preferred_modeling_path"] = "semantic_reconstruction"
-        uncertainties = result.setdefault("uncertainties", [])
-        if isinstance(uncertainties, list):
-            uncertainties.append(
-                "回转语义缺少精确轴线或轮廓点，已降级为语义重建路径处理"
-            )
-        return result
-
-    @staticmethod
-    def _normalize_modeling_path_token(value: str) -> Optional[str]:
-        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
-        if "revolve" in normalized or "回转" in normalized or "旋转" in normalized:
-            return "revolve"
-        if "planar" in normalized or "extrude" in normalized or "拉伸" in normalized:
-            return "planar_extrude"
-        if "semantic" in normalized or "语义" in normalized:
-            return "semantic_reconstruction"
-        return None
+    def _normalize_part_semantics(
+        result: Dict[str, Any],
+        reconstruction_context: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        return PartSemanticsPostprocessor().normalize(result, reconstruction_context)
 
     @staticmethod
     def _extract_json(content: str) -> Dict[str, Any]:

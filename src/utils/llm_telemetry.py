@@ -15,6 +15,30 @@ from typing import Any, Dict, Iterable, List, Optional
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_MODEL_PRICING_CNY_PER_1M = {
+    "deepseek-v4-pro": {
+        "input_cache_hit": 0.025,
+        "input_cache_miss": 3.0,
+        "output": 6.0,
+    },
+    "deepseek-v4-flash": {
+        "input_cache_hit": 0.02,
+        "input_cache_miss": 1.0,
+        "output": 2.0,
+    },
+    "deepseek-chat": {
+        "input_cache_hit": 0.02,
+        "input_cache_miss": 1.0,
+        "output": 2.0,
+    },
+    "deepseek-reasoner": {
+        "input_cache_hit": 0.02,
+        "input_cache_miss": 1.0,
+        "output": 2.0,
+    },
+}
+
+
 class LLMTelemetryStore:
     """Append-only JSONL store for large-model request/response metrics."""
 
@@ -147,7 +171,7 @@ class LLMCallSpan:
             "duration_seconds": round(duration, 4),
             "tokens": usage,
             "token_rate_completion_per_second": round(token_rate, 4),
-            "request": self.request,
+            "request": _redact_multimodal_data_urls(self.request),
             "response": response_dict,
             "error": str(error) if error else None,
         }
@@ -174,6 +198,9 @@ def summarize_records(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     total_prompt = 0
     total_completion = 0
     total_tokens = 0
+    total_cache_hit = 0
+    total_cache_miss = 0
+    total_cost_cny = 0.0
     total_duration = 0.0
     by_stage: Dict[str, Dict[str, Any]] = {}
 
@@ -182,12 +209,18 @@ def summarize_records(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         prompt = int(tokens.get("prompt_tokens") or 0)
         completion = int(tokens.get("completion_tokens") or 0)
         total = int(tokens.get("total_tokens") or prompt + completion)
+        cache_hit = int(tokens.get("prompt_cache_hit_tokens") or tokens.get("cached_tokens") or 0)
+        cache_miss = int(tokens.get("prompt_cache_miss_tokens") or 0)
+        cost_cny = estimate_record_cost_cny(record)
         duration = float(record.get("duration_seconds") or 0.0)
         stage = str(record.get("stage") or "unknown")
 
         total_prompt += prompt
         total_completion += completion
         total_tokens += total
+        total_cache_hit += cache_hit
+        total_cache_miss += cache_miss
+        total_cost_cny += cost_cny
         total_duration += duration
 
         item = by_stage.setdefault(stage, {
@@ -195,12 +228,18 @@ def summarize_records(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": 0,
+            "cost_cny": 0.0,
             "duration_seconds": 0.0,
         })
         item["count"] += 1
         item["prompt_tokens"] += prompt
         item["completion_tokens"] += completion
         item["total_tokens"] += total
+        item["prompt_cache_hit_tokens"] += cache_hit
+        item["prompt_cache_miss_tokens"] += cache_miss
+        item["cost_cny"] = round(item["cost_cny"] + cost_cny, 6)
         item["duration_seconds"] = round(item["duration_seconds"] + duration, 4)
 
     return {
@@ -208,10 +247,56 @@ def summarize_records(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "prompt_tokens": total_prompt,
         "completion_tokens": total_completion,
         "total_tokens": total_tokens,
+        "prompt_cache_hit_tokens": total_cache_hit,
+        "prompt_cache_miss_tokens": total_cache_miss,
+        "cost_cny": round(total_cost_cny, 6),
+        "prompt_cache_hit_rate": round(total_cache_hit / (total_cache_hit + total_cache_miss), 4)
+        if (total_cache_hit + total_cache_miss) else 0.0,
         "duration_seconds": round(total_duration, 4),
         "completion_tokens_per_second": round(total_completion / total_duration, 4) if total_duration else 0.0,
         "by_stage": by_stage,
     }
+
+
+def estimate_record_cost_cny(record: Dict[str, Any]) -> float:
+    tokens = record.get("tokens") or {}
+    model = str(record.get("model") or "").strip().lower()
+    pricing = DEFAULT_MODEL_PRICING_CNY_PER_1M.get(
+        model,
+        DEFAULT_MODEL_PRICING_CNY_PER_1M["deepseek-v4-pro"],
+    )
+    prompt_tokens = int(tokens.get("prompt_tokens") or 0)
+    completion_tokens = int(tokens.get("completion_tokens") or 0)
+    cache_hit = int(tokens.get("prompt_cache_hit_tokens") or tokens.get("cached_tokens") or 0)
+    raw_cache_miss = tokens.get("prompt_cache_miss_tokens")
+    if raw_cache_miss is None:
+        cache_miss = max(prompt_tokens - cache_hit, 0)
+    else:
+        cache_miss = int(raw_cache_miss or 0)
+        if cache_hit == 0 and cache_miss == 0 and prompt_tokens:
+            cache_miss = prompt_tokens
+
+    cost = (
+        cache_hit * pricing["input_cache_hit"]
+        + cache_miss * pricing["input_cache_miss"]
+        + completion_tokens * pricing["output"]
+    ) / 1_000_000
+    return round(cost, 6)
+
+
+def _redact_multimodal_data_urls(value: Any) -> Any:
+    """遥测只记录图片存在性，不落盘 base64 图片内容。"""
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            if key == "url" and isinstance(item, str) and item.startswith("data:image/"):
+                redacted[key] = f"<redacted image data url, chars={len(item)}>"
+            else:
+                redacted[key] = _redact_multimodal_data_urls(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_multimodal_data_urls(item) for item in value]
+    return value
 
 
 def _to_plain_data(value: Any) -> Any:
@@ -247,8 +332,14 @@ def _extract_usage(response_dict: Any, response_obj: Any) -> Dict[str, int]:
     prompt_tokens = int(usage_dict.get("prompt_tokens") or 0)
     completion_tokens = int(usage_dict.get("completion_tokens") or 0)
     total_tokens = int(usage_dict.get("total_tokens") or prompt_tokens + completion_tokens)
+    prompt_details = usage_dict.get("prompt_tokens_details") or {}
+    if not isinstance(prompt_details, dict):
+        prompt_details = {}
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
+        "cached_tokens": int(prompt_details.get("cached_tokens") or 0),
+        "prompt_cache_hit_tokens": int(usage_dict.get("prompt_cache_hit_tokens") or 0),
+        "prompt_cache_miss_tokens": int(usage_dict.get("prompt_cache_miss_tokens") or 0),
     }

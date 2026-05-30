@@ -679,11 +679,3 @@ class CADParser:
         except Exception:
             pass
 
-
-# 向后兼容性：保持 DXFParser 作为 CADParser 的别名
-class DXFParser(CADParser):
-    """
-    DXFParser 已重命名为 CADParser。
-    此别名保持向后兼容性，请使用 CADParser。
-    """
-    pass

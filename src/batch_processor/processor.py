@@ -6,149 +6,19 @@ CAD处理器组件
 """
 
 import json
-from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 import logging
 import traceback
 
+from src.reconstruction.analysis_result import IntelligentAnalysisResult, ModelingInstructionsResult
 from src.batch_processor.modeling_execution import IntelligentModelingExecutor
+from src.batch_processor.result import CADProcessResult, PipelineStatus
 from src.reconstruction.clarification_response import ClarificationResponse
 from src.utils.config import get_analysis_cache_settings
 from src.utils.stage_confirmation import StageConfirmationStopped
 
 logger = logging.getLogger(__name__)
-
-
-class PipelineStatus(str, Enum):
-    """单文件处理流程的真实状态。"""
-
-    COMPLETED = "completed"
-    PARTIAL_COMPLETED = "partial_completed"
-    FAILED = "failed"
-    NEEDS_CLARIFICATION = "needs_clarification"
-    STOPPED_BY_USER = "stopped_by_user"
-
-
-class CADProcessResult:
-    """处理结果封装类"""
-
-    def __init__(
-        self,
-        success: bool,
-        input_file: str,
-        mode: Optional[str] = None,
-        modeling_path: Optional[str] = None,
-    ):
-        self.success = success
-        self.status = PipelineStatus.COMPLETED if success else PipelineStatus.FAILED
-        self.input_file = input_file
-        self.mode = mode
-        self.modeling_path = modeling_path
-        self.geometry_data: Optional[Dict] = None
-        self.relationships: Optional[Dict] = None
-        self.intelligent_analysis: Optional[Dict] = None  # 智能分析结果
-        self.clarification_questions: list[Dict[str, Any]] = []
-        self.clarification_context: Optional[Dict[str, Any]] = None
-        self.completed_features: list[Dict[str, Any]] = []
-        self.skipped_features: list[Dict[str, Any]] = []
-        self.partial_completion_reason: Optional[str] = None
-        self.stage_stop_action: Optional[str] = None
-        self.stage_stop_stage: Optional[str] = None
-        self.output_paths: Dict[str, str] = {}
-        self.error_message: Optional[str] = None
-        self.entity_count: int = 0
-
-    def mark_completed(self) -> None:
-        self.success = True
-        self.status = PipelineStatus.COMPLETED
-        self.completed_features = []
-        self.skipped_features = []
-        self.partial_completion_reason = None
-
-    def mark_partial_completed(
-        self,
-        *,
-        skipped_features: Optional[list[Dict[str, Any]]] = None,
-        completed_features: Optional[list[Dict[str, Any]]] = None,
-        reason: Optional[str] = None,
-    ) -> None:
-        self.success = True
-        self.status = PipelineStatus.PARTIAL_COMPLETED
-        self.skipped_features = skipped_features or []
-        self.completed_features = completed_features or []
-        self.partial_completion_reason = reason or "模型主体已生成并导出，部分细节被跳过"
-
-    def mark_failed(self, error_message: Optional[str] = None) -> None:
-        self.success = False
-        self.status = PipelineStatus.FAILED
-        if error_message is not None:
-            self.error_message = error_message
-
-    def mark_needs_clarification(
-        self,
-        questions: list[Dict[str, Any]],
-        clarification_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self.success = False
-        self.status = PipelineStatus.NEEDS_CLARIFICATION
-        self.clarification_questions = questions
-        self.clarification_context = clarification_context
-
-    def mark_stopped_by_user(
-        self,
-        message: Optional[str] = None,
-        action: Optional[str] = None,
-        stage: Optional[str] = None,
-    ) -> None:
-        self.success = False
-        self.status = PipelineStatus.STOPPED_BY_USER
-        self.error_message = message or "用户停止处理"
-        self.stage_stop_action = action or "stop"
-        self.stage_stop_stage = stage
-
-    @classmethod
-    def from_pending_item(cls, item: Dict[str, Any]) -> "CADProcessResult":
-        """Restore an in-memory result from a persisted pending clarification item."""
-        result = cls(
-            success=False,
-            input_file=str(item.get("input_file") or ""),
-            mode=item.get("mode", "intelligent"),
-            modeling_path=item.get("modeling_path"),
-        )
-        result.mark_needs_clarification(
-            list(item.get("clarification_questions") or []),
-            item.get("clarification_context"),
-        )
-        result.output_paths.update({
-            str(key): str(path)
-            for key, path in (item.get("output_paths") or {}).items()
-            if path
-        })
-        result.completed_features = list(item.get("completed_features") or [])
-        result.skipped_features = list(item.get("skipped_features") or [])
-        result.partial_completion_reason = item.get("partial_completion_reason")
-        return result
-
-    def to_dict(self) -> Dict:
-        return {
-            'success': self.success,
-            'status': self.status.value,
-            'input_file': self.input_file,
-            'mode': self.mode,
-            'modeling_path': self.modeling_path,
-            'entity_count': self.entity_count,
-            'output_paths': self.output_paths,
-            'error_message': self.error_message,
-            'has_intelligent_analysis': self.intelligent_analysis is not None,
-            'clarification_questions': self.clarification_questions,
-            'has_clarification_context': self.clarification_context is not None,
-            'completed_features': self.completed_features,
-            'skipped_features': self.skipped_features,
-            'partial_completion_reason': self.partial_completion_reason,
-            'stage_stop_action': self.stage_stop_action,
-            'stage_stop_stage': self.stage_stop_stage,
-        }
 
 
 class CADProcessor:
@@ -181,6 +51,23 @@ class CADProcessor:
             callback(stage, text)
         except Exception as error:
             logger.debug(f"进度回调失败: {error}")
+
+    @staticmethod
+    def _apply_stage_confirmation_result(
+        result: CADProcessResult,
+        stopped: StageConfirmationStopped,
+    ) -> None:
+        decision = stopped.result
+        action = getattr(decision, "action", None)
+        stage = getattr(decision, "stage", None)
+        if getattr(decision, "requests_retry", False) or getattr(
+            decision,
+            "requests_self_correction",
+            False,
+        ) or getattr(decision, "requests_retry_with_partial", False):
+            result.mark_stage_action_requested(str(stopped), action=action, stage=stage)
+            return
+        result.mark_stopped_by_user(str(stopped), action=action, stage=stage)
 
     def _get_parser(self):
         """获取或创建CAD解析器"""
@@ -217,7 +104,7 @@ class CADProcessor:
         view_analysis = {}
 
         if intelligent_analysis_result:
-            view_analysis = intelligent_analysis_result.get("view_analysis") or {}
+            view_analysis = intelligent_analysis_result.view_analysis or {}
 
         if not view_analysis:
             try:
@@ -232,13 +119,12 @@ class CADProcessor:
 
         return view_analysis
 
-    def _is_fallback_modeling_result(self, modeling_result: Dict[str, Any]) -> bool:
-        """识别 AI 建模失败后生成的本地降级脚本。"""
-        if modeling_result.get("blocked_by_semantic_confidence"):
+    def _is_fallback_modeling_result(self, modeling_result: ModelingInstructionsResult) -> bool:
+        if modeling_result.blocked_by_semantic_confidence:
             return True
-        summary = str(modeling_result.get("analysis_summary", ""))
-        strategy = str(modeling_result.get("modeling_strategy", ""))
-        warnings = " ".join(str(item) for item in modeling_result.get("warnings", []) or [])
+        summary = modeling_result.analysis_summary
+        strategy = modeling_result.modeling_strategy
+        warnings = " ".join(str(item) for item in modeling_result.warnings)
 
         failure_text = " ".join([summary, strategy, warnings])
         hard_failure_markers = (
@@ -252,9 +138,9 @@ class CADProcessor:
         if any(marker in failure_text for marker in hard_failure_markers):
             return True
 
-        script = str(modeling_result.get("freecad_script", ""))
+        script = modeling_result.freecad_script
         fallback_script_markers = (
-            "_group_entities_into_contours",
+            "group_entities_into_contours",
             "for contour in contours",
             "GeneratedModel",
             "extrude_height =",
@@ -324,10 +210,13 @@ class CADProcessor:
                         intelligent_analysis_result = analyzer.analyze_full(
                             geometry_data,
                             extrude_height,
-                            file_path=str(file_path)
+                            file_path=str(file_path),
+                            preview_path=str(output_structure.get("visualization", "")) or None,
                         )
+                        if isinstance(intelligent_analysis_result, dict):
+                            intelligent_analysis_result = IntelligentAnalysisResult.from_dict(intelligent_analysis_result)
                         result.intelligent_analysis = intelligent_analysis_result
-                        relationships = intelligent_analysis_result.get("modeling_instructions", {})
+                        relationships = intelligent_analysis_result.modeling_instructions.to_dict()
                         logger.info("智能分析完成")
                     except Exception as e:
                         logger.warning(f"智能分析失败，使用纯几何建模: {e}")
@@ -431,10 +320,13 @@ class CADProcessor:
                         cache_ttl=cache_settings["default_ttl"]
                     )
                     intelligent_analysis_result = analyzer.analyze_full(
-                        geometry_data, 
-                        extrude_height, 
-                        file_path=str(file_path)
+                        geometry_data,
+                        extrude_height,
+                        file_path=str(file_path),
+                        preview_path=str(output_structure.get("visualization", "")) or None,
                     )
+                    if isinstance(intelligent_analysis_result, dict):
+                        intelligent_analysis_result = IntelligentAnalysisResult.from_dict(intelligent_analysis_result)
                     result.intelligent_analysis = intelligent_analysis_result
                     output_dir = output_structure.get('directory', Path('.') / 'output')
                     base_name = Path(file_path).stem
@@ -452,21 +344,21 @@ class CADProcessor:
                     if clarification_questions:
                         result.mark_needs_clarification(
                             clarification_questions,
-                            intelligent_analysis_result.get("clarification_context"),
+                            intelligent_analysis_result.clarification_context,
                         )
                         logger.info("语义裁决需要用户澄清，已暂停智能建模")
                         return result
 
                     # 显示缓存状态
-                    if intelligent_analysis_result.get('_cache_hit'):
+                    if intelligent_analysis_result._cache_hit:
                         logger.info("智能分析已从缓存加载")
                     else:
                         logger.info("智能分析完成并已缓存")
-                    
+
                     # 获取AI生成的脚本
-                    if 'modeling_instructions' in intelligent_analysis_result:
-                        modeling_instructions = intelligent_analysis_result['modeling_instructions']
-                        ai_script_content = modeling_instructions.get('freecad_script')
+                    modeling_instructions = intelligent_analysis_result.modeling_instructions
+                    if modeling_instructions.has_script:
+                        ai_script_content = modeling_instructions.freecad_script
                         has_ai_script = bool(ai_script_content)
 
                     view_analysis = self._prepare_intelligent_view_context(
@@ -474,16 +366,13 @@ class CADProcessor:
                         intelligent_analysis_result,
                         source_name=file_path
                     )
-                        
+
                 except StageConfirmationStopped as stopped:
-                    result.mark_stopped_by_user(
-                        str(stopped),
-                        action=getattr(stopped.result, "action", None),
-                        stage=getattr(stopped.result, "stage", None),
-                    )
+                    self._apply_stage_confirmation_result(result, stopped)
                     logger.info(
-                        "%s | action=%s | stage=%s",
+                        "%s | status=%s | action=%s | stage=%s",
                         result.error_message,
+                        result.status.value,
                         result.stage_stop_action,
                         result.stage_stop_stage,
                     )
@@ -500,8 +389,7 @@ class CADProcessor:
 
             if has_ai_script and self._is_fallback_modeling_result(modeling_instructions):
                 result.error_message = (
-                    "AI 未能生成可靠的建模脚本，当前结果属于基础拉伸降级方案；"
-                    "统一智能处理不会调用通用建模器兜底"
+                    "AI 未能生成可靠的建模脚本，当前结果属于基础拉伸降级方案"
                 )
                 logger.warning(result.error_message)
                 return result
@@ -522,12 +410,12 @@ class CADProcessor:
             self._notify_progress_stage("modeling", "建模中")
             modeled_result = self._execute_intelligent_modeling_path(
                 result=result,
-                intelligent_analysis_result=result.intelligent_analysis,
+                intelligent_analysis_result=result.intelligent_analysis.to_dict(),
                 geometry_data=geometry_data,
                 output_structure=output_structure,
                 extrude_height=extrude_height,
-                missing_script_message="未获得可执行的 AI FreeCAD 建模脚本；统一智能处理不会调用通用建模器兜底",
-                script_failure_prefix="AI脚本执行失败，统一智能处理不会调用通用建模器兜底",
+                missing_script_message="未获得可执行的 AI FreeCAD 建模脚本",
+                script_failure_prefix="AI脚本执行失败",
                 completion_message=f"智能分析处理完成: {Path(file_path).name}",
             )
             self._merge_output_paths(modeled_result, result.output_paths)
@@ -541,14 +429,11 @@ class CADProcessor:
             return modeled_result
 
         except StageConfirmationStopped as stopped:
-            result.mark_stopped_by_user(
-                str(stopped),
-                action=getattr(stopped.result, "action", None),
-                stage=getattr(stopped.result, "stage", None),
-            )
+            self._apply_stage_confirmation_result(result, stopped)
             logger.info(
-                "%s | action=%s | stage=%s",
+                "%s | status=%s | action=%s | stage=%s",
                 result.error_message,
+                result.status.value,
                 result.stage_stop_action,
                 result.stage_stop_stage,
             )
@@ -560,13 +445,13 @@ class CADProcessor:
         return result
 
     @staticmethod
-    def _collect_clarification_questions(intelligent_analysis_result: Dict[str, Any]) -> list[Dict[str, Any]]:
+    def _collect_clarification_questions(intelligent_analysis_result: IntelligentAnalysisResult) -> list[Dict[str, Any]]:
         semantic_questions = (
-            intelligent_analysis_result.get("semantic_policy", {}) or {}
+            intelligent_analysis_result.semantic_policy or {}
         ).get("clarification_questions", [])
         path_questions = (
-            intelligent_analysis_result.get("modeling_instructions", {}) or {}
-        ).get("clarification_questions", [])
+            intelligent_analysis_result.modeling_instructions.clarification_questions or []
+        )
         return CADProcessor._deduplicate_clarification_questions(
             list(semantic_questions or []) + list(path_questions or [])
         )
@@ -597,30 +482,23 @@ class CADProcessor:
         return deduplicated
 
     @classmethod
-    def _needs_pre_modeling_clarification(cls, modeling_instructions: Dict[str, Any]) -> bool:
-        """Pause before FreeCAD when instructions admit the main solid cannot be built."""
-        if not modeling_instructions:
-            return False
-        if modeling_instructions.get("completed_features"):
+    def _needs_pre_modeling_clarification(cls, modeling_instructions: ModelingInstructionsResult) -> bool:
+        if modeling_instructions.blocked_by_task_readiness:
+            return True
+        if modeling_instructions.completed_features:
             return False
 
-        skipped = modeling_instructions.get("skipped_features") or []
-        if isinstance(skipped, dict):
-            skipped = [skipped]
-        if not isinstance(skipped, list):
-            skipped = []
+        skipped = modeling_instructions.skipped_features or []
         if any(cls._is_required_body_skipped_feature(feature) for feature in skipped):
             return True
 
-        warnings = modeling_instructions.get("warnings", []) or []
-        if not isinstance(warnings, list):
-            warnings = [warnings]
+        warnings = modeling_instructions.warnings or []
         text = " ".join(
             str(item)
             for item in [
-                modeling_instructions.get("analysis_summary", ""),
-                modeling_instructions.get("modeling_strategy", ""),
-                modeling_instructions.get("partial_completion_reason", ""),
+                modeling_instructions.analysis_summary,
+                modeling_instructions.modeling_strategy,
+                modeling_instructions.partial_completion_reason,
                 *warnings,
             ]
         ).lower()
@@ -669,13 +547,20 @@ class CADProcessor:
 
     @staticmethod
     def _build_pre_modeling_clarification_questions(
-        modeling_instructions: Dict[str, Any],
+        modeling_instructions: ModelingInstructionsResult,
     ) -> list[Dict[str, Any]]:
         skipped_text = CADProcessor._format_skipped_features_for_question(
-            modeling_instructions.get("skipped_features") or []
+            modeling_instructions.skipped_features or []
         )
+        readiness = modeling_instructions._raw.get("task_readiness") or {}
+        readiness_reason = CADProcessor._format_task_readiness_for_question(readiness)
         reason = skipped_text or "\n".join(
-            str(item) for item in modeling_instructions.get("warnings", []) or []
+            str(item)
+            for item in [
+                readiness_reason,
+                *(modeling_instructions.warnings or []),
+            ]
+            if item
         )
         return [
             {
@@ -699,27 +584,43 @@ class CADProcessor:
         extrude_height: float,
         file_path: str,
     ) -> Dict[str, Any]:
-        modeling_instructions = intelligent_analysis_result.get("modeling_instructions", {}) or {}
+        mi = intelligent_analysis_result.modeling_instructions
         return {
             "geometry_data": geometry_data,
-            "view_analysis": intelligent_analysis_result.get("view_analysis", {}),
-            "dimension_data": intelligent_analysis_result.get("dimension_extraction", {}),
-            "local_relationships": intelligent_analysis_result.get("local_relationships"),
+            "view_analysis": intelligent_analysis_result.view_analysis,
+            "dimension_data": intelligent_analysis_result.dimension_extraction,
+            "local_relationships": intelligent_analysis_result.local_relationships,
             "extrude_height": extrude_height,
             "file_path": file_path,
-            "reconstruction_context": intelligent_analysis_result.get("reconstruction_context", {}),
+            "reconstruction_context": intelligent_analysis_result.reconstruction_context,
             "clarification_stage": "semantic_policy",
             "pre_modeling_recovery": True,
-            "previous_modeling_instructions": modeling_instructions,
-            "skipped_features": list(modeling_instructions.get("skipped_features", []) or []),
-            "partial_completion_reason": modeling_instructions.get("partial_completion_reason"),
+            "previous_modeling_instructions": mi.to_dict(),
+            "skipped_features": list(mi.skipped_features or []),
+            "partial_completion_reason": mi.partial_completion_reason,
         }
+
+    @staticmethod
+    def _format_task_readiness_for_question(readiness: Dict[str, Any]) -> str:
+        if not isinstance(readiness, dict) or not readiness:
+            return ""
+        missing = readiness.get("missing") or []
+        risks = readiness.get("risks") or []
+        lines = []
+        if missing:
+            lines.append(
+                "建模任务缺失项: "
+                + ", ".join(str(item) for item in missing)
+            )
+        for risk in risks:
+            lines.append(f"建模风险: {risk}")
+        return "\n".join(lines)
 
     def _execute_intelligent_modeling_path(
         self,
         *,
         result: CADProcessResult,
-        intelligent_analysis_result: Dict[str, Any],
+        intelligent_analysis_result: Any,
         geometry_data: Dict[str, Any],
         output_structure: Dict[str, Path],
         extrude_height: float,
@@ -770,6 +671,8 @@ class CADProcessor:
                 result.clarification_context,
                 clarification_response,
             )
+            if isinstance(resumed_analysis, dict):
+                resumed_analysis = IntelligentAnalysisResult.from_dict(resumed_analysis)
             result.intelligent_analysis = resumed_analysis
             output_dir = output_structure.get("directory", Path(".") / "output")
             base_name = Path(
@@ -787,12 +690,12 @@ class CADProcessor:
             if clarification_questions:
                 result.mark_needs_clarification(
                     clarification_questions,
-                    resumed_analysis.get("clarification_context", result.clarification_context),
+                    resumed_analysis.clarification_context or result.clarification_context,
                 )
                 logger.info("用户澄清后仍存在未决问题，继续等待输入")
                 return result
 
-            modeling_instructions = resumed_analysis.get("modeling_instructions", {}) or {}
+            modeling_instructions = resumed_analysis.modeling_instructions
             if self._needs_pre_modeling_clarification(modeling_instructions):
                 result.mark_needs_clarification(
                     self._build_pre_modeling_clarification_questions(modeling_instructions),
@@ -812,7 +715,7 @@ class CADProcessor:
             self._notify_progress_stage("modeling", "建模中")
             modeled_result = self._execute_intelligent_modeling_path(
                 result=result,
-                intelligent_analysis_result=resumed_analysis,
+                intelligent_analysis_result=resumed_analysis.to_dict(),
                 geometry_data=result.clarification_context["geometry_data"],
                 output_structure=output_structure,
                 extrude_height=result.clarification_context["extrude_height"],
@@ -828,16 +731,14 @@ class CADProcessor:
                 extrude_height=result.clarification_context["extrude_height"],
                 file_path=result.clarification_context.get("file_path", result.input_file),
             )
+            self._invalidate_analysis_cache_for(result.input_file)
             return modeled_result
         except StageConfirmationStopped as stopped:
-            result.mark_stopped_by_user(
-                str(stopped),
-                action=getattr(stopped.result, "action", None),
-                stage=getattr(stopped.result, "stage", None),
-            )
+            self._apply_stage_confirmation_result(result, stopped)
             logger.info(
-                "%s | action=%s | stage=%s",
+                "%s | status=%s | action=%s | stage=%s",
                 result.error_message,
+                result.status.value,
                 result.stage_stop_action,
                 result.stage_stop_stage,
             )
@@ -851,17 +752,36 @@ class CADProcessor:
     def _save_analysis_outputs(
         analyzer,
         result: CADProcessResult,
-        analysis_result: Dict[str, Any],
+        analysis_result: Any,
         output_dir: Path | str,
         base_name: str,
     ) -> None:
-        result_paths = analyzer.save_results(analysis_result, str(output_dir), base_name)
+        save_data = analysis_result.to_dict()
+        result_paths = analyzer.save_results(save_data, str(output_dir), base_name)
         if isinstance(result_paths, dict):
             result.output_paths.update({
                 str(key): str(path)
                 for key, path in result_paths.items()
                 if path
             })
+
+    @staticmethod
+    def _invalidate_analysis_cache_for(file_path: str) -> None:
+        """恢复成功后主动失效旧分析缓存，防止后续首次处理命中过时结果。"""
+        try:
+            from src.utils.cache import AnalysisCache
+            from src.utils.config import get_analysis_cache_settings, load_config
+            cfg = load_config()
+            cache_settings = get_analysis_cache_settings(cfg)
+            cache = AnalysisCache(
+                cache_dir=cache_settings["cache_dir"],
+                default_ttl=cache_settings["default_ttl"],
+            )
+            removed = cache.invalidate(file_path)
+            if removed > 0:
+                logger.info("恢复成功后已失效 %d 条旧分析缓存: %s", removed, file_path)
+        except Exception as e:
+            logger.warning("失效旧分析缓存失败（不影响恢复结果）: %s", e)
 
     @staticmethod
     def _merge_output_paths(
@@ -874,7 +794,7 @@ class CADProcessor:
     def _attach_partial_modeling_clarification(
         self,
         result: CADProcessResult,
-        intelligent_analysis_result: Optional[Dict[str, Any]],
+        intelligent_analysis_result: Optional[Any],
         *,
         geometry_data: Dict[str, Any],
         extrude_height: float,
@@ -922,30 +842,30 @@ class CADProcessor:
 
     @staticmethod
     def _build_partial_modeling_clarification_context(
-        intelligent_analysis_result: Dict[str, Any],
+        intelligent_analysis_result: IntelligentAnalysisResult,
         *,
         geometry_data: Dict[str, Any],
         extrude_height: float,
         file_path: str,
         result: CADProcessResult,
     ) -> Dict[str, Any]:
-        existing_context = intelligent_analysis_result.get("clarification_context")
+        existing_context = intelligent_analysis_result.clarification_context
         if existing_context:
             context = dict(existing_context)
         else:
             context = {
                 "geometry_data": geometry_data,
-                "view_analysis": intelligent_analysis_result.get("view_analysis", {}),
-                "dimension_data": intelligent_analysis_result.get("dimension_extraction", {}),
-                "local_relationships": intelligent_analysis_result.get("local_relationships"),
+                "view_analysis": intelligent_analysis_result.view_analysis,
+                "dimension_data": intelligent_analysis_result.dimension_extraction,
+                "local_relationships": intelligent_analysis_result.local_relationships,
                 "extrude_height": extrude_height,
                 "file_path": file_path,
-                "reconstruction_context": intelligent_analysis_result.get("reconstruction_context", {}),
+                "reconstruction_context": intelligent_analysis_result.reconstruction_context,
             }
         context.update({
             "clarification_stage": "semantic_policy",
             "partial_modeling_recovery": True,
-            "previous_modeling_instructions": intelligent_analysis_result.get("modeling_instructions", {}),
+            "previous_modeling_instructions": intelligent_analysis_result.modeling_instructions.to_dict(),
             "previous_output_paths": dict(result.output_paths),
             "skipped_features": list(result.skipped_features),
             "partial_completion_reason": result.partial_completion_reason,

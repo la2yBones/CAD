@@ -81,156 +81,6 @@ class CADPipeline:
         output_structure = self.file_manager.create_output_structure(str(file_path))
         return file_path, output_structure, None
 
-    def process_file(self, filename: str, extrude_height: float = 10.0,
-                     enable_analysis: bool = True) -> CADProcessResult:
-        """兼容入口；新代码请使用 process_file_intelligent。"""
-        if enable_analysis:
-            return self.process_file_legacy_analysis(filename, extrude_height)
-        return self.process_file_basic(filename, extrude_height)
-
-    def process_file_basic(self, filename: str, extrude_height: float = 10.0) -> CADProcessResult:
-        """平面拉伸兼容入口：按单一平面轮廓直接拉伸。"""
-        file_path, output_structure, error_result = self._prepare_file_for_processing(
-            filename,
-            mode="basic",
-        )
-        if error_result:
-            return error_result
-        assert file_path is not None and output_structure is not None
-        return self.processor.process_single_file(
-            str(file_path),
-            output_structure,
-            extrude_height,
-            enable_analysis=False,
-        )
-
-    def process_file_legacy_analysis(
-        self,
-        filename: str,
-        extrude_height: float = 10.0,
-    ) -> CADProcessResult:
-        """旧兼容入口：基础拉伸 + 历史 AI 关系分析。新代码不应使用。"""
-        file_path, output_structure, error_result = self._prepare_file_for_processing(
-            filename,
-            mode="basic",
-        )
-        if error_result:
-            return error_result
-        assert file_path is not None and output_structure is not None
-        return self.processor.process_single_file(
-            str(file_path),
-            output_structure,
-            extrude_height,
-            enable_analysis=True,
-        )
-
-    def process_multiple_files(self, filenames: List[str],
-                               extrude_height: float = 10.0,
-                               enable_analysis: bool = True,
-                               progress_callback: Optional[Callable] = None) -> Dict[str, CADProcessResult]:
-        """
-        批量处理多个文件（外部接口）
-
-        参数:
-            filenames: 文件名列表
-            extrude_height: 拉伸高度
-            enable_analysis: 是否启用AI分析
-            progress_callback: 进度回调函数，接收(current, total, result)
-
-        返回:
-            处理结果字典 {文件名: 结果对象}
-        """
-        results = {}
-        total = len(filenames)
-
-        for idx, filename in enumerate(filenames):
-            logger.info(f"[{idx + 1}/{total}] 处理: {filename}")
-            if enable_analysis:
-                result = self.process_file_legacy_analysis(filename, extrude_height)
-            else:
-                result = self.process_file_basic(filename, extrude_height)
-            results[filename] = result
-
-            if progress_callback:
-                progress_callback(idx + 1, total, result)
-
-        return results
-
-    def process_multiple_files_basic(
-        self,
-        filenames: List[str],
-        extrude_height: float = 10.0,
-        progress_callback: Optional[Callable] = None,
-    ) -> Dict[str, CADProcessResult]:
-        """使用平面拉伸兼容入口批量处理多个文件。"""
-        results = {}
-        total = len(filenames)
-
-        for idx, filename in enumerate(filenames):
-            logger.info(f"[{idx + 1}/{total}] 基础处理: {filename}")
-            result = self.process_file_basic(filename, extrude_height)
-            results[filename] = result
-
-            if progress_callback:
-                progress_callback(idx + 1, total, result)
-
-        return results
-
-    def process_directory(self, input_dir: Optional[str] = None,
-                          extrude_height: float = 10.0,
-                          enable_analysis: bool = True,
-                          progress_callback: Optional[Callable] = None) -> Dict[str, CADProcessResult]:
-        """
-        处理整个目录中的所有CAD文件（外部接口）
-
-        参数:
-            input_dir: 输入目录，可选
-            extrude_height: 拉伸高度
-            enable_analysis: 是否启用AI分析
-            progress_callback: 进度回调函数
-
-        返回:
-            处理结果字典
-        """
-        files = self.list_available_files(input_dir)
-        if not files:
-            logger.warning("没有找到可处理的CAD文件")
-            return {}
-
-        filenames = [f['name'] for f in files]
-
-        if input_dir:
-            self.set_input_dir(input_dir)
-
-        return self.process_multiple_files(
-            filenames,
-            extrude_height,
-            enable_analysis,
-            progress_callback
-        )
-
-    def process_directory_basic(
-        self,
-        input_dir: Optional[str] = None,
-        extrude_height: float = 10.0,
-        progress_callback: Optional[Callable] = None,
-    ) -> Dict[str, CADProcessResult]:
-        """使用平面拉伸兼容入口处理目录。"""
-        files = self.list_available_files(input_dir)
-        if not files:
-            logger.warning("没有找到可处理的CAD文件")
-            return {}
-
-        filenames = [f["name"] for f in files]
-        if input_dir:
-            self.set_input_dir(input_dir)
-
-        return self.process_multiple_files_basic(
-            filenames,
-            extrude_height,
-            progress_callback,
-        )
-
     def process_multiple_files_intelligent(
         self,
         filenames: List[str],
@@ -293,11 +143,21 @@ class CADPipeline:
             1 for r in results.values()
             if getattr(getattr(r, "status", None), "value", "") == "stopped_by_user"
         )
+        stage_action_count = sum(
+            1 for r in results.values()
+            if getattr(getattr(r, "status", None), "value", "") == "stage_action_requested"
+        )
         clarification_count = sum(
             1 for r in results.values()
             if getattr(getattr(r, "status", None), "value", "") == "needs_clarification"
         )
-        fail_count = total - success_count - stopped_count - clarification_count
+        fail_count = (
+            total
+            - success_count
+            - stopped_count
+            - stage_action_count
+            - clarification_count
+        )
         total_entities = sum(r.entity_count for r in results.values())
 
         return {
@@ -306,6 +166,7 @@ class CADPipeline:
             'partial_completed': partial_count,
             'failed': fail_count,
             'stopped_by_user': stopped_count,
+            'stage_action_requested': stage_action_count,
             'needs_clarification': clarification_count,
             'total_entities': total_entities,
             'details': {name: result.to_dict() for name, result in results.items()}

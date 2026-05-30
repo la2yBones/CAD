@@ -6,8 +6,8 @@ from src.batch_processor.modeling_execution import (
     IntelligentModelingExecutor,
     ModelingExecutionRequest,
 )
-from src.batch_processor.processor import CADProcessResult
-from src.batch_processor.processor import PipelineStatus
+from src.batch_processor.result import CADProcessResult
+from src.batch_processor.result import PipelineStatus
 
 
 class TestIntelligentModelingExecutor(unittest.TestCase):
@@ -43,6 +43,32 @@ class TestIntelligentModelingExecutor(unittest.TestCase):
         self.assertTrue(completed.success)
         self.assertEqual("drawing.step", completed.output_paths["model_step"])
         self.assertEqual("drawing.FCStd", completed.output_paths["model_fcstd"])
+
+    def test_missing_script_message_removes_generic_modeler_fallback_text(self):
+        result = CADProcessResult(
+            success=False,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+
+        failed = IntelligentModelingExecutor({}, lambda: None).execute(
+            result=result,
+            intelligent_analysis_result={
+                "modeling_path_decision": {"modeling_path": "semantic_reconstruction"},
+                "modeling_instructions": {"freecad_script": ""},
+            },
+            geometry_data={"entities": []},
+            output_structure={},
+            extrude_height=10.0,
+            missing_script_message="未获得可执行的 AI FreeCAD 建模脚本；统一智能处理不会调用通用建模器兜底",
+            script_failure_prefix="AI脚本执行失败，统一智能处理不会调用通用建模器兜底",
+            completion_message="done",
+        )
+
+        self.assertFalse(failed.success)
+        self.assertEqual("未获得可执行的 AI FreeCAD 建模脚本", failed.error_message)
+        self.assertNotIn("通用建模器兜底", failed.error_message)
 
     def test_marks_ai_script_with_skipped_features_as_partial_completed(self):
         result = CADProcessResult(
@@ -114,7 +140,8 @@ class TestIntelligentModelingExecutor(unittest.TestCase):
         modeling_instructions = {"freecad_script": "pass", "warnings": []}
 
         with patch("src.model_generator.ai_script_runner.AIScriptRunner", return_value=fake_runner):
-            completed = IntelligentModelingExecutor({}, lambda: None).execute(
+            executor = IntelligentModelingExecutor({}, lambda: None)
+            completed = executor.execute(
                 result=result,
                 intelligent_analysis_result={
                     "modeling_path_decision": {"modeling_path": "semantic_reconstruction"},
@@ -132,7 +159,157 @@ class TestIntelligentModelingExecutor(unittest.TestCase):
         self.assertEqual(PipelineStatus.COMPLETED, completed.status)
         self.assertEqual([], completed.skipped_features)
         self.assertIsNone(completed.partial_completion_reason)
-        self.assertIn("Speculative skipped feature treated as warning", modeling_instructions["warnings"][0])
+        typed_warnings = executor._analysis.modeling_instructions.warnings
+        self.assertIn("推测性跳过细节已作为风险提示处理", typed_warnings[0])
+        self.assertNotIn("possibly", typed_warnings[0])
+
+    def test_script_readiness_failure_becomes_pending_clarification(self):
+        result = CADProcessResult(
+            success=False,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+        fake_runner = unittest.mock.Mock()
+        fake_runner.run_script.return_value = {
+            "success": False,
+            "error": "AI脚本未通过可执行性校验: 缺少 final_shape 赋值",
+            "validation_errors": ["缺少 final_shape 赋值，无法确认最终实体"],
+            "failure_stage": "script_readiness",
+            "failure_kind": "script_quality",
+            "recoverable": True,
+        }
+
+        with patch("src.model_generator.ai_script_runner.AIScriptRunner", return_value=fake_runner):
+            completed = IntelligentModelingExecutor({}, lambda: None).execute(
+                result=result,
+                intelligent_analysis_result={
+                    "view_analysis": {"drawing_type": "two_view"},
+                    "dimension_extraction": {"dimensions": []},
+                    "reconstruction_context": {"semantic_policy": {}},
+                    "modeling_path_decision": {"modeling_path": "semantic_reconstruction"},
+                    "modeling_instructions": {
+                        "analysis_summary": "测试脚本",
+                        "freecad_script": "solid = Part.makeBox(1, 1, 1)",
+                        "_modeling_task_payload": {
+                            "task_version": "modeling_task_v1",
+                            "object": {"part_type": "plate"},
+                        },
+                    },
+                },
+                geometry_data={"entities": []},
+                output_structure={},
+                extrude_height=10.0,
+                missing_script_message="missing",
+                script_failure_prefix="failed",
+                completion_message="done",
+            )
+
+        self.assertFalse(completed.success)
+        self.assertEqual(PipelineStatus.NEEDS_CLARIFICATION, completed.status)
+        self.assertEqual("script_quality_recovery_hint", completed.clarification_questions[0]["id"])
+        self.assertTrue(completed.clarification_context["script_quality_recovery"])
+        self.assertEqual(
+            ["缺少 final_shape 赋值，无法确认最终实体"],
+            completed.clarification_context["script_validation_errors"],
+        )
+        correction_request = completed.clarification_context["self_correction_request"]
+        self.assertEqual("modeling_generation", correction_request["stage"])
+        self.assertEqual(1, correction_request["round_index"])
+        self.assertEqual(2, correction_request["max_rounds"])
+        self.assertEqual(
+            "modeling_task_v1",
+            correction_request["stage_payload"]["task_version"],
+        )
+        self.assertEqual(
+            "script_quality_1",
+            correction_request["validation_issues"][0]["code"],
+        )
+        correction_result = completed.clarification_context["self_correction_result"]
+        self.assertEqual("pending_recovery", correction_result["status"])
+        self.assertEqual("self_correct", correction_result["next_action"])
+
+    def test_script_readiness_failure_self_corrects_before_pending(self):
+        result = CADProcessResult(
+            success=False,
+            input_file="drawing.dxf",
+            mode="intelligent",
+            modeling_path="semantic_reconstruction",
+        )
+        fake_runner = unittest.mock.Mock()
+        fake_runner.run_script.side_effect = [
+            {
+                "success": False,
+                "error": "AI脚本未通过可执行性校验: 缺少 final_shape 赋值",
+                "validation_errors": ["缺少 final_shape 赋值，无法确认最终实体"],
+                "failure_stage": "script_readiness",
+                "failure_kind": "script_quality",
+                "recoverable": True,
+            },
+            {
+                "success": True,
+                "step_path": "corrected.step",
+                "fcstd_path": "corrected.FCStd",
+            },
+        ]
+        fake_generator = unittest.mock.Mock()
+        fake_generator.generate_from_self_correction.return_value = {
+            "analysis_summary": "已修复脚本出口",
+            "freecad_script": "final_shape = Part.makeBox(1, 1, 1)",
+            "instructions": [],
+            "warnings": [],
+            "completed_features": [],
+            "skipped_features": [],
+        }
+        progress_callback = unittest.mock.Mock()
+
+        with patch("src.model_generator.ai_script_runner.AIScriptRunner", return_value=fake_runner), patch(
+            "src.reconstruction.instruction_generator.FreeCADInstructionGenerator",
+            return_value=fake_generator,
+        ):
+            completed = IntelligentModelingExecutor(
+                {
+                    "_progress_callback": progress_callback,
+                    "api": {
+                        "deepseek": {
+                            "api_key": "test-key",
+                            "model": "deepseek-v4-pro",
+                        }
+                    }
+                },
+                lambda: None,
+            ).execute(
+                result=result,
+                intelligent_analysis_result={
+                    "view_analysis": {"drawing_type": "two_view"},
+                    "dimension_extraction": {"dimensions": []},
+                    "reconstruction_context": {"semantic_policy": {}},
+                    "modeling_path_decision": {"modeling_path": "semantic_reconstruction"},
+                    "modeling_instructions": {
+                        "analysis_summary": "测试脚本",
+                        "freecad_script": "solid = Part.makeBox(1, 1, 1)",
+                        "_modeling_task_payload": {
+                            "task_version": "modeling_task_v1",
+                            "object": {"part_type": "plate"},
+                        },
+                    },
+                },
+                geometry_data={"entities": []},
+                output_structure={},
+                extrude_height=10.0,
+                missing_script_message="missing",
+                script_failure_prefix="failed",
+                completion_message="done",
+            )
+
+        self.assertTrue(completed.success)
+        self.assertEqual(PipelineStatus.COMPLETED, completed.status)
+        self.assertEqual("corrected.step", completed.output_paths["model_step"])
+        self.assertEqual(2, fake_runner.run_script.call_count)
+        correction_request = fake_generator.generate_from_self_correction.call_args.args[0]
+        self.assertEqual("modeling_generation", correction_request.stage)
+        self.assertEqual("script_quality_1", correction_request.validation_issues[0].code)
+        progress_callback.assert_any_call("self_correction", "模型自纠中 1/2")
 
     def test_runs_revolve_executor(self):
         result = CADProcessResult(success=False, input_file="drawing.dxf", mode="intelligent")

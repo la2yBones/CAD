@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
 from src.reconstruction.modeling_constraints import DEFAULT_MODELING_CONSTRAINTS
+from src.reconstruction.modeling_script_readiness import ModelingScriptReadinessChecker
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class AIScriptRunner:
         self.App = None
         self.Part = None
         self.constraints = DEFAULT_MODELING_CONSTRAINTS
+        self.script_readiness = ModelingScriptReadinessChecker()
         self._init_freecad()
 
     def _init_freecad(self):
@@ -70,6 +72,21 @@ class AIScriptRunner:
                 "success": False,
                 "error": f"AI脚本未通过建模约束校验: {validation.error}",
                 "validation_errors": validation.warnings,
+                "failure_stage": "script_validation",
+                "failure_kind": "script_quality",
+                "recoverable": True,
+            }
+
+        readiness = self.script_readiness.check(script_content)
+        if readiness.is_fail:
+            logger.warning(f"AI脚本未通过可执行性校验: {readiness.error}")
+            return {
+                "success": False,
+                "error": f"AI脚本未通过可执行性校验: {readiness.error}",
+                "validation_errors": readiness.warnings,
+                "failure_stage": "script_readiness",
+                "failure_kind": "script_quality",
+                "recoverable": True,
             }
 
         if self.bridge.mode == "subprocess":
@@ -82,6 +99,9 @@ class AIScriptRunner:
         script_content = self._ensure_json_import(script_content)
         script_content = self._normalize_edge_vertex_aliases(script_content)
         script_content = self._normalize_arc_of_circle_calls(script_content)
+        script_content = self._normalize_wire_closed_checks(script_content)
+        script_content = self._ensure_final_shape_contract(script_content)
+        script_content = self._normalize_partial_modeling_marker(script_content)
         pattern = re.compile(
             r"^(?P<prefix>\s*\w+\s*=\s*Part\.(?:LineSegment|ArcOfCircle)\(.*\))\s*$",
             re.MULTILINE,
@@ -94,6 +114,71 @@ class AIScriptRunner:
             return f"{line}.toShape()"
 
         return pattern.sub(add_to_shape, script_content)
+
+    @staticmethod
+    def _normalize_wire_closed_checks(script_content: str) -> str:
+        if ".isClosed()" in script_content:
+            return script_content
+
+        pattern = re.compile(
+            r"^(?P<indent>[ \t]*)(?P<prefix>\w+\s*=\s*)Part\.Face\((?P<wire>\w+)\)\s*$",
+            re.MULTILINE,
+        )
+
+        def add_check(match: re.Match[str]) -> str:
+            indent = match.group("indent")
+            wire = match.group("wire")
+            return "\n".join([
+                f"{indent}if not {wire}.isClosed():",
+                f"{indent}    raise ValueError('profile wire not closed')",
+                match.group(0),
+            ])
+
+        return pattern.sub(add_check, script_content)
+
+    @staticmethod
+    def _ensure_final_shape_contract(script_content: str) -> str:
+        try:
+            tree = ast.parse(script_content)
+        except SyntaxError:
+            return script_content
+
+        assigned_names = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        if "final_shape" in assigned_names and "Part.show(final_shape" in script_content:
+            return script_content
+
+        candidate = next(
+            (
+                name
+                for name in ("body", "solid", "result_shape", "part", "model", "extrusion")
+                if name in assigned_names
+            ),
+            "",
+        )
+        if not candidate:
+            return script_content
+
+        trailer = [
+            "",
+            "# Normalized final output for CAD system executor.",
+            f"if {candidate} is not None:",
+            f"    final_shape = {candidate}",
+            '    Part.show(final_shape, "GeneratedModel")',
+            "    doc.recompute()",
+        ]
+        return script_content.rstrip() + "\n" + "\n".join(trailer) + "\n"
+
+    @staticmethod
+    def _normalize_partial_modeling_marker(script_content: str) -> str:
+        return re.sub(
+            r"print\(json\.dumps\(\{\s*[\"']PARTIAL_MODELING_RESULT[\"']\s*:\s*(?P<var>\w+)\s*\}\)\)",
+            r"print('PARTIAL_MODELING_RESULT:' + json.dumps(\g<var>, ensure_ascii=False))",
+            script_content,
+        )
 
     @staticmethod
     def _ensure_json_import(script_content: str) -> str:
@@ -253,27 +338,12 @@ class AIScriptRunner:
             if source.get(key):
                 target[key] = source[key]
 
-    @staticmethod
-    def _normalize_feature_records(value: Any) -> list[Dict[str, Any]]:
-        if not value:
-            return []
-        if isinstance(value, dict):
-            return [value]
-        if not isinstance(value, list):
-            return [{"name": str(value), "reason": "unspecified"}]
-        records: list[Dict[str, Any]] = []
-        for item in value:
-            if isinstance(item, dict):
-                records.append(item)
-            else:
-                records.append({"name": str(item), "reason": "unspecified"})
-        return records
-
     @classmethod
     def _extract_partial_metadata_from_vars(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        from src.utils.modeling_utils import normalize_feature_records
         metadata: Dict[str, Any] = {}
-        skipped = cls._normalize_feature_records(values.get("skipped_features"))
-        completed = cls._normalize_feature_records(values.get("completed_features"))
+        skipped = normalize_feature_records(values.get("skipped_features"))
+        completed = normalize_feature_records(values.get("completed_features"))
         if skipped:
             metadata["skipped_features"] = skipped
         if completed:

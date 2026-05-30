@@ -59,7 +59,7 @@ def test_processor():
     logger.info("测试2: 处理器接口")
     logger.info("="*50)
 
-    from src.batch_processor.processor import CADProcessResult
+    from src.batch_processor.result import CADProcessResult
 
     # 测试结果对象
     result = CADProcessResult(success=True, input_file="test.dxf")

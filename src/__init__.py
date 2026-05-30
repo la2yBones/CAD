@@ -8,14 +8,11 @@ __version__ = "1.0.0"
 
 _EXPORTS = {
     "CADParser": ("src.cad_parser", "CADParser"),
-    "DXFParser": ("src.cad_parser", "DXFParser"),
-    "GeometryAnalyzer": ("src.geometry_analyzer", "GeometryAnalyzer"),
     "IntelligentEngineeringAnalyzer": (
         "src.intelligent_analyzer",
         "IntelligentEngineeringAnalyzer",
     ),
     "PlanarExtrudeModeler": ("src.model_generator", "PlanarExtrudeModeler"),
-    "FreeCADModeler": ("src.model_generator", "FreeCADModeler"),
 }
 
 __all__ = list(_EXPORTS)

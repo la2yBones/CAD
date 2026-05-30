@@ -3,7 +3,7 @@
 import unittest
 import unittest.mock
 
-from src.intelligent_analyzer.reconstruction_context import ReconstructionContextBuilder
+from src.reconstruction.context import ReconstructionContextBuilder
 from src.reconstruction.semantic_policy import SemanticPolicy
 from src.reconstruction.pipeline import SemanticReconstructionPipeline
 from src.utils.stage_confirmation import (
@@ -14,6 +14,48 @@ from src.utils.stage_confirmation import (
 
 
 class TestSemanticReconstructionPipeline(unittest.TestCase):
+    def test_semantic_retry_context_focuses_previous_risks_and_questions(self):
+        context = SemanticReconstructionPipeline._build_semantic_retry_context(
+            summary_context={"semantic_policy": {"dimension_source": "annotation"}},
+            part_semantics={
+                "uncertainties": ["D1标注8的含义不明确"],
+                "warnings": ["已根据 CAD 轮廓线 CIRCLE 实体补全 2 个可定位圆孔。"],
+                "planar_modeling_semantics": {
+                    "uncertainties": ["底部凹槽宽度未确认"],
+                },
+            },
+            policy_result={
+                "semantic_adjudication": {
+                    "clarification_questions": [
+                        {
+                            "id": "D1",
+                            "question": "8表示底部凹槽宽度还是圆角间距？",
+                            "reason": "标注关联不明确",
+                        }
+                    ]
+                }
+            },
+            retained_items={"base_features": [{"description": "方形法兰板"}]},
+            trigger="user_requested_retry_with_partial",
+        )
+
+        directives = context["stage_retry_directives"]
+        self.assertEqual(
+            "user_requested_retry_with_partial",
+            directives["trigger"],
+        )
+        self.assertEqual(
+            {"base_features": [{"description": "方形法兰板"}]},
+            context["retained_items"],
+        )
+        self.assertIn("D1标注8的含义不明确", directives["focus_issues"])
+        self.assertTrue(
+            any("8表示底部凹槽宽度" in item for item in directives["focus_issues"])
+        )
+        self.assertTrue(
+            any("同心外轮廓圆" in item for item in directives["required_output_behavior"])
+        )
+
     def test_reconstruction_pipeline_stops_before_llm_when_clarification_needed(self):
         pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
         pipeline.context_builder = ReconstructionContextBuilder()
@@ -70,15 +112,15 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
                     "summary": "",
                     "evidence": [],
                     "candidate_interpretations": [],
-                    "coordinate_system": {},
+                    "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
                     "dimension_source": "annotation",
-                    "base_features": [],
+                    "base_features": [{"kind": "plate"}],
                     "additive_features": [],
                     "subtractive_features": [],
                     "planar_modeling_semantics": {
-                        "profile": None,
-                        "extrusion_direction": "unknown",
-                        "extrusion_depth": None,
+                        "profile": {"kind": "plate"},
+                        "extrusion_direction": "Z",
+                        "extrusion_depth": 10.0,
                         "cut_features": [],
                         "dimension_bindings": [],
                         "uncertainties": [],
@@ -150,9 +192,17 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
                     "candidate_interpretations": [],
                     "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
                     "dimension_source": "annotation",
-                    "base_features": [],
+                    "base_features": [{"kind": "profile_extrusion"}],
                     "additive_features": [],
                     "subtractive_features": [],
+                    "planar_modeling_semantics": {
+                        "profile": {"kind": "closed_profile"},
+                        "extrusion_direction": "Z",
+                        "extrusion_depth": 10.0,
+                        "cut_features": [],
+                        "dimension_bindings": [],
+                        "uncertainties": [],
+                    },
                     "key_dimensions": [],
                     "uncertainties": [],
                     "warnings": [],
@@ -180,6 +230,14 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
             "view_analysis": {"views": []},
             "dimension_data": {"dimensions": [{"text": "30", "value": 30.0}]},
             "extrude_height": 10.0,
+            "script_quality_recovery": True,
+            "script_validation_errors": ["缺少 final_shape 赋值"],
+            "script_failure_error": "AI脚本未通过可执行性校验",
+            "failed_freecad_script": "bad script should not be sent",
+            "previous_modeling_instructions": {
+                "analysis_summary": "上一版脚本缺少最终实体",
+                "freecad_script": "bad script should not be sent",
+            },
         }
 
         resumed = pipeline.continue_with_clarification(
@@ -193,7 +251,14 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
             "不用管图纸尺寸，以我说的为准。",
             call_kwargs["modeling_task_payload"]["recovery_hints"]["user_modeling_hint"],
         )
-        self.assertNotIn("source_entities", repr(call_kwargs["modeling_task_payload"]))
+        payload_text = repr(call_kwargs["modeling_task_payload"])
+        recovery = call_kwargs["modeling_task_payload"]["recovery_hints"]["previous_partial_result"]
+        self.assertTrue(recovery["script_quality_recovery"])
+        self.assertEqual(["缺少 final_shape 赋值"], recovery["script_validation_errors"])
+        self.assertIn("script_recovery_policy", recovery)
+        self.assertNotIn("source_entities", payload_text)
+        self.assertNotIn("failed_freecad_script", payload_text)
+        self.assertNotIn("bad script should not be sent", payload_text)
 
     def test_reconstruction_pipeline_routes_simple_single_profile_to_planar_extrude(self):
         pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
@@ -712,6 +777,409 @@ class TestSemanticReconstructionPipeline(unittest.TestCase):
 
         self.assertEqual(["view_analysis"], calls)
         pipeline.semantic_generator.generate.assert_not_called()
+
+    def test_reconstruction_pipeline_confirms_modeling_generation_stage(self):
+        calls = []
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.config = {}
+        pipeline.stage_confirmation = CallbackStageConfirmation(
+            lambda stage, payload: calls.append(stage) or True
+        )
+        pipeline.semantic_generator = unittest.mock.Mock(
+            generate=unittest.mock.Mock(
+                return_value={
+                    "part_type": "plate",
+                    "confidence": 0.9,
+                    "dimension_source": "annotation",
+                    "base_features": [{"kind": "plate"}],
+                    "additive_features": [],
+                    "subtractive_features": [],
+                    "key_dimensions": [{"name": "thickness", "value": 10.0}],
+                    "uncertainties": [],
+                    "warnings": [],
+                }
+            )
+        )
+        pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.instruction_generator.generate.return_value = {
+            "freecad_script": "final_shape = Part.makeBox(1, 1, 1)",
+            "completed_features": [{"name": "base"}],
+            "skipped_features": [],
+            "warnings": [],
+        }
+        pipeline.modeling_path_registry = unittest.mock.Mock()
+        pipeline.modeling_path_registry.choose.return_value = {
+            "modeling_path": "semantic_reconstruction",
+        }
+        pipeline.modeling_path_registry.build_routed_modeling_result.return_value = None
+
+        result = pipeline.run(
+            geometry_data={"entities": []},
+            view_analysis={"drawing_type": "single_view", "views": []},
+            dimension_data={"dimensions": []},
+            local_relationships=None,
+            extrude_height=10.0,
+        )
+
+        self.assertIn("modeling_generation", calls)
+        self.assertEqual(
+            ["view_analysis", "semantic_reconstruction", "modeling_generation"],
+            calls,
+        )
+        self.assertEqual(
+            "final_shape = Part.makeBox(1, 1, 1)",
+            result["modeling_instructions"]["freecad_script"],
+        )
+
+    def test_semantic_reconstruction_retry_action_regenerates_part_semantics(self):
+        calls = []
+
+        def confirm(stage, payload):
+            calls.append(stage)
+            if stage == "semantic_reconstruction" and calls.count("semantic_reconstruction") == 1:
+                from src.utils.stage_confirmation import StageConfirmationResult
+
+                return StageConfirmationResult.retry_stage(stage=stage)
+            return True
+
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.config = {}
+        pipeline.stage_confirmation = CallbackStageConfirmation(confirm)
+        pipeline.semantic_generator = unittest.mock.Mock()
+        pipeline.semantic_generator.generate.side_effect = [
+            {
+                "part_type": "plate",
+                "confidence": 0.9,
+                "dimension_source": "annotation",
+                "base_features": [{"kind": "plate"}],
+                "additive_features": [],
+                "subtractive_features": [],
+                "key_dimensions": [{"name": "thickness", "value": 10.0}],
+                "uncertainties": ["D1标注8的含义不明确"],
+                "warnings": [],
+            },
+            {
+                "part_type": "flange",
+                "confidence": 0.92,
+                "dimension_source": "annotation",
+                "base_features": [{"kind": "flange"}],
+                "additive_features": [],
+                "subtractive_features": [{"kind": "through_hole"}],
+                "key_dimensions": [{"name": "thickness", "value": 10.0}],
+                "uncertainties": [],
+                "warnings": [],
+            },
+        ]
+        pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.instruction_generator.generate.return_value = {
+            "freecad_script": "final_shape = Part.makeBox(1, 1, 1)",
+            "completed_features": [],
+            "skipped_features": [],
+            "warnings": [],
+        }
+        pipeline.modeling_path_registry = unittest.mock.Mock()
+        pipeline.modeling_path_registry.choose.return_value = {
+            "modeling_path": "semantic_reconstruction",
+        }
+        pipeline.modeling_path_registry.build_routed_modeling_result.return_value = None
+
+        result = pipeline.run(
+            geometry_data={"entities": []},
+            view_analysis={"drawing_type": "single_view", "views": []},
+            dimension_data={"dimensions": []},
+            local_relationships=None,
+            extrude_height=10.0,
+            file_path="plate.dxf",
+        )
+
+        self.assertEqual(2, pipeline.semantic_generator.generate.call_count)
+        retry_call = pipeline.semantic_generator.generate.call_args_list[1]
+        self.assertIn("stage_retry_directives", retry_call.args[0])
+        self.assertIn(
+            "D1标注8的含义不明确",
+            retry_call.args[0]["stage_retry_directives"]["focus_issues"],
+        )
+        self.assertIn("stage_retry_directives", retry_call.kwargs["retry_context"])
+        self.assertEqual(
+            [
+                "view_analysis",
+                "semantic_reconstruction",
+                "semantic_reconstruction",
+                "modeling_generation",
+            ],
+            calls,
+        )
+        self.assertEqual("flange", result["part_semantics"]["part_type"])
+        self.assertTrue(result["part_semantics"]["stage_retry_applied"])
+        self.assertEqual(
+            "user_requested_retry_stage",
+            result["part_semantics"]["stage_retry_log"][0]["trigger"],
+        )
+
+    def test_semantic_reconstruction_self_correct_action_regenerates_part_semantics(self):
+        calls = []
+
+        def confirm(stage, payload):
+            calls.append(stage)
+            return True
+
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.config = {}
+        pipeline.stage_confirmation = CallbackStageConfirmation(confirm)
+        pipeline.semantic_generator = unittest.mock.Mock()
+        pipeline.semantic_generator.generate.return_value = {
+            "part_type": "plate",
+            "confidence": 0.9,
+            "summary": "plate",
+            "evidence": [],
+            "candidate_interpretations": [],
+            "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
+            "dimension_source": "annotation",
+            "base_features": [{"kind": "plate"}],
+            "additive_features": [],
+            "subtractive_features": [],
+            "planar_modeling_semantics": {
+                "profile": {"kind": "closed_profile"},
+                "extrusion_direction": "Z",
+                "extrusion_depth": 10.0,
+                "cut_features": [],
+                "dimension_bindings": [],
+                "uncertainties": [],
+            },
+            "revolve_modeling_semantics": None,
+            "preferred_modeling_path": "planar_extrude",
+            "key_dimensions": [{"name": "thickness", "value": 10.0}],
+            "uncertainties": [],
+            "warnings": [],
+        }
+        pipeline.semantic_generator.generate_from_self_correction.return_value = {
+            "part_type": "flange",
+            "confidence": 0.94,
+            "summary": "flange",
+            "evidence": [],
+            "candidate_interpretations": [],
+            "coordinate_system": {"profile_plane": "XY", "depth_axis": "Z"},
+            "dimension_source": "annotation",
+            "base_features": [{"kind": "flange"}],
+            "additive_features": [],
+            "subtractive_features": [{"kind": "through_hole"}],
+            "planar_modeling_semantics": {
+                "profile": {"kind": "closed_profile"},
+                "extrusion_direction": "Z",
+                "extrusion_depth": 10.0,
+                "cut_features": [],
+                "dimension_bindings": [],
+                "uncertainties": [],
+            },
+            "revolve_modeling_semantics": None,
+            "preferred_modeling_path": "planar_extrude",
+            "key_dimensions": [{"name": "thickness", "value": 10.0}],
+            "uncertainties": [],
+            "warnings": [],
+        }
+        pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.instruction_generator.generate.return_value = {
+            "freecad_script": "final_shape = Part.makeBox(1, 1, 1)",
+            "completed_features": [],
+            "skipped_features": [],
+            "warnings": [],
+        }
+        pipeline.modeling_path_registry = unittest.mock.Mock()
+        pipeline.modeling_path_registry.choose.return_value = {
+            "modeling_path": "semantic_reconstruction",
+        }
+        pipeline.modeling_path_registry.build_routed_modeling_result.return_value = None
+
+        result = pipeline.run(
+            geometry_data={"entities": []},
+            view_analysis={"drawing_type": "single_view", "views": []},
+            dimension_data={"dimensions": []},
+            local_relationships=None,
+            extrude_height=10.0,
+            file_path="plate.dxf",
+        )
+
+        self.assertEqual(
+            [
+                "view_analysis",
+                "semantic_reconstruction",
+                "modeling_generation",
+            ],
+            calls,
+        )
+        self.assertEqual("plate", result["part_semantics"]["part_type"])
+
+    def test_modeling_generation_self_correct_action_regenerates_instructions(self):
+        calls = []
+
+        def confirm(stage, payload):
+            calls.append(stage)
+            if stage == "modeling_generation" and calls.count("modeling_generation") == 1:
+                from src.utils.stage_confirmation import StageConfirmationResult
+
+                return StageConfirmationResult.self_correct(stage=stage)
+            return True
+
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.config = {}
+        pipeline.stage_confirmation = CallbackStageConfirmation(confirm)
+        pipeline.semantic_generator = unittest.mock.Mock(
+            generate=unittest.mock.Mock(
+                return_value={
+                    "part_type": "plate",
+                    "confidence": 0.9,
+                    "dimension_source": "annotation",
+                    "base_features": [{"kind": "plate"}],
+                    "additive_features": [],
+                    "subtractive_features": [],
+                    "key_dimensions": [{"name": "thickness", "value": 10.0}],
+                    "uncertainties": [],
+                    "warnings": [],
+                }
+            )
+        )
+        pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.instruction_generator.generate.return_value = {
+            "analysis_summary": "初始脚本",
+            "freecad_script": "initial_script",
+            "instructions": [],
+            "warnings": [],
+            "_modeling_task_payload": {
+                "task_version": "modeling_task_v1",
+                "object": {"part_type": "plate"},
+            },
+        }
+        pipeline.instruction_generator.generate_from_self_correction.return_value = {
+            "analysis_summary": "自纠后脚本",
+            "freecad_script": "corrected_script",
+            "instructions": [],
+            "warnings": [],
+        }
+        pipeline.modeling_path_registry = unittest.mock.Mock()
+        pipeline.modeling_path_registry.choose.return_value = {
+            "modeling_path": "semantic_reconstruction",
+        }
+        pipeline.modeling_path_registry.build_routed_modeling_result.return_value = None
+
+        result = pipeline.run(
+            geometry_data={"entities": []},
+            view_analysis={"drawing_type": "single_view", "views": []},
+            dimension_data={"dimensions": []},
+            local_relationships=None,
+            extrude_height=10.0,
+            file_path="plate.dxf",
+        )
+
+        self.assertEqual(
+            [
+                "view_analysis",
+                "semantic_reconstruction",
+                "modeling_generation",
+                "modeling_generation",
+            ],
+            calls,
+        )
+        self.assertEqual("corrected_script", result["modeling_instructions"]["freecad_script"])
+        self.assertTrue(result["modeling_instructions"]["self_correction_applied"])
+        self.assertEqual(
+            "modeling_generation",
+            pipeline.instruction_generator.generate_from_self_correction.call_args.args[0].stage,
+        )
+        self.assertEqual(
+            "modeling_task_v1",
+            pipeline.instruction_generator.generate_from_self_correction.call_args.args[0].stage_payload["task_version"],
+        )
+
+    def test_modeling_generation_retry_action_reruns_instruction_generation(self):
+        calls = []
+
+        def confirm(stage, payload):
+            calls.append(stage)
+            if stage == "modeling_generation" and calls.count("modeling_generation") == 1:
+                from src.utils.stage_confirmation import StageConfirmationResult
+
+                return StageConfirmationResult.retry_stage(stage=stage)
+            return True
+
+        pipeline = SemanticReconstructionPipeline.__new__(SemanticReconstructionPipeline)
+        pipeline.context_builder = ReconstructionContextBuilder()
+        pipeline.semantic_policy = SemanticPolicy()
+        pipeline.config = {}
+        pipeline.stage_confirmation = CallbackStageConfirmation(confirm)
+        pipeline.semantic_generator = unittest.mock.Mock(
+            generate=unittest.mock.Mock(
+                return_value={
+                    "part_type": "plate",
+                    "confidence": 0.9,
+                    "dimension_source": "annotation",
+                    "base_features": [{"kind": "plate"}],
+                    "additive_features": [],
+                    "subtractive_features": [],
+                    "key_dimensions": [{"name": "thickness", "value": 10.0}],
+                    "uncertainties": [],
+                    "warnings": [],
+                }
+            )
+        )
+        pipeline.instruction_generator = unittest.mock.Mock()
+        pipeline.instruction_generator.generate.side_effect = [
+            {
+                "analysis_summary": "初始脚本",
+                "freecad_script": "initial_script",
+                "instructions": [],
+                "warnings": [],
+                "_modeling_task_payload": {
+                    "task_version": "modeling_task_v1",
+                    "object": {"part_type": "plate"},
+                },
+            },
+            {
+                "analysis_summary": "重跑后脚本",
+                "freecad_script": "retried_script",
+                "instructions": [],
+                "warnings": [],
+            },
+        ]
+        pipeline.modeling_path_registry = unittest.mock.Mock()
+        pipeline.modeling_path_registry.choose.return_value = {
+            "modeling_path": "semantic_reconstruction",
+        }
+        pipeline.modeling_path_registry.build_routed_modeling_result.return_value = None
+
+        result = pipeline.run(
+            geometry_data={"entities": []},
+            view_analysis={"drawing_type": "single_view", "views": []},
+            dimension_data={"dimensions": []},
+            local_relationships=None,
+            extrude_height=10.0,
+            file_path="plate.dxf",
+        )
+
+        self.assertEqual(
+            [
+                "view_analysis",
+                "semantic_reconstruction",
+                "modeling_generation",
+                "modeling_generation",
+            ],
+            calls,
+        )
+        self.assertEqual("retried_script", result["modeling_instructions"]["freecad_script"])
+        self.assertTrue(result["modeling_instructions"]["stage_retry_applied"])
+        self.assertEqual(2, pipeline.instruction_generator.generate.call_count)
+        retry_kwargs = pipeline.instruction_generator.generate.call_args.kwargs
+        self.assertEqual(
+            "modeling_task_v1",
+            retry_kwargs["modeling_task_payload"]["task_version"],
+        )
 
 
 

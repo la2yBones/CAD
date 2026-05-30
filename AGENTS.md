@@ -105,19 +105,7 @@ CLI/GUI
 
 统一智能处理需要有效 `DEEPSEEK_API_KEY`。LLM 视图校正失败时可回退本地规则；语义重建内核会依据分析结果给出建模路径裁决，后续再执行对应路径。
 
-### 4.2 仅分析模式
-
-```text
-cad_cli.py --analysis-only
-  -> CADParser.parse()
-  -> IntelligentEngineeringAnalyzer.analyze_full()
-  -> IntelligentEngineeringAnalyzer.save_results()
-  -> <base>_full.json / <base>_report.txt / <base>_freecad.py
-```
-
-仅分析模式不生成 3D 模型，适合调试 DeepSeek 输出、查看视图校正和建模脚本。
-
-### 4.4 GUI 监控流程
+### 4.2 GUI 监控流程
 
 ```text
 CADApplication
@@ -277,9 +265,7 @@ view_result = LLMViewAnalyzer(api_key, api_config).refine_view_analysis(
 ```powershell
 python cad_cli.py --list
 python cad_cli.py --file examples/cad_files/sample.dxf --height 10
-python cad_cli.py --file examples/cad_files/sample.dxf --analysis
 python cad_cli.py --file examples/cad_files/sample.dxf --intelligent
-python cad_cli.py --file examples/cad_files/sample.dxf --analysis-only
 python cad_cli.py --dir examples/cad_files --output-dir examples/output
 ```
 
@@ -346,16 +332,35 @@ api:
     api_key: "${DEEPSEEK_API_KEY}"
     base_url: "https://api.deepseek.com"
     model: "deepseek-v4-pro"
+    view_model: "deepseek-v4-flash"
+    semantic_adjudication_model: "deepseek-v4-pro"
+    semantic_model: "deepseek-v4-pro"
+    user_id: "cad-system-local"
+    request_timeout_seconds: 300
     llm_performance_mode: "fast"
     llm_telemetry_dir: ".cache/llm_telemetry"
-    thinking: true
     reasoning_effort: "max"
+    stage_thinking:
+      view_analysis:
+        enabled: false
+        reasoning_effort: "high"
+      semantic_adjudication:
+        enabled: false
+        reasoning_effort: "high"
+      semantic_generation:
+        enabled: false
+        reasoning_effort: "high"
+      modeling_generation:
+        enabled: false
+        reasoning_effort: "max"
 ```
 
 说明：
 
-- `fast`、`latency`、`balanced` 模式会关闭 thinking。
-- 需要深度建模时可使用 deep 类模式并启用 thinking。
+- DeepSeek `reasoning_effort` 只使用官方支持的 `high` 或 `max`。
+- 默认关闭各阶段 thinking，必要时按阶段打开；结构化 JSON 阶段优先保持 disabled。
+- `user_id` 用于 DeepSeek 内容安全、调度和 KVCache 隔离，不应填写个人隐私信息。
+- LLM 遥测会记录 prompt/cache 命中 token、推理 token、耗时和请求响应摘要。
 - 不在文档、日志或配置模板中写真实 API Key。
 
 ---

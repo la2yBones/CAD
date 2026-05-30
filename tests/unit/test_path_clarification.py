@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from src.reconstruction.path_clarification import (
+from src.reconstruction.clarification import (
     apply_path_clarification_answers,
     build_path_clarification_payload,
     build_path_contract_pending_result,

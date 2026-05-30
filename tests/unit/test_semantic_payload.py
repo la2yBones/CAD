@@ -139,6 +139,8 @@ def test_semantic_understanding_payload_prefers_semantic_adjudication_over_legac
     })
 
     assert payload["dimension_evidence"]["semantic_adjudication"]["dimension_roles"][0]["role"] == "extrusion_depth"
+    assert "dimensions" not in payload["dimension_evidence"]
+    assert "raw dimensions omitted" in payload["dimension_evidence"]["dimensions_policy"]
     assert "dimension_bindings" not in payload["dimension_evidence"]
     assert "dimension_plan" not in payload["dimension_evidence"]
     assert "dimension_bindings" not in payload["semantic_policy"]
@@ -146,7 +148,7 @@ def test_semantic_understanding_payload_prefers_semantic_adjudication_over_legac
     assert "profile_length" not in repr(payload)
 
 
-def test_semantic_understanding_payload_omits_geometry_measurements_after_adjudication():
+def test_semantic_understanding_payload_keeps_circle_hole_evidence_after_adjudication():
     payload = SemanticUnderstandingPayloadBuilder().build({
         "drawing": {"entity_count": 1, "entity_type_count": {"CIRCLE": 1}},
         "source_entities": [
@@ -164,6 +166,7 @@ def test_semantic_understanding_payload_omits_geometry_measurements_after_adjudi
                         "id": "G1",
                         "candidate_kind": "circle",
                         "source_entity_type": "CIRCLE",
+                        "center": [0.0, 0.0, 0.0],
                         "radius": 42.0,
                         "bbox": [-42.0, -42.0, 42.0, 42.0],
                     }
@@ -189,9 +192,13 @@ def test_semantic_understanding_payload_omits_geometry_measurements_after_adjudi
 
     assert "radius_values" not in payload["geometry_evidence"]["circle_summary"]
     assert "radius_range" not in payload["geometry_evidence"]["circle_summary"]
-    assert "radius" not in payload["drawing_evidence_package"]["geometry_candidates"][0]
-    assert "bbox" not in payload["drawing_evidence_package"]["geometry_candidates"][0]
-    assert "42" not in repr(payload)
+    circle = payload["drawing_evidence_package"]["geometry_candidates"][0]
+    assert circle["center"] == [0.0, 0.0, 0.0]
+    assert circle["radius"] == 42.0
+    assert circle["bbox"] == [-42.0, -42.0, 42.0, 42.0]
+    policy = payload["drawing_evidence_package"]["measurement_policy"]
+    assert "executable shape evidence" in policy
+    assert "key dimensions" in policy
 
 
 def test_semantic_understanding_payload_keeps_legacy_bindings_when_adjudication_failed():

@@ -68,7 +68,15 @@ arc = Part.ArcOfCircle(
     def test_constraints_prompt_prefers_semantic_adjudication(self):
         prompt = DEFAULT_MODELING_CONSTRAINTS.prompt_section()
 
-        self.assertIn("dimensions.semantic_adjudication", prompt)
+        self.assertIn("dimensions.modeling_dimensions", prompt)
+
+    def test_constraints_prompt_preserves_circle_hole_geometry(self):
+        prompt = DEFAULT_MODELING_CONSTRAINTS.prompt_section()
+
+        self.assertIn("解析圆孔要求", prompt)
+        self.assertIn("CIRCLE", prompt)
+        self.assertIn("不得因为缺少孔距、定位尺寸", prompt)
+        self.assertIn("点划线、中心线、构造线或隐藏线", prompt)
 
     def test_retry_reason_ignores_legacy_radius_when_adjudication_succeeds(self):
         retry_reason = ModelingConstraints().retry_reason(

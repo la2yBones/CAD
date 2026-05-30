@@ -7,12 +7,40 @@ api:
   deepseek:
     api_key: "${DEEPSEEK_API_KEY}"
     base_url: "https://api.deepseek.com"
+    user_id: "cad-system-local"  # DeepSeek user_id，用于安全、调度和 KVCache 隔离；不要填个人隐私信息
+    request_timeout_seconds: 300
+    max_retries: 1  # 预留：仅对 429/5xx 等临时错误做有限重试
+    retry_backoff_seconds: 2.0
     model: "deepseek-v4-pro"
+    view_model: "deepseek-v4-pro"
+    semantic_adjudication_model: "deepseek-v4-pro"
+    semantic_model: "deepseek-v4-pro"
+    # 可选：将前置图纸理解阶段切换到 Moonshot Kimi K2.6 多模态模型。
+    # 后续零件语义生成和建模脚本生成仍默认使用上面的 DeepSeek 配置。
+    # front_stage_api_key: "${MOONSHOT_API_KEY}"
+    # front_stage_provider: "moonshot"
+    # front_stage_base_url: "https://api.moonshot.cn/v1"
+    # view_model: "kimi-k2.6"
+    # semantic_adjudication_model: "kimi-k2.6"
+    # enable_multimodal_front_stage_input: true
+    # semantic_adjudication_max_images: 1
     max_tokens: 4096
     max_prompt_tokens: 12000
     semantic_max_tokens: 30000  # 语义生成阶段输出上限（默认 30000）
-    thinking: true
-    reasoning_effort: "max"
+    reasoning_effort: "max"  # DeepSeek 当前支持 high/max
+    stage_thinking:
+      view_analysis:
+        enabled: false
+        reasoning_effort: "high"
+      semantic_adjudication:
+        enabled: false
+        reasoning_effort: "high"
+      semantic_generation:
+        enabled: false
+        reasoning_effort: "high"
+      modeling_generation:
+        enabled: false
+        reasoning_effort: "max"
 
 # DXF解析配置
 dxf_parser:

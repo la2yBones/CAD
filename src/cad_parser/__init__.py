@@ -1,3 +1,3 @@
-from .parser import CADParser, DXFParser
+from .parser import CADParser
 
-__all__ = ["CADParser", "DXFParser"]
+__all__ = ["CADParser"]

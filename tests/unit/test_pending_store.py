@@ -83,9 +83,9 @@ class TestPendingClarificationStore(unittest.TestCase):
             loaded = store.load(item["pending_id"])
 
             self.assertEqual(["depth"], [q["id"] for q in loaded["clarification_questions"]])
-            self.assertEqual("drawing.dxf 需要补充 1 项信息", loaded["summary"])
+            self.assertEqual("drawing.dxf 语义澄清，需要补充 1 项信息", loaded["summary"])
 
-    def test_mark_resolved_hides_item_from_pending_list(self):
+    def test_mark_resolved_deletes_disk_file(self):
         with TemporaryDirectory() as tmpdir:
             store = PendingClarificationStore(tmpdir)
             result = CADProcessResult(success=False, input_file="drawing.dxf")
@@ -99,7 +99,8 @@ class TestPendingClarificationStore(unittest.TestCase):
 
             self.assertEqual("resolved", resolved["status"])
             self.assertEqual([], store.list_pending())
-            self.assertEqual("resolved", store.load(item["pending_id"])["status"])
+            self.assertIsNone(store.load(item["pending_id"]))
+            self.assertFalse(Path(tmpdir, f"{item['pending_id']}.json").exists())
 
     def test_save_recovery_accepts_partial_completed_result(self):
         with TemporaryDirectory() as tmpdir:
@@ -126,7 +127,24 @@ class TestPendingClarificationStore(unittest.TestCase):
             self.assertEqual("out/drawing.step", loaded["output_paths"]["model_step"])
             self.assertEqual([item["pending_id"]], [entry["pending_id"] for entry in store.list_pending()])
 
-    def test_mark_deleted_hides_item_without_removing_file(self):
+    def test_save_uses_script_quality_recovery_summary(self):
+        with TemporaryDirectory() as tmpdir:
+            store = PendingClarificationStore(tmpdir)
+            result = CADProcessResult(success=False, input_file="drawing.dxf")
+            result.mark_needs_clarification(
+                [{"id": "script_quality_recovery_hint", "text": "请补充脚本恢复提示"}],
+                {
+                    "script_quality_recovery": True,
+                    "script_validation_errors": ["缺少 final_shape 赋值"],
+                },
+            )
+
+            item = store.save_recovery(result, output_dir="out", extrude_height=10.0)
+            loaded = store.load(item["pending_id"])
+
+            self.assertIn("脚本质量恢复", loaded["summary"])
+
+    def test_mark_deleted_removes_disk_file(self):
         with TemporaryDirectory() as tmpdir:
             store = PendingClarificationStore(tmpdir)
             result = CADProcessResult(success=False, input_file="drawing.dxf")
@@ -140,7 +158,8 @@ class TestPendingClarificationStore(unittest.TestCase):
 
             self.assertEqual("deleted", deleted["status"])
             self.assertEqual([], store.list_pending())
-            self.assertTrue(Path(tmpdir, f"{item['pending_id']}.json").exists())
+            self.assertIsNone(store.load(item["pending_id"]))
+            self.assertFalse(Path(tmpdir, f"{item['pending_id']}.json").exists())
 
     def test_save_rejects_non_clarification_result(self):
         with TemporaryDirectory() as tmpdir:

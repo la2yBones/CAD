@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from .semantic_adjudication_view import SemanticAdjudicationView
+from .semantic_dimension_authority import SemanticDimensionAuthority
 
 
 PART_SEMANTICS_SCHEMA: Dict[str, Any] = {
@@ -45,6 +45,10 @@ class PartSemanticsValidator:
         "evidence",
     )
 
+    OPTIONAL_LIST_FIELDS = (
+        "modeling_operations",
+    )
+
     def validate(
         self,
         result: Dict[str, Any],
@@ -61,6 +65,40 @@ class PartSemanticsValidator:
         for field in self.REQUIRED_LIST_FIELDS:
             if field in result and not isinstance(result.get(field), list):
                 errors.append(f"{field} 必须是列表")
+
+        for field in self.OPTIONAL_LIST_FIELDS:
+            if field in result and result.get(field) is not None and not isinstance(result.get(field), list):
+                errors.append(f"{field} 必须是列表或 null")
+
+        modeling_operations = result.get("modeling_operations")
+        if isinstance(modeling_operations, list) and modeling_operations:
+            valid_operations = (
+                "extrude_profile",
+                "revolve_profile",
+                "add_feature",
+                "subtract_feature",
+                "create_base",
+            )
+            has_base_operation = False
+            for idx, op in enumerate(modeling_operations):
+                if not isinstance(op, dict):
+                    errors.append(f"modeling_operations[{idx}] 必须是对象")
+                    continue
+                operation = op.get("operation")
+                if not operation:
+                    errors.append(f"modeling_operations[{idx}] 缺少 operation 字段")
+                elif operation not in valid_operations:
+                    errors.append(
+                        f"modeling_operations[{idx}].operation 不合法: {operation}；"
+                        f"必须是 {', '.join(valid_operations)}"
+                    )
+                if operation in ("extrude_profile", "revolve_profile", "create_base"):
+                    has_base_operation = True
+            if not has_base_operation:
+                errors.append(
+                    "modeling_operations 必须至少包含一个基础操作"
+                    "（extrude_profile/revolve_profile/create_base）"
+                )
 
         coordinate_system = result.get("coordinate_system")
         if coordinate_system is not None and not isinstance(coordinate_system, dict):
@@ -129,42 +167,11 @@ class PartSemanticsValidator:
             elif not 0.0 <= float(confidence) <= 1.0:
                 errors.append("confidence 必须介于 0 到 1 之间")
 
-        policy_plan: Dict[str, Any] = {}
-        allowed_values: List[float] = []
-        construction_values: List[float] = []
-        if reconstruction_context:
-            semantic_policy = reconstruction_context.get("semantic_policy", {}) or {}
-            adjudication_allowed, adjudication_construction = (
-                self._semantic_adjudication_values(semantic_policy)
-            )
-            if self._has_successful_semantic_adjudication(semantic_policy):
-                allowed_values = adjudication_allowed
-                construction_values = adjudication_construction
-            else:
-                policy_plan = semantic_policy.get("dimension_plan", {})
-                allowed_values = self._dimension_plan_values(
-                    policy_plan,
-                    "allowed_dimensions",
-                )
-                construction_values = self._dimension_plan_values(
-                    policy_plan,
-                    "construction_dimensions",
-                )
-                allowed_values.extend(adjudication_allowed)
-                construction_values.extend(adjudication_construction)
+        dimension_authority = SemanticDimensionAuthority(reconstruction_context)
 
         if reconstruction_context and dimension_source == "annotation":
-            annotation_values = self._annotation_values(reconstruction_context)
-            # A semantic policy may adjudicate derived annotation values, such as
-            # a total length built from an adjacent dimension chain (9+39=48),
-            # and keep the source chain members as segment dimensions for
-            # construction. Those are still annotation-derived.
-            adjudicated_values = allowed_values + construction_values
-            permitted_values = adjudicated_values or annotation_values
-            key_dimension_values = self._key_dimension_values(result)
-            unexpected_values = sorted(
-                value for value in key_dimension_values
-                if not self._matches_annotation_value(value, permitted_values)
+            unexpected_values = (
+                dimension_authority.unexpected_annotation_key_values(result)
             )
             if unexpected_values:
                 errors.append(
@@ -173,33 +180,25 @@ class PartSemanticsValidator:
                 )
 
         if reconstruction_context:
-            policy_dimension_source = (
-                reconstruction_context.get("semantic_policy", {}) or {}
-            ).get("dimension_source")
+            policy_dimension_source = dimension_authority.policy_dimension_source
             if (
-                policy_dimension_source in ("annotation", "geometry", "unresolved")
+                policy_dimension_source
                 and dimension_source != policy_dimension_source
             ):
                 errors.append(
                     "dimension_source 必须服从 semantic_policy.dimension_source；"
                     f"期望 {policy_dimension_source}，实际 {dimension_source}"
                 )
-            adjudicated_values = allowed_values + construction_values
-            if adjudicated_values:
-                unexpected_values = sorted(
-                    value for value in self._key_dimension_values(result)
-                    if not self._matches_annotation_value(value, adjudicated_values)
-                )
+            if dimension_authority.has_authoritative_values:
+                unexpected_values = dimension_authority.unauthorized_key_values(result)
                 if unexpected_values:
                     errors.append(
                         "key_dimensions 只能使用 semantic_policy.semantic_adjudication 已裁决尺寸；"
                         "semantic_adjudication 缺失或失败时才可使用兼容 dimension_plan；"
                         f"发现未裁决尺寸值: {unexpected_values}"
                     )
-                misnamed_values = self._misnamed_construction_key_dimensions(
-                    result,
-                    allowed_values,
-                    construction_values,
+                misnamed_values = (
+                    dimension_authority.misnamed_construction_key_dimensions(result)
                 )
                 if misnamed_values:
                     errors.append(
@@ -208,141 +207,3 @@ class PartSemanticsValidator:
                     )
 
         return not errors, errors
-
-    @staticmethod
-    def _annotation_values(reconstruction_context: Dict[str, Any]) -> List[float]:
-        values: List[float] = []
-        for dimension in reconstruction_context.get("dimensions", []) or []:
-            value = dimension.get("value")
-            if isinstance(value, (int, float)):
-                values.append(float(value))
-        return values
-
-    @staticmethod
-    def _key_dimension_values(result: Dict[str, Any]) -> List[float]:
-        values: List[float] = []
-        for dimension in result.get("key_dimensions", []) or []:
-            value = dimension.get("value")
-            if isinstance(value, (int, float)):
-                values.append(float(value))
-        return values
-
-    @classmethod
-    def _misnamed_construction_key_dimensions(
-        cls,
-        result: Dict[str, Any],
-        allowed_values: List[float],
-        construction_values: List[float],
-    ) -> List[str]:
-        misnamed: List[str] = []
-        for dimension in result.get("key_dimensions", []) or []:
-            value = dimension.get("value")
-            name = str(dimension.get("name") or "").strip()
-            if not isinstance(value, (int, float)) or not name:
-                continue
-            numeric_value = float(value)
-            if cls._matches_annotation_value(numeric_value, allowed_values):
-                continue
-            if not cls._matches_annotation_value(numeric_value, construction_values):
-                continue
-            if cls._is_forbidden_construction_key_name(name):
-                misnamed.append(f"{name}={numeric_value:g}")
-        return sorted(misnamed)
-
-    @staticmethod
-    def _is_forbidden_construction_key_name(name: str) -> bool:
-        normalized = name.lower().replace("-", "_").replace(" ", "_")
-        forbidden_names = {
-            "total_length",
-            "overall_length",
-            "profile_length",
-            "profile_height",
-            "depth",
-            "extrusion_depth",
-            "hole_diameter",
-            "flange_diameter",
-            "across_flats",
-            "across_corners",
-        }
-        return normalized in forbidden_names
-
-    @staticmethod
-    def _matches_annotation_value(value: float, annotation_values: List[float]) -> bool:
-        return any(abs(value - annotated) <= 1e-6 for annotated in annotation_values)
-
-    @staticmethod
-    def _dimension_plan_values(policy_plan: Dict[str, Any], field: str) -> List[float]:
-        values: List[float] = []
-        for dimension in policy_plan.get(field, []) or []:
-            value = dimension.get("value")
-            if isinstance(value, (int, float)):
-                values.append(float(value))
-        return values
-
-    @staticmethod
-    def _has_successful_semantic_adjudication(semantic_policy: Dict[str, Any]) -> bool:
-        return SemanticAdjudicationView.from_policy(semantic_policy).is_successful
-
-    @classmethod
-    def _semantic_adjudication_values(
-        cls,
-        semantic_policy: Dict[str, Any],
-    ) -> Tuple[List[float], List[float]]:
-        evidence = semantic_policy.get("drawing_evidence_package", {}) or {}
-        adjudication_view = SemanticAdjudicationView.from_policy(semantic_policy)
-        dimension_values = {
-            str(item.get("id")): float(item.get("value"))
-            for item in evidence.get("dimension_candidates", []) or []
-            if item.get("id") and isinstance(item.get("value"), (int, float))
-        }
-        derived_values = {
-            str(item.get("id")): float(item.get("value"))
-            for item in evidence.get("derived_dimension_candidates", []) or []
-            if item.get("id") and isinstance(item.get("value"), (int, float))
-        }
-
-        allowed: List[float] = []
-        construction: List[float] = []
-        for role_item in adjudication_view.confirmed_dimensions:
-            role = str(role_item.get("role") or "")
-            dimension_id = str(role_item.get("dimension_id") or "")
-            if role in {"", "unresolved"} or dimension_id not in dimension_values:
-                continue
-            cls._append_adjudicated_value(
-                role,
-                dimension_values[dimension_id],
-                allowed,
-                construction,
-            )
-
-        for role_item in adjudication_view.derived_dimensions:
-            role = str(role_item.get("role") or "")
-            derived_id = str(role_item.get("source_derived_dimension_id") or "")
-            value = role_item.get("value")
-            if not isinstance(value, (int, float)):
-                value = derived_values.get(derived_id)
-            if role in {"", "unresolved"} or not isinstance(value, (int, float)):
-                continue
-            cls._append_adjudicated_value(role, float(value), allowed, construction)
-
-        return allowed, construction
-
-    @staticmethod
-    def _append_adjudicated_value(
-        role: str,
-        value: float,
-        allowed: List[float],
-        construction: List[float],
-    ) -> None:
-        construction_roles = {
-            "construction",
-            "feature_depth",
-            "feature_height",
-            "feature_total_height",
-            "radius",
-            "chamfer",
-            "thread_length",
-        }
-        target = construction if role in construction_roles else allowed
-        if not any(abs(value - existing) <= 1e-6 for existing in target):
-            target.append(value)

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from .clarification_questions import clarification_question, choice_option
+from .clarification_helpers import clarification_question, choice_option
 
 
 PLANAR_EXTRUDE = "planar_extrude"

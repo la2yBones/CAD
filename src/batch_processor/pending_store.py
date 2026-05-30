@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .processor import CADProcessResult, CADProcessor, PipelineStatus
+from .pending_view_model import pending_recovery_summary
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class PendingClarificationStore:
@@ -26,7 +30,6 @@ class PendingClarificationStore:
         *,
         output_dir: str,
         extrude_height: float,
-        mode: str = "intelligent",
     ) -> Dict[str, Any]:
         if result.status != PipelineStatus.NEEDS_CLARIFICATION:
             raise ValueError("only needs_clarification results can be saved as pending")
@@ -46,7 +49,6 @@ class PendingClarificationStore:
             "input_file": result.input_file,
             "output_dir": output_dir,
             "extrude_height": extrude_height,
-            "mode": mode,
             "modeling_path": result.modeling_path,
             "clarification_questions": clarification_questions,
             "clarification_context": result.clarification_context,
@@ -67,14 +69,12 @@ class PendingClarificationStore:
         *,
         output_dir: str,
         extrude_height: float,
-        mode: str = "intelligent",
     ) -> Dict[str, Any]:
         if result.status == PipelineStatus.NEEDS_CLARIFICATION:
             return self.save(
                 result,
                 output_dir=output_dir,
                 extrude_height=extrude_height,
-                mode=mode,
             )
         if result.status != PipelineStatus.PARTIAL_COMPLETED:
             raise ValueError("only clarification or partial results can be saved for recovery")
@@ -95,7 +95,6 @@ class PendingClarificationStore:
             "input_file": result.input_file,
             "output_dir": output_dir,
             "extrude_height": extrude_height,
-            "mode": mode,
             "modeling_path": result.modeling_path,
             "clarification_questions": clarification_questions,
             "clarification_context": result.clarification_context,
@@ -140,10 +139,12 @@ class PendingClarificationStore:
             return None
         item["status"] = "resolved"
         item["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        self._path_for(pending_id).write_text(
-            json.dumps(item, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        path = self._path_for(pending_id)
+        try:
+            path.unlink()
+            logger.info("待恢复任务已解决并删除磁盘文件: %s", pending_id)
+        except OSError as e:
+            logger.warning("删除已解决的待恢复任务文件失败: %s: %s", pending_id, e)
         return item
 
     def mark_deleted(self, pending_id: str) -> Optional[Dict[str, Any]]:
@@ -152,10 +153,12 @@ class PendingClarificationStore:
             return None
         item["status"] = "deleted"
         item["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        self._path_for(pending_id).write_text(
-            json.dumps(item, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        path = self._path_for(pending_id)
+        try:
+            path.unlink()
+            logger.info("待恢复任务已删除磁盘文件: %s", pending_id)
+        except OSError as e:
+            logger.warning("删除待恢复任务文件失败: %s: %s", pending_id, e)
         return item
 
     def _path_for(self, pending_id: str) -> Path:
@@ -172,10 +175,7 @@ class PendingClarificationStore:
             item.get("clarification_questions") or []
         )
         if item.get("input_file"):
-            item["summary"] = (
-                f"{Path(item['input_file']).name} 需要补充 "
-                f"{len(item['clarification_questions'])} 项信息"
-            )
+            item["summary"] = f"{Path(item['input_file']).name} {pending_recovery_summary(item)}"
 
     @staticmethod
     def _summary_for(
@@ -187,4 +187,15 @@ class PendingClarificationStore:
             if clarification_questions is not None
             else result.clarification_questions
         )
-        return f"{Path(result.input_file).name} 需要补充 {question_count} 项信息"
+        context = result.clarification_context or {}
+        if context.get("script_quality_recovery"):
+            reason = "脚本质量恢复"
+        elif context.get("partial_modeling_recovery") or result.status == PipelineStatus.PARTIAL_COMPLETED:
+            reason = "部分建模恢复"
+        elif context.get("pre_modeling_recovery"):
+            reason = "建模前澄清"
+        elif context.get("clarification_stage") == "modeling_path":
+            reason = "路径澄清"
+        else:
+            reason = "语义澄清"
+        return f"{Path(result.input_file).name} {reason}，需要补充 {question_count} 项信息"

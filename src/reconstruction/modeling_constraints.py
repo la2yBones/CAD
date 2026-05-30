@@ -44,8 +44,9 @@ Edge 兼容要求：脚本中若使用 Part.LineSegment 或 Part.ArcOfCircle 构
 - Shape.extrude
 - Shape.revolve
 说明：使用 Shape.revolve 替代自动圆角/球面/倒角函数，生成轴对称圆弧面或回转切除体。
-圆角要求：若 modeling_task_payload.dimensions.semantic_adjudication 中存在 role=radius 的圆角/圆弧裁决，或兼容兜底字段 allowed_dimensions / construction_dimensions 中存在 role=radius，尤其是 R=4x1.5 这类 repeat_count+radius_value 标注，不得因为 makeFillet 被禁用就直接跳过。应优先使用图纸中 ARC 摘要、Part.ArcOfCircle、Part.Wire、Part.Face、Shape.revolve 或显式轮廓构造来表达该圆角；只有缺少半径、位置和构造方向时，才允许记录为 skipped_features。
-重复孔要求：若 modeling_task_payload.dimensions.semantic_adjudication 中存在 repeated_diameter 或 repeated_thread 裁决，或兼容兜底字段 construction_dimensions 中存在对应标注，例如 3xφ5、3×Φ5、3-φ5、3-M5，repeat_count 表示孔数量，diameter_value/thread_value 表示孔径或螺纹规格值；不得把前面的数量当作孔径，也不得只生成一个孔后忽略数量。
+圆角要求：若 modeling_task_payload.dimensions.modeling_dimensions 中存在 role=radius 的圆角/圆弧裁决，或兼容兜底字段 allowed_dimensions / construction_dimensions 中存在 role=radius，尤其是 R=4x1.5 这类 repeat_count+radius_value 标注，不得因为 makeFillet 被禁用就直接跳过。应优先使用图纸中 ARC 摘要、Part.ArcOfCircle、Part.Wire、Part.Face、Shape.revolve 或显式轮廓构造来表达该圆角；只有缺少半径、位置和构造方向时，才允许记录为 skipped_features。
+重复孔要求：若 modeling_task_payload.dimensions.modeling_dimensions 中存在 repeated_diameter 或 repeated_thread 裁决，或兼容兜底字段 construction_dimensions 中存在对应标注，例如 3xφ5、3×Φ5、3-φ5、3-M5，repeat_count 表示孔数量，diameter_value/thread_value 表示孔径或螺纹规格值；不得把前面的数量当作孔径，也不得只生成一个孔后忽略数量。
+解析圆孔要求：若 modeling_task_payload.features.subtractive、features.planar_modeling.cut_features 或特征 evidence 中存在来自 CIRCLE 实体的 center/radius/diameter/bbox，它们是可执行孔位几何证据。对板件、基板、法兰、底座等平面拉伸模型，应优先用这些圆创建贯穿孔切除，不得因为缺少孔距、定位尺寸或额外文本标注而写入 skipped_features。若同时提供 center_relative_to_profile，且主体基体以外轮廓中心为原点建模，应优先用该相对坐标作为孔圆柱中心。来自点划线、中心线、构造线或隐藏线图层的 CIRCLE 默认只作定位/节圆/辅助圆，除非语义明确裁决为实际孔。
 
 5. 基础布尔
 - Shape.fuse

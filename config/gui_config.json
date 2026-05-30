@@ -15,5 +15,26 @@
   "log": {
     "max_display": 2000,
     "auto_scroll": true
+  },
+  "deepseek": {
+    "user_id": "cad-system-local",
+    "request_timeout_seconds": 600.0,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-pro",
+    "view_model": "deepseek-v4-pro",
+    "adjudication_model": "deepseek-v4-pro",
+    "semantic_model": "deepseek-v4-pro",
+    "front_stage_provider": "deepseek",
+    "front_stage_base_url": "https://api.deepseek.com",
+    "enable_multimodal_front_stage_input": false,
+    "semantic_adjudication_max_images": 1,
+    "view_thinking_enabled": false,
+    "view_reasoning_effort": "high",
+    "adjudication_thinking_enabled": false,
+    "adjudication_reasoning_effort": "high",
+    "semantic_thinking_enabled": false,
+    "semantic_reasoning_effort": "high",
+    "modeling_thinking_enabled": false,
+    "modeling_reasoning_effort": "high"
   }
 }

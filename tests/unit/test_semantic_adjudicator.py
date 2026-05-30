@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 
 import json
+import tempfile
 import unittest
 import unittest.mock
+from pathlib import Path
 from types import SimpleNamespace
 
 from src.reconstruction.semantic_adjudicator import (
@@ -12,7 +14,7 @@ from src.reconstruction.semantic_adjudicator import (
 from src.reconstruction.semantic_adjudication_view import SemanticAdjudicationView
 from src.reconstruction.pipeline import SemanticReconstructionPipeline
 from src.reconstruction.semantic_policy import SemanticPolicy
-from src.intelligent_analyzer.reconstruction_context import ReconstructionContextBuilder
+from src.reconstruction.context import ReconstructionContextBuilder
 from src.utils.stage_confirmation import resolve_stage_confirmation
 
 
@@ -76,7 +78,7 @@ def _valid_adjudication():
 
 class TestLLMSemanticAdjudicator(unittest.TestCase):
     def test_semantic_adjudication_view_exports_modeling_dimensions(self):
-        view = SemanticAdjudicationView(_valid_adjudication())
+        view = SemanticAdjudicationView(_valid_adjudication(), _evidence_package())
 
         self.assertTrue(view.is_successful)
         self.assertEqual(0.9, view.confidence)
@@ -84,11 +86,20 @@ class TestLLMSemanticAdjudicator(unittest.TestCase):
         self.assertEqual("G1", view.confirmed_features[0]["feature_id"])
         self.assertEqual("DD1", view.derived_dimensions[0]["source_derived_dimension_id"])
         self.assertEqual(2, len(view.modeling_dimensions))
+        self.assertEqual(16.0, view.modeling_dimensions[0]["value"])
         self.assertEqual(
             "semantic_adjudication.dimension_roles",
             view.modeling_dimensions[0]["source"],
         )
         self.assertTrue(view.has_role("through_hole"))
+
+    def test_semantic_adjudication_view_groups_adjudicated_values(self):
+        view = SemanticAdjudicationView(_valid_adjudication(), _evidence_package())
+
+        allowed, construction = view.adjudicated_value_groups()
+
+        self.assertEqual([16.0], allowed)
+        self.assertEqual([4.0], construction)
 
     def test_semantic_adjudication_view_blocks_failed_modeling_dimensions(self):
         view = SemanticAdjudicationView({
@@ -164,6 +175,96 @@ class TestLLMSemanticAdjudicator(unittest.TestCase):
         self.assertIn("drawing_evidence_package", user_content)
         self.assertIn('"V1"', user_content)
         self.assertNotIn("source_entities", user_content)
+
+    def test_adjudicator_multimodal_user_content_attaches_preview_image(self):
+        adjudicator = LLMSemanticAdjudicator.__new__(LLMSemanticAdjudicator)
+        adjudicator.enable_multimodal = True
+        adjudicator.max_images = 1
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = Path(tmp_dir) / "preview.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            content = adjudicator._build_user_message_content(
+                _evidence_package(),
+                preview_path=str(image_path),
+            )
+
+        self.assertIsInstance(content, list)
+        self.assertEqual("image_url", content[0]["type"])
+        self.assertTrue(content[0]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertEqual("text", content[1]["type"])
+        self.assertIn("drawing_evidence_package", content[1]["text"])
+
+    def test_adjudicator_applies_common_stage_request_options(self):
+        adjudicator = LLMSemanticAdjudicator.__new__(LLMSemanticAdjudicator)
+        adjudicator.config = {
+            "user_id": "cad-gui",
+            "stage_thinking": {
+                "semantic_adjudication": {
+                    "enabled": True,
+                    "reasoning_effort": "max",
+                }
+            },
+        }
+        adjudicator.model = "deepseek-v4-pro"
+        adjudicator.validator = SemanticAdjudicationValidator()
+        adjudicator.telemetry_store = SimpleNamespace(
+            start_call=lambda **kwargs: SimpleNamespace(finish=lambda **finish_kwargs: None)
+        )
+        calls = []
+
+        def fake_create(**kwargs):
+            calls.append(kwargs)
+            message = SimpleNamespace(content=json.dumps(_valid_adjudication(), ensure_ascii=False))
+            choice = SimpleNamespace(message=message)
+            return SimpleNamespace(choices=[choice])
+
+        adjudicator.client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+        )
+
+        adjudicator.adjudicate({
+            "semantic_policy": {"drawing_evidence_package": _evidence_package()},
+        })
+
+        self.assertNotIn("user_id", calls[0])
+        self.assertEqual(
+            {"thinking": {"type": "enabled", "reasoning_effort": "max"}},
+            calls[0]["extra_body"],
+        )
+
+    def test_adjudicator_normalizes_legacy_reasoning_effort(self):
+        adjudicator = LLMSemanticAdjudicator.__new__(LLMSemanticAdjudicator)
+        adjudicator.config = {
+            "semantic_adjudication_thinking": True,
+            "semantic_adjudication_reasoning_effort": "medium",
+        }
+        adjudicator.model = "deepseek-v4-pro"
+        adjudicator.validator = SemanticAdjudicationValidator()
+        adjudicator.telemetry_store = SimpleNamespace(
+            start_call=lambda **kwargs: SimpleNamespace(finish=lambda **finish_kwargs: None)
+        )
+        calls = []
+
+        def fake_create(**kwargs):
+            calls.append(kwargs)
+            message = SimpleNamespace(content=json.dumps(_valid_adjudication(), ensure_ascii=False))
+            choice = SimpleNamespace(message=message)
+            return SimpleNamespace(choices=[choice])
+
+        adjudicator.client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+        )
+
+        adjudicator.adjudicate({
+            "semantic_policy": {"drawing_evidence_package": _evidence_package()},
+        })
+
+        self.assertEqual(
+            {"thinking": {"type": "enabled", "reasoning_effort": "high"}},
+            calls[0]["extra_body"],
+        )
 
     def test_validator_rejects_unknown_evidence_ids(self):
         valid, errors = SemanticAdjudicationValidator().validate(

@@ -2,8 +2,6 @@
 
 本项目面向 DXF/DWG 工程图纸，提供从二维图纸解析、视图和尺寸理解、语义裁决、建模路径选择到 FreeCAD 三维模型导出的完整处理链。用户入口已经统一为 **智能处理**：系统先理解图纸，再依据结构化语义选择平面拉伸路径、回转体路径或语义重建路径。
 
-当前 README 只描述当前代码事实。历史基础入口、旧类名和旧 import 路径仍作为兼容层存在，但不再作为推荐用法。
-
 ## 当前能力
 
 - 解析 DXF，并通过内置 LibreDWG 将 DWG 转为 DXF 后解析。
@@ -11,8 +9,11 @@
 - 生成稳定的 CAD 预览缓存。
 - 结合本地规则、尺寸提取、投影关系和 DeepSeek V4 Pro 完成智能分析。
 - 在语义生成前进行尺寸来源、尺寸绑定和特征证据的语义裁决。
+- 零件语义生成阶段直接输出 `modeling_operations` 结构化建模操作序列，建模指令阶段按序列生成 FreeCAD 脚本。
+- 语义裁决成功后 `modeling_dimensions` 为唯一尺寸数据源，`dimension_roles` 不再重复输出。
+- 各阶段校验失败时自动自纠（最多 2 轮），自纠完成后再进入阶段确认。
 - 依据路径契约选择平面拉伸、回转体或语义重建路径。
-- 支持 `completed`、`partial_completed`、`needs_clarification`、`failed`、用户停止处理等状态。
+- 支持 `completed`、`partial_completed`、`needs_clarification`、`failed`、`stopped_by_user`、`stage_action_requested` 等状态。
 - 通过 FreeCAD direct/subprocess 模式导出 STEP、STL、FCStd。
 - 在 GUI 中展示预览、日志、缓存、LLM 遥测、阶段确认、批量进度和待恢复任务。
 
@@ -33,12 +34,15 @@
 ## 快速开始
 
 ```powershell
-cd E:\Code\CAD
-D:\anaconda3\envs\cad_study\python.exe -m pip install -r requirements.txt
+cd <项目根目录>
+conda activate cad_study
+pip install -r requirements.txt
+# 或可编辑安装
+pip install -e .
 Copy-Item .env.example .env
 ```
 
-在 `.env` 中填写至少一个有效 DeepSeek API Key：
+在 `.env` 中填写至少一个有效 DeepSeek API Key（也可在 GUI 的设置对话框中填写）：
 
 ```env
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
@@ -51,25 +55,24 @@ FREECAD_BIN_PATH=D:\FreeCAD 1.0\bin
 运行单元测试：
 
 ```powershell
-D:\anaconda3\envs\cad_study\python.exe -m pytest tests\unit -q
+pytest tests/unit -q
 ```
 
 启动 GUI：
 
 ```powershell
-D:\anaconda3\envs\cad_study\python.exe gui_example.py
+python gui_example.py
 ```
 
 运行 CLI：
 
 ```powershell
-D:\anaconda3\envs\cad_study\python.exe cad_cli.py --list
-D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf
-D:\anaconda3\envs\cad_study\python.exe cad_cli.py --file examples/cad_files/sample.dxf --analysis-only
-D:\anaconda3\envs\cad_study\python.exe cad_cli.py --dir examples/cad_files --output-dir examples/output
+python cad_cli.py -l                       # 列出可用图纸
+python cad_cli.py -f sample.dxf            # 处理单文件（在默认输入目录中查找）
+python cad_cli.py -d examples/cad_files    # 批量处理目录
 ```
 
-默认 `--file` 和 `--dir` 都走统一智能处理。`--analysis-only` 只保存分析结果和建模脚本，不执行三维建模。
+CLI 支持短选项（`-f`、`-d`、`-l`），`-f` 只需文件名即可在默认输入目录中查找，无需输入完整路径。
 
 ## 处理流程
 
@@ -85,13 +88,19 @@ CLI / GUI
       -> EngineeringViewAnalyzer 本地视图初判
       -> DimensionExtractor 尺寸提取
       -> LLMViewAnalyzer 视图语义校正
+         -> 校验失败 → 自动自纠（最多 2 轮）→ 仍失败则回退本地规则
       -> 本地关系分析
       -> SemanticReconstructionPipeline
           -> SemanticPolicy 语义裁决
           -> PartSemanticGenerator 零件语义生成
+             -> 输出 modeling_operations 结构化建模操作序列
+             -> 校验失败 → 自动自纠（最多 2 轮）
+             -> 阶段确认（继续 / 停止 / 重跑）
           -> ModelingPathRegistry / 路径契约
           -> ModelingTaskBuilder 建模任务载荷
           -> FreeCADInstructionGenerator 建模脚本生成
+             -> 校验失败 → 自动自纠（最多 2 轮）
+             -> 阶段确认（继续 / 停止 / 重跑）
   -> IntelligentModelingExecutor
       -> PlanarExtrudeModeler 平面拉伸路径
       -> revolve_executor 回转体路径
@@ -103,11 +112,29 @@ CLI / GUI
 
 | 路径 | 触发条件 | 执行方式 |
 |---|---|---|
-| 平面拉伸路径 | 图纸被裁决为可平面拉伸图，且平面建模语义闭合 | `PlanarExtrudeModeler`，当前复用旧平面拉伸实现 |
+| 平面拉伸路径 | 图纸被裁决为可平面拉伸图，且平面建模语义闭合 | `PlanarExtrudeModeler`，direct/subprocess 双模式 |
 | 回转体路径 | 语义明确给出轴线、闭合母线点列和旋转角度 | `revolve_executor` 生成确定性 FreeCAD 脚本 |
-| 语义重建路径 | 无法稳定归入专用路径，或需要复杂三维语义重建 | `FreeCADInstructionGenerator` + `AIScriptRunner` |
+| 语义重建路径 | 无法稳定归入专用路径，或需要复杂三维语义重建 | `modeling_operations` → `FreeCADInstructionGenerator` → `AIScriptRunner` |
 
-路径选择不是用户手动模式开关，而是语义重建内核依据路径契约做出的建模路径裁决。
+路径选择不是用户手动模式开关，而是语义重建内核依据路径契约做出的建模路径裁决。语义重建路径下，零件语义生成阶段输出 `modeling_operations`（如 `extrude_profile`、`subtract_feature`、`revolve_profile`），建模指令阶段严格按操作序列和尺寸参数生成 FreeCAD 脚本。
+
+## 自纠与阶段确认
+
+各 LLM 阶段完成后，系统先执行本地校验。校验失败时自动触发自纠（最多 2 轮），自纠完成后再进入阶段确认。
+
+**自动自纠覆盖的阶段：**
+
+| 阶段 | 校验内容 | 自纠失败后 |
+|---|---|---|
+| 视图语义校正 | JSON Schema + 业务规则 + 可疑内容检测 | 回退本地规则结果 |
+| 零件语义生成 | Schema 校验 + `modeling_operations` 内容校验 | 标记为 blocked |
+| 建模指令生成 | 脚本语法 + 建模约束校验 | 标记为 blocked |
+
+**阶段确认（默认关闭，用户主动启用后生效）：**
+
+- 三种操作：**继续**、**停止**、**重跑**
+- 主体安全边界未闭合时「继续」按钮不可用
+- 选择「重跑」时弹出特征级勾选界面，用户选择保留的成果（零件类型、增材/减材特征、关键尺寸），保留部分作为约束传入 LLM
 
 ## 输出与运行数据
 
@@ -157,10 +184,9 @@ E:\Code\CAD
 │   ├── cad_parser/                    # DXF/DWG 解析与预览
 │   ├── intelligent_analyzer/          # 智能分析编排与分析子过程
 │   ├── reconstruction/                # 语义裁决、零件语义、路径契约和建模任务
-│   ├── model_generator/               # FreeCAD 桥接、AI 脚本运行、平面拉伸 adapter
-│   ├── compat/                        # 旧 import 路径集中兼容层
-│   ├── legacy/                        # 旧实现保留区，不新增业务能力
-│   └── utils/                         # 配置、日志、缓存、遥测、Result
+│   ├── model_generator/               # FreeCAD 桥接、AI 脚本运行、平面拉伸建模
+│   ├── gui/                           # GUI 面板与交互（按面板拆分）
+│   └── utils/                         # 配置、日志、缓存、遥测、Result、建模工具
 ├── tests/unit/                        # 单元测试
 ├── tools/                             # 诊断、缓存工具、内置二进制工具
 └── examples/cad_files/                # 示例图纸
@@ -185,13 +211,7 @@ E:\Code\CAD
 | `LIBREDWG_PATH` | 可选，外部 LibreDWG 路径；项目已内置 `tools/bin/dwg2dxf.exe` |
 | `CAD_PREVIEW_CACHE_DIR` | 可选，覆盖预览缓存目录 |
 
-FreeCAD 还支持项目级增强包：
-
-```text
-tools/freecad/<FreeCAD发行目录>/bin/python.exe
-```
-
-若存在该路径，系统会优先使用项目内 FreeCAD 运行时；仓库默认不提交完整 FreeCAD 本体。
+FreeCAD 还支持项目级增强包：若存在 `tools/freecad/<FreeCAD发行目录>/bin/python.exe`，系统会优先使用项目内 FreeCAD 运行时。仓库默认不提交完整 FreeCAD 本体，详见 [docs/guides/configuration.md](docs/guides/configuration.md)。
 
 ## GUI 工作流
 
@@ -210,20 +230,7 @@ GUI 只编排交互，不复制核心业务逻辑；处理仍通过 `CADPipeline
 
 ## 兼容入口
 
-这些入口仍保留，但只用于迁移：
-
-- `cad_cli.py --basic`
-- `cad_cli.py --legacy-analysis`
-- `cad_cli.py --analysis`
-- `cad_cli.py --intelligent`
-- `CADPipeline.process_file(...)`
-- `CADPipeline.process_file_basic(...)`
-- `CADPipeline.process_file_legacy_analysis(...)`
-- `DXFParser`
-- `GeometryAnalyzer`
-- `FreeCADModeler`
-
-新代码应使用统一智能处理入口、`CADParser`、`PlanarExtrudeModeler` 和当前模块路径。兼容范围和删除条件见 [docs/compatibility.md](docs/compatibility.md)。
+`FreeCADModeler` 作为 `PlanarExtrudeModeler` 的别名仍保留于 `src/model_generator/__init__.py`，供旧代码过渡使用。新代码应直接使用 `PlanarExtrudeModeler`。兼容范围和删除条件见 [docs/compatibility.md](docs/compatibility.md)。
 
 ## 安全与维护边界
 

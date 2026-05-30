@@ -2,7 +2,7 @@
 
 import unittest
 
-from src.intelligent_analyzer.semantic_schema import PartSemanticsValidator
+from src.reconstruction.semantic_schema import PartSemanticsValidator
 
 
 class TestPartSemanticsValidator(unittest.TestCase):

@@ -16,7 +16,15 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from src.utils.deepseek_options import (
+    STAGE_VIEW_ANALYSIS,
+    api_key_from_env,
+    apply_stage_request_options,
+    client_timeout,
+    llm_provider,
+)
 from src.utils.llm_telemetry import default_llm_telemetry_store
+from src.utils.stage_self_correction import SelfCorrectionRequest
 
 from .view_decision_payload import build_view_decision_payload
 from .view_schema import (
@@ -31,15 +39,48 @@ class LLMViewAnalyzer:
     """使用 LLM 校验并校正本地工程视图分析。"""
 
     def __init__(self, api_key: str, config: Optional[Dict[str, Any]] = None):
-        self.api_key = api_key
         self.config = config or {}
         self.model = self.config.get("view_model") or self.config.get("model", "deepseek-chat")
-        self.base_url = self.config.get("base_url", "https://api.deepseek.com")
+        self.base_url = (
+            self.config.get("view_base_url")
+            or self.config.get("front_stage_base_url")
+            or self.config.get("base_url", "https://api.deepseek.com")
+        )
+        self.provider = llm_provider(
+            {
+                **self.config,
+                "provider": (
+                    self.config.get("view_provider")
+                    or self.config.get("front_stage_provider")
+                    or self.config.get("provider")
+                ),
+            },
+            stage=STAGE_VIEW_ANALYSIS,
+            model=self.model,
+            base_url=self.base_url,
+        )
+        self.api_key = (
+            self.config.get("view_api_key")
+            or self.config.get("front_stage_api_key")
+            or (
+                api_key_from_env("MOONSHOT_API_KEY", "KIMI_API_KEY")
+                if self.provider in {"moonshot", "kimi"}
+                else ""
+            )
+            or api_key
+        )
         self.enabled = bool(self.config.get("enable_llm_view_analysis", True))
-        self.enable_multimodal = bool(self.config.get("enable_multimodal_view_input", False))
+        self.enable_multimodal = bool(
+            self.config.get("enable_multimodal_view_input")
+            or self.config.get("enable_multimodal_front_stage_input", False)
+        )
         self.confidence_threshold = float(self.config.get("view_confidence_threshold", 0.60))
         self.validator = ViewAnalysisValidator(self.confidence_threshold)
-        self.client = OpenAI(api_key=api_key, base_url=self.base_url)
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=client_timeout(self.config),
+        )
         self.telemetry_store = default_llm_telemetry_store(self.config)
 
     def refine_view_analysis(
@@ -83,12 +124,18 @@ class LLMViewAnalyzer:
                 "temperature": float(self.config.get("view_temperature", 0.1)),
                 "response_format": {"type": "json_object"},
             }
-            if self.config.get("view_disable_thinking", True):
-                request_payload["extra_body"] = {"thinking": {"type": "disabled"}}
+            disable_view_thinking = self.config.get("view_disable_thinking", True)
+            request_payload = apply_stage_request_options(
+                request_payload,
+                self._stage_request_config(),
+                stage=STAGE_VIEW_ANALYSIS,
+                default_thinking=not bool(disable_view_thinking),
+                default_effort="high",
+            )
             call_span = self.telemetry_store.start_call(
-                stage="view_analysis",
+                stage=STAGE_VIEW_ANALYSIS,
                 model=self.model,
-                provider="deepseek",
+                provider=getattr(self, "provider", "deepseek"),
                 request=request_payload,
                 file_path=file_path,
             )
@@ -101,12 +148,24 @@ class LLMViewAnalyzer:
 
             content = response.choices[0].message.content or ""
             logger.info(f"LLM视图校正响应长度: {len(content)}")
-            llm_result = self._extract_json(content)
+            llm_result = self._normalize_view_schema_lists(self._extract_json(content))
             llm_result.setdefault("source", "llm")
 
             valid, errors = self.validator.validate(llm_result, geometry_data)
             if not valid:
-                logger.warning(f"LLM视图校正结果未通过校验，回退本地规则: {'; '.join(errors)}")
+                logger.warning(f"LLM视图校正结果未通过校验: {'; '.join(errors)}")
+                corrected = self._auto_self_correct(
+                    llm_result=llm_result,
+                    geometry_data=geometry_data,
+                    rule_result=rule_result,
+                    rule_standard=rule_standard,
+                    dimension_data=dimension_data,
+                    file_path=file_path,
+                    validation_errors=errors,
+                )
+                if corrected is not None:
+                    return self._merge_with_legacy(corrected, rule_result)
+                logger.warning("视图语义自动自纠未成功，回退本地规则")
                 rule_standard["warnings"].append("LLM视图校正校验失败，已回退本地规则")
                 rule_standard["validation_errors"] = errors
                 return self._merge_with_legacy(rule_standard, rule_result)
@@ -122,6 +181,146 @@ class LLMViewAnalyzer:
         except Exception as e:
             logger.warning(f"LLM视图校正失败，回退本地规则: {e}")
             rule_standard["warnings"].append(f"LLM视图校正失败: {e}")
+            return self._merge_with_legacy(rule_standard, rule_result)
+
+    def _auto_self_correct(
+        self,
+        *,
+        llm_result: Dict[str, Any],
+        geometry_data: Dict[str, Any],
+        rule_result: Dict[str, Any],
+        rule_standard: Dict[str, Any],
+        dimension_data: Optional[Dict[str, Any]] = None,
+        file_path: Optional[str] = None,
+        validation_errors: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        max_rounds = 2
+        current_result = llm_result
+        current_errors = validation_errors or []
+        for round_index in range(1, max_rounds + 1):
+            logger.info(
+                "视图语义自动自纠第 %s/%s 轮 | 原因: %s",
+                round_index,
+                max_rounds,
+                "; ".join(current_errors[:3]),
+            )
+            correction_request = SelfCorrectionRequest(
+                stage="view_analysis",
+                round_index=round_index,
+                max_rounds=max_rounds,
+                stage_payload=build_view_decision_payload(
+                    geometry_data=geometry_data,
+                    rule_result=rule_result,
+                    rule_standard=rule_standard,
+                    dimension_data=dimension_data,
+                    file_path=file_path,
+                    confidence_threshold=self.confidence_threshold,
+                ),
+                previous_output=current_result,
+                validation_issues=_build_view_validation_issues(current_errors),
+                output_contract={
+                    "required_fields": [
+                        "analysis_id", "timestamp", "drawing_type", "views",
+                        "relationships", "confidence", "evidence", "reason_summary",
+                        "warnings",
+                    ],
+                    "evidence_must_be_array": True,
+                },
+                correction_goal=f"修复视图语义校验失败的问题：{'; '.join(current_errors[:3])}",
+            )
+            try:
+                corrected = self.generate_from_self_correction(
+                    correction_request,
+                    geometry_data=geometry_data,
+                    rule_result=rule_result,
+                    file_path=file_path,
+                )
+                valid, errors = self.validator.validate(corrected, geometry_data)
+                if valid:
+                    logger.info("视图语义自动自纠第 %s 轮成功", round_index)
+                    corrected.setdefault("warnings", [])
+                    corrected["warnings"].append(
+                        f"视图语义校验失败后自动自纠成功（第{round_index}轮）"
+                    )
+                    return corrected
+                logger.warning(
+                    "视图语义自动自纠第 %s 轮后仍校验失败: %s",
+                    round_index,
+                    "; ".join(errors[:3]),
+                )
+                current_result = corrected
+                current_errors = errors
+            except Exception as error:
+                logger.warning("视图语义自动自纠第 %s 轮异常: %s", round_index, error)
+        return None
+
+    def generate_from_self_correction(
+        self,
+        correction_request: SelfCorrectionRequest,
+        *,
+        geometry_data: Dict[str, Any],
+        rule_result: Dict[str, Any],
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """根据阶段内自纠请求重新生成视图语义校正结果。"""
+        if not self.enabled:
+            rule_standard = build_standard_view_analysis(
+                rule_result,
+                confidence=0.72,
+                reason_summary="LLM视图校正未启用，模型自纠回退本地规则结果",
+                source="rule",
+            )
+            return self._merge_with_legacy(rule_standard, rule_result)
+
+        messages = [
+            {"role": "system", "content": self._system_prompt()},
+            {
+                "role": "user",
+                "content": self._build_self_correction_prompt(correction_request),
+            },
+        ]
+        request_payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": int(self.config.get("view_max_tokens", 4096)),
+            "temperature": float(self.config.get("view_temperature", 0.1)),
+            "response_format": {"type": "json_object"},
+        }
+        disable_view_thinking = self.config.get("view_disable_thinking", True)
+        request_payload = apply_stage_request_options(
+            request_payload,
+            self._stage_request_config(),
+            stage=STAGE_VIEW_ANALYSIS,
+            default_thinking=not bool(disable_view_thinking),
+            default_effort="high",
+        )
+        call_span = self.telemetry_store.start_call(
+            stage=STAGE_VIEW_ANALYSIS,
+            model=self.model,
+            provider=getattr(self, "provider", "deepseek"),
+            request=request_payload,
+            file_path=file_path,
+        )
+        response = None
+        try:
+            response = self.client.chat.completions.create(**request_payload)
+            content = response.choices[0].message.content or ""
+            llm_result = self._normalize_view_schema_lists(self._extract_json(content))
+            llm_result.setdefault("source", "llm_self_correction")
+            valid, errors = self.validator.validate(llm_result, geometry_data)
+            if not valid:
+                raise ValueError("; ".join(errors))
+            call_span.finish(response=response)
+            return self._merge_with_legacy(llm_result, rule_result)
+        except Exception as error:
+            call_span.finish(response=response, error=error)
+            rule_standard = build_standard_view_analysis(
+                rule_result,
+                confidence=0.72,
+                reason_summary="视图语义模型自纠失败，回退本地规则结果",
+                warnings=[f"视图语义模型自纠失败: {error}"],
+                source="rule",
+            )
             return self._merge_with_legacy(rule_standard, rule_result)
 
     def _system_prompt(self) -> str:
@@ -157,6 +356,20 @@ class LLMViewAnalyzer:
         prompt = json.dumps(payload, ensure_ascii=False, indent=2)
         return prompt
 
+    def _build_self_correction_prompt(
+        self,
+        correction_request: SelfCorrectionRequest,
+    ) -> str:
+        payload = correction_request.to_dict()
+        return "\n\n".join([
+            "请执行视图语义校正阶段的模型自纠，并只输出一个合法 JSON 对象。",
+            "不要输出推理过程、Markdown 或额外解释。",
+            "只能使用 self_correction_request.stage_payload 中的图纸证据和 previous_output 中的上一次输出摘要。",
+            "必须逐项修复 validation_issues 中列出的问题；如果无法修复，warnings 中说明风险，但仍需输出符合 output_contract 的 JSON。",
+            "=== self_correction_request ===",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        ])
+
     def _build_messages(
         self,
         prompt: str,
@@ -182,6 +395,15 @@ class LLMViewAnalyzer:
                 })
 
         return [system_message, {"role": "user", "content": content}]
+
+    def _stage_request_config(self) -> Dict[str, Any]:
+        config = dict(self.config)
+        config["provider"] = getattr(
+            self,
+            "provider",
+            llm_provider(config, stage=STAGE_VIEW_ANALYSIS, model=getattr(self, "model", "")),
+        )
+        return config
 
     def _collect_image_paths(
         self,
@@ -231,6 +453,19 @@ class LLMViewAnalyzer:
             return json.loads(content[start:end + 1])
 
         raise ValueError(f"无法从LLM视图校正响应中提取JSON，前200字符: {content[:200]}")
+
+    def _normalize_view_schema_lists(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """把 LLM 常见的单字符串列表字段规范化，避免为可修复格式问题触发重调用。"""
+        if not isinstance(result, dict):
+            return result
+        normalized = dict(result)
+        for key in ("evidence", "warnings"):
+            value = normalized.get(key)
+            if isinstance(value, str):
+                normalized[key] = [value]
+            elif value is None:
+                normalized[key] = []
+        return normalized
 
     def _merge_with_legacy(
         self,
@@ -283,3 +518,32 @@ class LLMViewAnalyzer:
             ]
 
         return merged
+
+
+def _build_view_validation_issues(errors: List[str]) -> list:
+    from src.utils.stage_self_correction import ValidationIssue
+
+    if not errors:
+        return [ValidationIssue(
+            code="view_validation_unknown",
+            message="视图语义校验失败",
+            severity="error",
+            fixable=True,
+            impact="视图语义结构不满足输出合同",
+            correction_target="修复校验失败的字段并重新生成",
+        )]
+    issues = []
+    for index, error in enumerate(errors[:6], start=1):
+        text = str(error).strip()
+        if not text:
+            continue
+        issues.append(ValidationIssue(
+            code=f"view_validation_{index}",
+            message=text,
+            severity="error",
+            fixable=True,
+            impact="视图语义结构不满足输出合同",
+            correction_target="修复校验失败的字段并重新生成",
+            details={"original_error": text},
+        ))
+    return issues

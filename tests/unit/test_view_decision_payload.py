@@ -143,7 +143,11 @@ def test_llm_view_multimodal_paths_ignore_video_frames():
 def test_llm_view_request_uses_deepseek_json_output():
     analyzer = LLMViewAnalyzer.__new__(LLMViewAnalyzer)
     analyzer.enabled = True
-    analyzer.config = {"view_disable_thinking": False}
+    analyzer.config = {
+        "view_disable_thinking": False,
+        "user_id": "cad-view",
+        "stage_thinking": {"view_analysis": {"enabled": True, "reasoning_effort": "max"}},
+    }
     analyzer.model = "deepseek-v4-pro"
     analyzer.confidence_threshold = 0.6
     analyzer.enable_multimodal = False
@@ -180,3 +184,5 @@ def test_llm_view_request_uses_deepseek_json_output():
     )
 
     assert calls[0]["response_format"] == {"type": "json_object"}
+    assert calls[0]["extra_body"] == {"thinking": {"type": "enabled", "reasoning_effort": "max"}}
+    assert "user_id" not in calls[0]

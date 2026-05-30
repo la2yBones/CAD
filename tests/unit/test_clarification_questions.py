@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from src.reconstruction.clarification_questions import (
+from src.reconstruction.clarification import (
     choice_option,
     clarification_question,
 )

@@ -39,14 +39,13 @@ class AnalysisCache:
 
         logger.info(f"缓存系统初始化完成: {self.cache_dir.absolute()}, TTL: {default_ttl}s")
 
-    def _generate_cache_key(self, file_path: str, extrude_height: Optional[float] = None,
+    def _generate_cache_key(self, file_path: str,
                            analysis_params: Optional[Dict] = None) -> str:
         """
         生成唯一缓存键
 
         参数:
             file_path: 图纸文件路径
-            extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数字典
 
         返回:
@@ -110,21 +109,20 @@ class AnalysisCache:
             logger.warning(f"删除缓存条目失败: {cache_path}: {e}")
             return False
 
-    def get(self, file_path: str, extrude_height: Optional[float] = None,
+    def get(self, file_path: str,
             analysis_params: Optional[Dict] = None) -> Optional[Dict]:
         """
         从缓存读取分析结果
 
         参数:
             file_path: 图纸文件路径
-            extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数
 
         返回:
             缓存结果，如果不存在或已过期返回None
         """
         try:
-            cache_key = self._generate_cache_key(file_path, extrude_height, analysis_params)
+            cache_key = self._generate_cache_key(file_path, analysis_params)
             cache_path = self._get_cache_path(cache_key)
 
             if not cache_path.exists():
@@ -154,7 +152,7 @@ class AnalysisCache:
             logger.warning(f"读取缓存失败: {e}")
             return None
 
-    def set(self, file_path: str, extrude_height: Optional[float],
+    def set(self, file_path: str,
             result_data: Dict[str, Any], ttl: Optional[int] = None,
             analysis_params: Optional[Dict] = None) -> bool:
         """
@@ -162,7 +160,6 @@ class AnalysisCache:
 
         参数:
             file_path: 图纸文件路径
-            extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             result_data: 结果数据
             ttl: 过期时间（秒）
             analysis_params: 分析参数
@@ -171,7 +168,7 @@ class AnalysisCache:
             是否成功
         """
         try:
-            cache_key = self._generate_cache_key(file_path, extrude_height, analysis_params)
+            cache_key = self._generate_cache_key(file_path, analysis_params)
             cache_path = self._get_cache_path(cache_key)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -191,14 +188,13 @@ class AnalysisCache:
             logger.error(f"写入缓存失败: {e}")
             return False
 
-    def invalidate(self, file_path: str, extrude_height: Optional[float] = None,
+    def invalidate(self, file_path: str,
                    analysis_params: Optional[Dict] = None) -> int:
         """
         使特定文件缓存失效
 
         参数:
             file_path: 图纸文件路径
-            extrude_height: 兼容旧接口，智能分析缓存不再按此字段区分
             analysis_params: 分析参数
 
         返回:

@@ -41,13 +41,6 @@ mapped = result.map(lambda data: data["count"])
 failed = Result.fail("解析失败")
 ```
 
-兼容旧调用：
-
-```python
-Result.Ok(data)
-Result.Err("error")
-```
-
 ## CAD 解析
 
 ### `src.cad_parser.CADParser`

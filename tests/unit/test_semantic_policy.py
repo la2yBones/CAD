@@ -237,6 +237,8 @@ class TestSemanticPolicy(unittest.TestCase):
         self.assertEqual("profile_length", bindings["30"]["semantic_role"])
         self.assertEqual("projected_profile_horizontal_extent", bindings["12"]["semantic_role"])
         self.assertEqual("profile_height", bindings["18"]["semantic_role"])
+        self.assertEqual("candidate", bindings["30"]["binding_status"])
+        self.assertEqual("legacy_linear_geometry_candidate", bindings["30"]["source"])
 
     def test_semantic_policy_leaves_external_linear_dimension_unresolved(self):
         policy_result = SemanticPolicy().evaluate(
@@ -477,17 +479,27 @@ class TestSemanticPolicy(unittest.TestCase):
         self.assertEqual("profile_length_segment", bindings["9"]["semantic_role"])
         self.assertEqual("profile_length_segment", bindings["39"]["semantic_role"])
         self.assertEqual("unresolved_linear", bindings["30"]["semantic_role"])
-        self.assertEqual([], policy_result["clarification_questions"])
+        questions = {item["id"]: item for item in policy_result["clarification_questions"]}
+        self.assertIn("resolve_profile_length", questions)
+        self.assertEqual(
+            ["48", "__unknown__"],
+            [option["value"] for option in questions["resolve_profile_length"]["options"]],
+        )
 
         plan = policy_result["dimension_plan"]
         allowed = {item["text"]: item for item in plan["allowed_dimensions"]}
         construction = {item["text"]: item for item in plan["construction_dimensions"]}
         unresolved = {item["text"]: item for item in plan["unresolved_dimensions"]}
-        self.assertEqual("profile_length", allowed["9+39"]["role"])
-        self.assertEqual("profile_length_segment", construction["9"]["role"])
-        self.assertEqual("linear_segment", construction["9"]["dimension_kind"])
-        self.assertEqual("profile_length_segment", construction["39"]["role"])
-        self.assertEqual("linear_segment", construction["39"]["dimension_kind"])
+        candidates = {item["text"]: item for item in plan["candidate_dimensions"]}
+        self.assertEqual({}, allowed)
+        self.assertNotIn("9", construction)
+        self.assertNotIn("39", construction)
+        self.assertEqual("profile_length", candidates["9+39"]["role"])
+        self.assertEqual("candidate", candidates["9+39"]["binding_status"])
+        self.assertEqual("legacy_dimension_candidate", candidates["9+39"]["source"])
+        self.assertEqual("profile_length_segment", candidates["9"]["role"])
+        self.assertEqual("profile_length_segment", candidates["39"]["role"])
+        self.assertEqual({"9+39", "9", "39"}, set(candidates))
         self.assertEqual("unresolved_linear", unresolved["30"]["role"])
 
     def test_semantic_policy_binds_bolt_internal_length_as_thread_length(self):
@@ -549,8 +561,11 @@ class TestSemanticPolicy(unittest.TestCase):
         plan = policy_result["dimension_plan"]
         construction = {item["text"]: item for item in plan["construction_dimensions"]}
         unresolved = {item["text"]: item for item in plan["unresolved_dimensions"]}
-        self.assertEqual("thread_length", construction["30"]["role"])
-        self.assertEqual("feature_size", construction["30"]["dimension_kind"])
+        candidates = {item["text"]: item for item in plan["candidate_dimensions"]}
+        self.assertNotIn("30", construction)
+        self.assertEqual("thread_length", candidates["30"]["role"])
+        self.assertEqual("feature_size", candidates["30"]["dimension_kind"])
+        self.assertEqual("candidate", candidates["30"]["binding_status"])
         self.assertNotIn("30", unresolved)
 
     def test_semantic_policy_binds_equal_orthogonal_main_dimensions_as_square(self):
@@ -586,11 +601,23 @@ class TestSemanticPolicy(unittest.TestCase):
         roles = [item["semantic_role"] for item in policy_result["dimension_bindings"]]
         self.assertIn("profile_length", roles)
         self.assertIn("profile_height", roles)
-        self.assertEqual([], policy_result["clarification_questions"])
+        questions = {item["id"]: item for item in policy_result["clarification_questions"]}
+        self.assertIn("resolve_profile_length", questions)
+        self.assertIn("resolve_profile_height", questions)
         allowed = policy_result["dimension_plan"]["allowed_dimensions"]
+        self.assertEqual([], allowed)
+        candidates = policy_result["dimension_plan"]["candidate_dimensions"]
         self.assertEqual(
             ["profile_length", "profile_height"],
-            [item["role"] for item in allowed],
+            [item["role"] for item in candidates],
+        )
+        self.assertEqual(
+            ["candidate", "candidate"],
+            [item["binding_status"] for item in candidates],
+        )
+        self.assertEqual(
+            ["legacy_linear_geometry_candidate", "legacy_linear_geometry_candidate"],
+            [item["source"] for item in candidates],
         )
         construction = policy_result["dimension_plan"]["construction_dimensions"]
         self.assertEqual(
@@ -646,7 +673,18 @@ class TestSemanticPolicy(unittest.TestCase):
         self.assertEqual("projected_profile_horizontal_extent", roles["90"])
         self.assertEqual("projected_profile_vertical_extent", roles["60"])
         self.assertEqual("profile_height", roles["20"])
-        self.assertEqual([], policy_result["clarification_questions"])
+        questions = {item["id"]: item for item in policy_result["clarification_questions"]}
+        self.assertIn("resolve_profile_height", questions)
+        self.assertIn("resolve_projected_profile_horizontal_extent", questions)
+        self.assertIn("resolve_projected_profile_vertical_extent", questions)
+        candidates = {
+            item["text"]: item
+            for item in policy_result["dimension_plan"]["candidate_dimensions"]
+        }
+        self.assertEqual([], policy_result["dimension_plan"]["allowed_dimensions"])
+        self.assertEqual("candidate", candidates["90"]["binding_status"])
+        self.assertEqual("candidate", candidates["60"]["binding_status"])
+        self.assertEqual("candidate", candidates["20"]["binding_status"])
 
     def test_semantic_policy_derives_plate_thickness_and_raised_feature_height(self):
         policy_result = SemanticPolicy().evaluate(
@@ -694,8 +732,17 @@ class TestSemanticPolicy(unittest.TestCase):
             item["text"]: item["role"]
             for item in policy_result["dimension_plan"]["construction_dimensions"]
         }
-        self.assertEqual("extrusion_depth", allowed["16"])
-        self.assertEqual("feature_height", construction["20-16"])
+        self.assertEqual({}, allowed)
+        self.assertEqual({}, construction)
+        candidates = {
+            item["text"]: item
+            for item in policy_result["dimension_plan"]["candidate_dimensions"]
+        }
+        self.assertEqual("extrusion_depth", candidates["16"]["role"])
+        self.assertEqual("feature_height", candidates["20-16"]["role"])
+        self.assertEqual("candidate", candidates["16"]["binding_status"])
+        self.assertEqual("candidate", candidates["20"]["binding_status"])
+        self.assertEqual("candidate", candidates["20-16"]["binding_status"])
 
     def test_semantic_policy_applies_clarification_answers(self):
         context = {
@@ -733,6 +780,44 @@ class TestSemanticPolicy(unittest.TestCase):
         bindings = {item["text"]: item for item in policy_result["dimension_bindings"]}
         self.assertEqual("profile_length", bindings["30"]["semantic_role"])
         self.assertEqual([], policy_result["clarification_questions"])
+        allowed = {
+            item["text"]: item
+            for item in policy_result["dimension_plan"]["allowed_dimensions"]
+        }
+        self.assertEqual("profile_length", allowed["30"]["role"])
+        self.assertEqual("adjudicated", allowed["30"]["binding_status"])
+        self.assertEqual("user_confirmed", allowed["30"]["source"])
+
+    def test_semantic_policy_unknown_candidate_answer_excludes_candidate(self):
+        context = {
+            "context_version": "reconstruction_context_v1",
+            "dimensions": [
+                {
+                    "text": "96",
+                    "value": 96.0,
+                    "type": "线性",
+                    "definition_points": [[0, 0, 0], [96, 0, 0]],
+                },
+            ],
+            "view_analysis": {
+                "drawing_type": "two_view",
+                "views": [
+                    {"name": "main", "bbox": [0, 0, 96, 96]},
+                ],
+            },
+        }
+
+        policy_result = SemanticPolicy().evaluate(
+            context,
+            clarification_answers={
+                "resolve_profile_length": SemanticPolicy.UNKNOWN_ANSWER,
+            },
+        )
+
+        self.assertEqual([], policy_result["dimension_plan"]["candidate_dimensions"])
+        self.assertEqual([], policy_result["dimension_plan"]["allowed_dimensions"])
+        excluded = policy_result["dimension_plan"]["excluded_dimensions"]
+        self.assertEqual("excluded_by_user", excluded[0]["role"])
 
     def test_semantic_policy_accepts_unknown_clarification_answer(self):
         context = {

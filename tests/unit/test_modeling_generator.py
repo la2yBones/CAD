@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 import unittest
-import sys
 from types import SimpleNamespace
 
 import src
-from src.intelligent_analyzer.modeling_generator import FreeCADInstructionGenerator
+from src.reconstruction.instruction_generator import FreeCADInstructionGenerator
 from src.intelligent_analyzer.pipeline import IntelligentEngineeringAnalyzer
 from src.model_generator import FreeCADModeler, PlanarExtrudeModeler
-from src.compat.model_generator import FreeCADModeler as CompatFreeCADModeler
 from src.utils.stage_confirmation import (
     CallbackStageConfirmation,
+    StageConfirmationResult,
     StageReview,
     resolve_stage_confirmation,
 )
@@ -19,20 +18,15 @@ from src.reconstruction.modeling_constraints import ModelingConstraints
 class TestModelingGenerator(unittest.TestCase):
     def test_package_root_uses_lazy_compat_exports(self):
         self.assertEqual("1.0.0", src.__version__)
-        sys.modules.pop("src.geometry_analyzer", None)
-        src.__dict__.pop("GeometryAnalyzer", None)
 
-        self.assertNotIn("src.geometry_analyzer", sys.modules)
         self.assertTrue(src.__all__)
         self.assertIs(src.PlanarExtrudeModeler, PlanarExtrudeModeler)
-        self.assertNotIn("src.geometry_analyzer", sys.modules)
 
         with self.assertRaises(AttributeError):
             getattr(src, "MissingExport")
 
     def test_planar_extrude_modeler_is_primary_internal_name(self):
         self.assertIs(FreeCADModeler, PlanarExtrudeModeler)
-        self.assertIs(CompatFreeCADModeler, PlanarExtrudeModeler)
 
     def test_multiview_prompt_has_orthographic_guardrails(self):
         prompt = FreeCADInstructionGenerator.MODELING_SYSTEM_PROMPT
@@ -288,9 +282,56 @@ class TestModelingGenerator(unittest.TestCase):
             "dimension_extraction": {},
             "semantic_policy": {},
             "part_semantics": {"confidence": 0.9},
+            "modeling_instructions": {
+                "freecad_script": "final_shape = Part.makeBox(1, 1, 1)",
+            },
         })
 
+        self.assertEqual(
+            ["view_analysis", "semantic_reconstruction", "modeling_generation"],
+            calls,
+        )
+
+    def test_cached_semantic_retry_with_partial_executes_rerun(self):
+        calls = []
+        analyzer = IntelligentEngineeringAnalyzer.__new__(IntelligentEngineeringAnalyzer)
+        analyzer.config = {}
+        analyzer.reconstruction_pipeline = unittest.mock.Mock()
+        analyzer.reconstruction_pipeline.rerun_semantic_reconstruction_from_cached_analysis.return_value = {
+            "part_semantics": {"part_type": "retried"},
+            "modeling_instructions": {"freecad_script": "retried_script"},
+        }
+
+        def confirm(stage, payload):
+            calls.append(stage)
+            if stage == "semantic_reconstruction":
+                return StageConfirmationResult.retry_with_partial(
+                    {"part_type": True},
+                    stage=stage,
+                )
+            return True
+
+        analyzer.stage_confirmation = CallbackStageConfirmation(confirm)
+
+        result = analyzer._confirm_cached_stages(
+            {
+                "view_analysis": {},
+                "dimension_extraction": {},
+                "semantic_policy": {},
+                "part_semantics": {"confidence": 0.9},
+                "modeling_instructions": {"freecad_script": "cached_script"},
+            },
+            geometry_data={"entities": []},
+            extrude_height=10.0,
+            file_path="drawing.dxf",
+        )
+
         self.assertEqual(["view_analysis", "semantic_reconstruction"], calls)
+        self.assertEqual("retried_script", result["modeling_instructions"]["freecad_script"])
+        analyzer.reconstruction_pipeline.rerun_semantic_reconstruction_from_cached_analysis.assert_called_once()
+        call_kwargs = analyzer.reconstruction_pipeline.rerun_semantic_reconstruction_from_cached_analysis.call_args.kwargs
+        self.assertEqual({"part_type": True}, call_kwargs["retained_items"])
+        self.assertEqual("drawing.dxf", call_kwargs["file_path"])
 
 
 

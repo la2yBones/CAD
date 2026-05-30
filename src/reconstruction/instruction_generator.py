@@ -5,14 +5,21 @@ FreeCAD建模指令生成器
 通过大模型分析工程图纸并生成FreeCAD兼容的建模指令
 """
 import json
-import math
 import logging
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 from openai import OpenAI
 
+from src.utils.deepseek_options import (
+    STAGE_MODELING_GENERATION,
+    apply_stage_request_options,
+    client_timeout,
+    stage_thinking_enabled,
+)
 from src.utils.llm_telemetry import default_llm_telemetry_store
+from src.utils.stage_self_correction import SelfCorrectionRequest
 from .modeling_constraints import DEFAULT_MODELING_CONSTRAINTS
+from .modeling_instruction_postprocessor import ModelingInstructionPostprocessor
 from .modeling_task import ModelingTaskBuilder
 
 logger = logging.getLogger(__name__)
@@ -28,8 +35,9 @@ class FreeCADInstructionGenerator:
     MODELING_SYSTEM_PROMPT = """你是专业的 CAD/FreeCAD 建模专家。你的任务是分析输入的建模任务载荷，并生成可直接运行的 FreeCAD Python 建模脚本。
 
 【输入要求】
-输入必须是结构化 JSON 对象，顶层必须包含 object、features、dimensions、constraints、recovery_hints。
-该对象是系统已裁决的建模任务载荷，不应包含原始 entities、视图实体列表、局部几何关系明细、完整 reconstruction_context 或完整 part_semantics。
+输入必须是结构化 JSON 对象，顶层必须包含 object、modeling_operations、dimensions、constraints。
+modeling_operations 是已裁决的建模操作序列，每项包含 operation 类型、description 和 dimensions 参数；你必须严格按照 modeling_operations 中的操作序列和尺寸参数生成 FreeCAD 脚本。
+features 字段是原始语义数据，仅作为参考上下文，不得直接用于推断建模步骤或尺寸。
 若输入缺失关键字段、格式错误、不是 JSON 对象，或只是非结构化自然语言描述，必须返回 INVALID_INPUT JSON，严禁基于模糊描述猜测建模。
 
 【无效输入返回格式】
@@ -59,6 +67,7 @@ class FreeCADInstructionGenerator:
 - 主视图表达主要轮廓，右视图/左视图表达同一零件的正交投影外形；这些投影视图尺寸不得直接解释为“向右延伸的凸台长度”或未经裁决的深度。
 - 只有在至少两个视图或明确尺寸共同支持时，才可新增凸台、槽、台阶等三维特征；单一视图里的线段不得直接推断成额外凸台或开槽。
 - 主视图中出现同心圆时，必须结合侧视图隐藏线/尺寸判断其含义；不得默认把所有同心圆都切成贯通孔。若证据不足，应优先生成单一通孔并在 warnings 中说明可能存在沉孔或台阶孔。
+- `outer_diameter`、`外径`、`外圆`、`revolve_profile` 中的直径表示主体外轮廓尺寸，不是孔径；只有 modeling_operations 中明确为 `subtract_feature` 且语义为通孔/盲孔/沉孔的 diameter 才能生成切除圆柱。例如外径64、内径/孔径32的回转件，只能切除32孔，不得再切除64外径。
 - 单个步骤中连续 .fuse() 或 .cut() 不得超过 2 次；若需要更多布尔操作，必须拆分为多个中间变量和多个 try/except 步骤。
 - 若需自定义截面，仅允许用直线或圆弧构造 Part.Wire，再通过 Part.Face 和 Shape.extrude() 生成实体；若需要轴对称圆弧面，可用 Part.ArcOfCircle 构造轮廓并通过 Shape.revolve() 绕轴线生成回转曲面或回转切除体。
 - 使用 Part.LineSegment 或 Part.ArcOfCircle 构造线框时，传入 Part.Wire 的每一项必须是 Shape 或 Edge/Shape。为兼容不同 FreeCAD 版本，脚本中必须先定义 `as_edge(obj): return obj.toShape() if hasattr(obj, "toShape") else obj`，然后写 `edge = as_edge(Part.LineSegment(...))` 或 `edge = as_edge(Part.ArcOfCircle(...))`；不得直接链式写 `.toShape()` 后假设所有版本返回同一类型。
@@ -66,18 +75,25 @@ class FreeCADInstructionGenerator:
 - 中间变量若在后续步骤复用，必须在 try/except 外先给出默认值，避免前一步失败后后续引用未定义变量。
 - 若轮廓点写成 `(x, y, 0)`，则轮廓位于 XY 平面，拉伸方向必须沿 Z 轴；若需要沿 Y 轴拉伸，则轮廓点必须写成 `(x, 0, z)`，确保拉伸方向垂直于轮廓平面。
 - 对板件、法兰、底座这类正视图轮廓，默认优先在 XY 平面构造轮廓，再按深度沿 Z 轴拉伸，除非图纸语义明确要求其他坐标系。
-- 若 dimensions.semantic_adjudication 存在且 status 不是 failed，必须优先使用 dimensions.modeling_dimensions 作为已裁决建模尺寸池；dimension_roles、feature_roles 和 derived_dimensions 只作为证据解释和特征定位参考，不要再回头引用旧 dimension_plan 或本地猜测角色。
-- dimensions.modeling_dimensions 由本地 SemanticAdjudicationView 从语义裁决结果导出；其中每项都必须保留原始 evidence_ids/source，不得新增未裁决尺寸值。
-- 只有 semantic_adjudication 缺失或 status=failed 时，才允许把 dimensions.allowed_dimensions / construction_dimensions / unresolved_dimensions 当作兼容兜底。
-- allowed_dimensions 可作为已裁决的主体关键尺寸；construction_dimensions 只可作为局部分段、局部特征或重复特征尺寸，写入 key_dimensions 时必须保留具体构造语义，不得单独当成总长、深度、对边、对角、法兰直径或孔径。
+- 若 dimensions.modeling_dimensions 存在，它是唯一的已裁决建模尺寸池，每项包含 role、value 和 source；dimensions.semantic_adjudication 中已不含 dimension_roles 和 derived_dimensions（已合并到 modeling_dimensions）。semantic_adjudication 仅保留 feature_roles、view_roles 等非尺寸参考。
+- dimensions.modeling_dimensions 中每项都必须保留原始 evidence_ids/source，不得新增未裁决尺寸值。
+- 只有 dimensions.modeling_dimensions 缺失时，才允许把 dimensions.allowed_dimensions / construction_dimensions / unresolved_dimensions 当作兼容兜底。
+- allowed_dimensions 中 binding_status=adjudicated 的项可作为已裁决的主体关键尺寸；construction_dimensions 只可作为局部分段、局部特征或重复特征尺寸，写入 key_dimensions 时必须保留具体构造语义，不得单独当成总长、深度、对边、对角、法兰直径或孔径。
+- candidate_dimensions 来自本地兼容候选规则，仅可作为语义参考和风险提示；其中 binding_status=candidate 的尺寸未被 semantic_adjudication 或用户澄清确认前，不得单独当成最终建模权限。
 - unresolved_dimensions 不得用于创建关键几何；如果缺少这些尺寸会影响建模，必须在 warnings 中说明并保守降级。
+- features 中不再包含 key_dimensions；所有可用于建模的尺寸只能来自 dimensions 节。不得从 recovery_hints.uncertainties、recovery_hints.warnings 或自然语言摘要中提取新尺寸或新特征。
+- recovery_hints 只用于说明恢复背景、风险和用户偏好，不是建模许可；其中的 warnings/uncertainties 不得被当作图纸事实、不得补充 dimensions 中不存在的尺寸。
+- features.subtractive、features.planar_modeling.cut_features 或特征 evidence 中若包含来自 CIRCLE 实体的 center/radius/diameter/bbox，这些字段是可执行孔位几何证据；对板件、基板、法兰、底座等平面拉伸模型，应优先用这些圆生成贯穿孔切除。不得因为缺少孔距、定位尺寸或额外文本标注就跳过已经给出圆心和半径的孔。
+- 若 CIRCLE 孔特征同时提供 center_relative_to_profile，且主体基体以外轮廓中心为原点建模，应优先使用该相对坐标作为 FreeCAD 孔圆柱中心；不要再把绝对 CAD 图纸坐标当作模型坐标直接使用。
+- CIRCLE 孔位几何只能用于对应孔/切除的局部几何，不得写入 key_dimensions 伪装成主体关键标注尺寸；若孔位来自解析几何而非标注尺寸，应在 warnings 中说明来源。
+- 点划线、中心线、构造线或隐藏线图层上的 CIRCLE 默认视为定位/节圆/辅助圆，不得直接切孔；只有语义中明确裁决为 actual through_hole/blind_hole/counterbore 时才可切除。
 - `1x45°`、`2x45°` 等倒角标注表示外部尖角被削掉形成斜面；实现时只能去除外角材料，不得把它建成向实体内部凹陷的槽、坑、沉孔或内切缺口。
-- 若 dimensions.semantic_adjudication、dimensions.allowed_dimensions 或 features.key_dimensions 中存在 chamfer，且语义里已经定位到外部边，不得因为“FreeCAD 基本 API 限制”直接跳过。必须至少尝试用白名单 API 建出可见斜面。
+- 若 dimensions.modeling_dimensions 或 dimensions.allowed_dimensions 中存在 chamfer，且语义里已经定位到外部边，不得因为\u201cFreeCAD 基本 API 限制\u201d直接跳过。必须至少尝试用白名单 API 建出可见斜面。
 - 可接受的倒角实现方式：对圆柱端部使用 `Part.makeCone(大半径, 小半径, 倒角轴向长度, FreeCAD.Vector(...), FreeCAD.Vector(...))` 构造 45° 截锥段；对六角头外端倒角，优先用较短的端部过渡体表达外轮廓收缩，必要时用 `Part.Wire`、`Part.Face`、`Shape.extrude` 和 `Shape.cut` 构造外角切除体。
 - 对六角头螺栓这类“六角头 + 圆柱杆”零件，若存在 `1x45°`，应在头部外端或头部-杆过渡外角处生成可见倒角斜面；不能在 warnings 中写“倒角未实现”后继续输出成功模型。
 - 若无法可靠定位倒角所在的外部边，必须在 warnings 中说明并跳过该倒角；不得为了表现倒角而在实体表面挖内陷特征。
 - `R15`、`R2` 等是圆角/圆弧过渡，不是 45° 倒角。对于六角头螺栓主视图左侧头部的 R15 标注，应解释为绕螺栓轴线形成的圆弧面/承面；必须尝试以轴线为中心、半径 15mm 创建圆弧轮廓，并用 Shape.revolve() 或等价回转切除生成该曲面。
-- 如果 dimensions.semantic_adjudication、dimensions.allowed_dimensions 或 features.key_dimensions 中存在 radius/R15，且语义已说明它属于螺栓头部圆弧面/承面，不得在 warnings 中写“R15未实现/圆角未实现”后输出成功模型。
+- 如果 dimensions.modeling_dimensions 或 dimensions.allowed_dimensions 中存在 radius/R15，且语义已说明它属于螺栓头部圆弧面/承面，不得在 warnings 中写"R15未实现/圆角未实现"后输出成功模型。
 - 不得使用高级拓扑修改、网格建模、草图约束或不在白名单内的 API。
 - 每个建模步骤必须用 try/except 包裹。
 - except 中不得静默忽略错误，必须将错误信息追加到 runtime_warnings 列表。
@@ -134,12 +150,14 @@ JSON 必须包含以下字段：
         self.config = config or {}
         self.client = OpenAI(
             api_key=api_key,
-            base_url=self.config.get("base_url", "https://api.deepseek.com")
+            base_url=self.config.get("base_url", "https://api.deepseek.com"),
+            timeout=client_timeout(self.config),
         )
         self.model = self.config.get("model", "deepseek-v4-pro")
         self.telemetry_store = default_llm_telemetry_store(self.config)
         self.constraints = DEFAULT_MODELING_CONSTRAINTS
         self.modeling_task_builder = ModelingTaskBuilder()
+        self.postprocessor = ModelingInstructionPostprocessor()
 
         max_prompt_tokens = self.config.get("max_prompt_tokens", 12000)
         self.MAX_PROMPT_CHARS = max_prompt_tokens * 4
@@ -176,29 +194,33 @@ JSON 必须包含以下字段：
         prompt = self._build_prompt(modeling_task_payload)
 
         try:
-            max_tokens = self.config.get("max_tokens", 8000)
-            use_thinking = self.config.get("modeling_json_thinking", False)
+            use_thinking = stage_thinking_enabled(
+                self.config,
+                STAGE_MODELING_GENERATION,
+                default=bool(self.config.get("modeling_json_thinking", False)),
+            )
 
-            if use_thinking:
-                max_tokens = max(max_tokens, 16000)
-
-            extra_body = {"thinking": {"type": "disabled"}}
-            if use_thinking:
-                extra_body = {"thinking": {"type": "enabled", "reasoning_effort": self.config.get("reasoning_effort", "max")}}
-
+            request_payload = apply_stage_request_options(
+                {
+                    "model": self.model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": self.MODELING_SYSTEM_PROMPT
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+                self.config,
+                stage=STAGE_MODELING_GENERATION,
+                default_thinking=bool(self.config.get("modeling_json_thinking", False)),
+                default_effort="max",
+                legacy_thinking_keys=("modeling_json_thinking",),
+            )
             response = self._create_chat_completion(
                 file_path=file_path,
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self.MODELING_SYSTEM_PROMPT
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=max_tokens,
-                extra_body=extra_body,
-                response_format={"type": "json_object"},
+                **request_payload,
             )
 
             choice = response.choices[0]
@@ -221,6 +243,12 @@ JSON 必须包含以下字段：
                     raise ValueError("AI响应正文为空，且没有 reasoning_content 可解析")
 
             result = self._extract_json(content)
+            postprocessor = getattr(self, "postprocessor", None) or ModelingInstructionPostprocessor()
+            result = postprocessor.normalize(
+                result,
+                reconstruction_context,
+                modeling_task_payload=modeling_task_payload,
+            )
             retry_reason = self.constraints.retry_reason(result, reconstruction_context, part_semantics)
             if retry_reason:
                 logger.info(
@@ -230,10 +258,10 @@ JSON 必须包含以下字段：
             logger.info("建模指令生成成功")
             return result
 
-        except Exception as e:
-            logger.error(f"建模指令生成失败: {e}")
+        except ValueError as ve:
+            logger.error(f"建模指令生成失败: {ve}")
             return {
-                "analysis_summary": f"分析失败: {str(e)}",
+                "analysis_summary": f"分析失败: {str(ve)}",
                 "modeling_strategy": "使用基础建模方法",
                 "freecad_script": self._generate_fallback_script(geometry_data, extrude_height),
                 "instructions": ["创建草图", "拉伸实体"],
@@ -244,9 +272,81 @@ JSON 必须包含以下字段：
                 "warnings": ["使用降级建模方法"]
             }
 
+        except Exception as exc:
+            logger.error(f"建模指令生成失败: {exc}")
+            return {
+                "analysis_summary": f"分析失败: {str(exc)}",
+                "modeling_strategy": "使用基础建模方法",
+                "freecad_script": self._generate_fallback_script(geometry_data, extrude_height),
+                "instructions": ["创建草图", "拉伸实体"],
+                "key_dimensions": [],
+                "completed_features": [],
+                "skipped_features": [],
+                "partial_completion_reason": "",
+                "warnings": ["使用降级建模方法"]
+            }
+
+    def generate_from_self_correction(
+        self,
+        correction_request: SelfCorrectionRequest,
+        *,
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """基于阶段内自纠请求重新生成建模指令。"""
+        logger.info(
+            "开始建模指令模型自纠: stage=%s round=%s/%s",
+            correction_request.stage,
+            correction_request.round_index,
+            correction_request.max_rounds,
+        )
+        prompt = self._build_self_correction_prompt(correction_request)
+
+        use_thinking = stage_thinking_enabled(
+            self.config,
+            STAGE_MODELING_GENERATION,
+            default=bool(self.config.get("modeling_json_thinking", False)),
+        )
+
+        request_payload = apply_stage_request_options(
+            {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": self.MODELING_SYSTEM_PROMPT,
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "response_format": {"type": "json_object"},
+            },
+            self.config,
+            stage=STAGE_MODELING_GENERATION,
+            default_thinking=bool(self.config.get("modeling_json_thinking", False)),
+            default_effort="max",
+            legacy_thinking_keys=("modeling_json_thinking",),
+        )
+        response = self._create_chat_completion(
+            file_path=file_path,
+            **request_payload,
+        )
+        choice = response.choices[0]
+        message = choice.message
+        content = message.content
+        if not content:
+            reasoning = getattr(message, "reasoning_content", None)
+            if reasoning:
+                logger.warning("模型自纠正文为空，尝试从 reasoning_content 中提取 JSON")
+                content = reasoning
+            else:
+                raise ValueError("模型自纠响应正文为空")
+
+        result = self._extract_json(content)
+        postprocessor = getattr(self, "postprocessor", None) or ModelingInstructionPostprocessor()
+        return postprocessor.normalize(result, None)
+
     def _create_chat_completion(self, file_path: Optional[str] = None, **request_payload):
         call_span = self.telemetry_store.start_call(
-            stage="modeling_generation",
+            stage=STAGE_MODELING_GENERATION,
             model=str(request_payload.get("model") or self.model),
             provider="deepseek",
             request=request_payload,
@@ -265,10 +365,28 @@ JSON 必须包含以下字段：
 
     def _build_prompt(self, modeling_task_payload: Dict[str, Any]) -> str:
         """构建提示词"""
+        retained = modeling_task_payload.get("retained_items")
+        retained_instruction = ""
+        if retained:
+            retained_instruction = (
+                "\n用户已确认以下部分成果，你必须遵守这些已确认结果，"
+                "只重新生成未确认的部分：\n"
+                + json.dumps(retained, ensure_ascii=False, indent=2)
+            )
+        operations = modeling_task_payload.get("modeling_operations") or []
+        operations_section = ""
+        if operations:
+            operations_section = (
+                "\n\n=== 建模操作序列 ===\n"
+                "请按以下操作序列逐步构建模型。每个操作包含 operation 类型、描述和具体尺寸参数。\n"
+                + json.dumps(operations, ensure_ascii=False, indent=2)
+            )
         prompt = "\n".join([
             "请基于以下建模任务载荷生成FreeCAD建模脚本。",
-            "只使用载荷中的 object、features、dimensions、constraints、recovery_hints。",
+            "只使用载荷中的 modeling_operations、dimensions、constraints；不要使用 features 中的原始语义数据。",
             "不要要求或假设存在原始图元明细。",
+            retained_instruction,
+            operations_section,
             "",
             "=== 建模任务载荷 ===",
             json.dumps(modeling_task_payload, ensure_ascii=False, indent=2),
@@ -277,161 +395,32 @@ JSON 必须包含以下字段：
         logger.info(f"Prompt大小: {len(prompt)}字符, ~{estimated_tokens} tokens")
         return prompt
 
+    def _build_self_correction_prompt(
+        self,
+        correction_request: SelfCorrectionRequest,
+    ) -> str:
+        parts = [
+            "请基于以下阶段内模型自纠请求，重新生成 FreeCAD 建模指令 JSON。",
+            "你必须修复 validation_issues 中列出的脚本质量问题。",
+            "只能使用 self_correction_request.stage_payload 中的建模任务载荷作为图纸事实来源。",
+            "不要从 previous_output、risk_notes 或错误消息中新增尺寸、新特征或新图纸事实。",
+            "不要重复输出同类脚本形态；必须满足 output_contract。",
+        ]
+        if correction_request.correction_goal:
+            parts.append(f"【自纠目标】{correction_request.correction_goal}")
+        parts.extend([
+            "",
+            "=== self_correction_request JSON ===",
+            json.dumps(correction_request.to_dict(), ensure_ascii=False, indent=2),
+        ])
+        estimated_tokens = self._estimate_tokens("\n".join(parts))
+        logger.info(f"模型自纠Prompt大小: {len(''.join(parts))}字符, ~{estimated_tokens} tokens")
+        return "\n".join(parts)
+
     def _generate_fallback_script(self, geometry_data: Dict[str, Any],
                                   extrude_height: float) -> str:
-        entities = geometry_data.get("entities", [])
-        contours = self._group_entities_into_contours(entities)
-
-        script_lines = [
-            "import FreeCAD as App",
-            "import Part",
-            "",
-            "doc = App.newDocument('GeneratedModel')",
-            "",
-            f"extrude_height = {extrude_height}",
-            "",
-        ]
-
-        for ci, contour in enumerate(contours):
-            edges = []
-            for entity in contour:
-                etype = entity.get("type")
-                if etype == "LINE":
-                    x1, y1 = entity["start"][0], entity["start"][1]
-                    x2, y2 = entity["end"][0], entity["end"][1]
-                    edges.append(
-                        f"Part.LineSegment(App.Vector({x1},{y1},0), App.Vector({x2},{y2},0)).toShape()"
-                    )
-                elif etype == "CIRCLE":
-                    cx, cy = entity["center"][0], entity["center"][1]
-                    r = entity["radius"]
-                    edges.append(
-                        f"Part.Circle(App.Vector({cx},{cy},0), App.Vector(0,0,1), {r}).toShape()"
-                    )
-                elif etype == "ARC":
-                    cx, cy = entity["center"][0], entity["center"][1]
-                    r = entity["radius"]
-                    sa = entity.get("start_angle", 0)
-                    ea = entity.get("end_angle", 0)
-                    edges.append(
-                        f"Part.ArcOfCircle("
-                        f"Part.Circle(App.Vector({cx},{cy},0), App.Vector(0,0,1), {r}), "
-                        f"{sa}, {ea}).toShape()"
-                    )
-
-            if not edges:
-                continue
-
-            script_lines.append(f"# 轮廓 {ci+1}")
-            script_lines.append(f"edges_{ci} = [{', '.join(edges)}]")
-            script_lines.append(f"wire_{ci} = Part.Wire(edges_{ci})")
-            script_lines.append(f"if wire_{ci}.isClosed():")
-            script_lines.append(f"    face_{ci} = Part.Face(wire_{ci})")
-            script_lines.append(f"    solid_{ci} = face_{ci}.extrude(App.Vector(0, 0, extrude_height))")
-            script_lines.append(f"    Part.show(solid_{ci})")
-            script_lines.append(f"else:")
-            script_lines.append(f"    print('警告: 轮廓 {ci+1} 未闭合, 跳过拉伸')")
-            script_lines.append("")
-
-        script_lines.extend([
-            "doc.recompute()",
-            "",
-            "doc.saveAs('model.FCStd')",
-            "print('建模完成')",
-            f"print('BRIDGE_FEATURE_COUNT:' + str(len(doc.Objects)))",
-        ])
-
-        return "\n".join(script_lines)
-
-    @staticmethod
-    def _group_entities_into_contours(entities: List[Dict]) -> List[List[Dict]]:
-        TOL = 1e-3
-
-        processed = set()
-        contours = []
-
-        def get_endpoints(e):
-            t = e.get("type")
-            if t == "LINE":
-                s = tuple(e.get("start", [0, 0]))
-                e_pt = tuple(e.get("end", [0, 0]))
-                return s, e_pt
-            elif t == "ARC":
-                cx, cy = e.get("center", [0, 0])
-                r = e.get("radius", 0)
-                sa = math.radians(e.get("start_angle", 0))
-                ea = math.radians(e.get("end_angle", 0))
-                sx, sy = cx + r * math.cos(sa), cy + r * math.sin(sa)
-                ex, ey = cx + r * math.cos(ea), cy + r * math.sin(ea)
-                return (sx, sy), (ex, ey)
-            return None, None
-
-        def pts_close(p1, p2):
-            return abs(p1[0] - p2[0]) < TOL and abs(p1[1] - p2[1]) < TOL
-
-        def follow_chain(start_pt, remaining):
-            chain = []
-            current_pt = start_pt
-            while True:
-                found = None
-                found_idx = -1
-                for ri, (_, entity) in enumerate(remaining):
-                    s, e = get_endpoints(entity)
-                    if s is None:
-                        continue
-                    if pts_close(current_pt, s):
-                        found = entity
-                        found_idx = ri
-                        next_pt = e
-                        break
-                    elif pts_close(current_pt, e):
-                        found = entity
-                        found_idx = ri
-                        next_pt = s
-                        break
-                if found is None:
-                    break
-                chain.append(found)
-                remaining.pop(found_idx)
-                current_pt = next_pt
-                if pts_close(current_pt, start_pt):
-                    break
-            return chain, current_pt
-
-        model_entities = [e for e in entities
-                          if e.get("type") in ("LINE", "CIRCLE", "ARC")]
-
-        for i, entity in enumerate(model_entities):
-            if i in processed:
-                continue
-            etype = entity.get("type")
-            if etype == "CIRCLE":
-                contours.append([entity])
-                processed.add(i)
-                continue
-
-            start, end = get_endpoints(entity)
-            if start is None:
-                continue
-
-            remaining = [(j, e) for j, e in enumerate(model_entities) if j != i and j not in processed]
-            chain, final_pt = follow_chain(end, remaining)
-
-            contour = [entity] + chain
-            for j in range(len(model_entities)):
-                for c in chain:
-                    if c is model_entities[j]:
-                        processed.add(j)
-
-            if pts_close(final_pt, start):
-                contours.append(contour)
-            elif len(contour) >= 1:
-                contours.append(contour)
-
-            processed.add(i)
-
-        logger.info(f"轮廓分组: {len(model_entities)} 个有效实体 -> {len(contours)} 个轮廓")
-        return contours
+        from src.model_generator.script_builder import build_fallback_script
+        return build_fallback_script(geometry_data, extrude_height)
 
     def _extract_json(self, content: str) -> Dict[str, Any]:
         content = content.strip()
